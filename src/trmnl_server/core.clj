@@ -1,9 +1,23 @@
 (ns trmnl-server.core
-  (:require [trmnl-server.image :as img]
+  (:require [clojure.java.io :as io]
+            [trmnl-server.image :as img]
             [trmnl-server.smhi :as smhi])
   (:import [java.awt Font]
            [java.time ZoneId ZonedDateTime]
            [java.time.format DateTimeFormatter]))
+
+(def ^:private regular-font
+  (Font/createFont Font/TRUETYPE_FONT (io/input-stream (io/resource "fonts/PixelOperator.ttf"))))
+
+(def ^:private bold-font
+  (Font/createFont Font/TRUETYPE_FONT (io/input-stream (io/resource "fonts/PixelOperator-Bold.ttf"))))
+
+(defn- pixel-font
+  "Derives a PixelOperator font at the given size. PixelOperator is a bitmap-style
+   font designed on a 16px grid — sizes that are multiples of 16 render as clean
+   blocky pixels; other sizes still render but interpolate between grid steps."
+  [style size]
+  (.deriveFont (if (= style :bold) bold-font regular-font) (float size)))
 
 (defn- nice-bounds
   "Rounds [min max] outward to a multiple of step, with a little padding.
@@ -44,15 +58,15 @@
       (img/draw-dot canvas max-x max-y :radius 4)
       (when label-above?
         (img/draw-text canvas (label-fmt (value-key (nth points max-i))) (- max-x 16) (- max-y 12)
-                        :font (Font. "Helvetica" Font/BOLD 20)))
+                        :font (pixel-font :bold 16)))
       (img/draw-dot canvas min-x min-y :radius 4)
       (when label-below?
         (img/draw-text canvas (label-fmt (value-key (nth points min-i))) (- min-x 16) (+ min-y 26)
-                        :font (Font. "Helvetica" Font/BOLD 20))))))
+                        :font (pixel-font :bold 16))))))
 
 (defn draw-legend-key [canvas x y label & {:keys [dash width] :or {width 2.0}}]
   (img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]] :width width :dash dash)
-  (img/draw-text canvas label (+ x 38) y :font (Font. "Helvetica" Font/PLAIN 20)))
+  (img/draw-text canvas label (+ x 38) y :font (pixel-font :regular 16)))
 
 (defn cloud-cover-strip
   "Draws a horizontal band along y whose local thickness encodes cloud cover
@@ -78,7 +92,7 @@
     (doseq [i (concat (range 0 n 6) [(dec n)])]
       (let [px (idx->x i)]
         (img/draw-text canvas (smhi/local-time-str (:time (nth points i))) (- px 18) (+ y h 30)
-                        :font (Font. "Helvetica" Font/PLAIN 18))))
+                        :font (pixel-font :regular 16))))
     (draw-series canvas points :temp temp-layout (fn [t] (str (int t) "°")))
     (draw-series canvas points :wind wind-layout (fn [w] (str (int (Math/round (double w))) " m/s"))
                   :dash [6.0 5.0])))
@@ -88,8 +102,8 @@
         canvas (img/blank-canvas)
         today (-> (ZonedDateTime/now (ZoneId/of "Europe/Stockholm"))
                   (.format (DateTimeFormatter/ofPattern "EEEE, d MMMM")))]
-    (img/draw-text canvas "Gothenburg" 40 90 :font (Font. "Helvetica" Font/BOLD 52))
-    (img/draw-text canvas today 40 130 :font (Font. "Helvetica" Font/PLAIN 24))
+    (img/draw-text canvas "Gothenburg" 40 90 :font (pixel-font :bold 48))
+    (img/draw-text canvas today 40 130 :font (pixel-font :regular 16))
     (img/draw-line canvas 40 150 760 150)
 
     (draw-legend-key canvas 40 190 "Temperature (°C)")
