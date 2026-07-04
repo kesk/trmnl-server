@@ -50,6 +50,19 @@
       (.atZone (ZoneId/of "Europe/Stockholm"))
       (.format (DateTimeFormatter/ofPattern "HH:mm"))))
 
+(defn local-date
+  "The Europe/Stockholm calendar date an SMHI timestamp falls on — the unit
+   day/night min-max labels are grouped by."
+  [iso-time]
+  (-> (Instant/parse iso-time)
+      (.atZone (ZoneId/of "Europe/Stockholm"))
+      (.toLocalDate)))
+
+(defn local-day-label [iso-time]
+  (-> (Instant/parse iso-time)
+      (.atZone (ZoneId/of "Europe/Stockholm"))
+      (.format (DateTimeFormatter/ofPattern "EEE"))))
+
 (defn upcoming
   "Picks a spread of upcoming forecast points, every `step`'th entry, `count` of them."
   [points & {:keys [count step] :or {count 6 step 3}}]
