@@ -27,6 +27,7 @@
    :symbol (:symbol_code data)
    :wind (:wind_speed data)
    :precip-chance (:probability_of_precipitation data)
+   :precip-mm (:precipitation_amount_mean data)
    :cloud-cover (:cloud_area_fraction data)})
 
 (defn forecast

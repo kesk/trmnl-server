@@ -39,7 +39,7 @@ Three namespaces, cleanly separated by concern:
 - **`trmnl-server.smhi`** — HTTP client for SMHI's public point-forecast API, using
   `java.net.http.HttpClient` directly (no HTTP dependency needed). Fetches raw JSON,
   normalizes each `timeSeries` entry into a flat `{:time :temp :symbol :wind
-  :precip-chance}` map. Also owns the `symbol_code` → text mapping (1–27) and
+  :precip-chance :precip-mm :cloud-cover}` map. Also owns the `symbol_code` → text mapping (1–27) and
   timezone-aware formatting helpers.
 
   **Important history**: SMHI deprecated the old `pmp3g` API on 2026-03-31 and

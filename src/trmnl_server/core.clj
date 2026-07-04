@@ -85,33 +85,76 @@
    each scaled to its own range so the two units never share a numeric axis."
   [canvas points x y w h]
   (let [temp-layout (series-layout points :temp x y w h 5 nil)
-        wind-layout (series-layout points :wind x y w h 5 0)
-        n (count points)
-        idx->x (:idx->x temp-layout)]
-    ;; x-axis hour labels, every 6 hours
-    (doseq [i (concat (range 0 n 6) [(dec n)])]
-      (let [px (idx->x i)]
-        (img/draw-text canvas (smhi/local-time-str (:time (nth points i))) (- px 18) (+ y h 30)
-                        :font (pixel-font :regular 16))))
+        wind-layout (series-layout points :wind x y w h 5 0)]
     (draw-series canvas points :temp temp-layout (fn [t] (str (int t) "°")))
     (draw-series canvas points :wind wind-layout (fn [w] (str (int (Math/round (double w))) " m/s"))
                   :dash [6.0 5.0])))
+
+(defn- hour-axis-labels
+  "Draws hour-of-day labels every 6 hours along a shared x-axis, at a fixed y.
+   Shared by combined-chart and precip-bar-chart since both plot the same
+   points across the same x span — drawn once here rather than duplicated
+   under each chart."
+  [canvas points x w y]
+  (let [n (count points)
+        idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))]
+    (doseq [i (concat (range 0 n 6) [(dec n)])]
+      (let [px (idx->x i)]
+        (img/draw-text canvas (smhi/local-time-str (:time (nth points i))) (- px 18) y
+                        :font (pixel-font :regular 16))))))
+
+(defn precip-bar-chart
+  "Draws precipitation (mm) as one bottom-anchored vertical bar per forecast
+   point. Kept as its own row with its own 0-based scale — per the no-shared-axis
+   rule, mm must not be folded onto the temp/wind chart's independently-scaled
+   pixel box, since 0mm has to mean the same thing as every other 0mm here."
+  [canvas points x y w h]
+  (let [n (count points)
+        values (map :precip-mm points)
+        raw-max (apply max values)
+        ;; Headroom scales with the data instead of nice-bounds' flat +2 padding,
+        ;; which is sized for °C/m/s ranges and would swamp typical sub-1mm rain.
+        hi (max 1 (Math/ceil (* raw-max 1.15)))
+        slot-w (/ w (double n))
+        bar-w (* slot-w 0.7)
+        bar-gap (* slot-w 0.3)
+        bottom (+ y h)
+        mm->bar-h (fn [mm] (* h (/ mm (double hi))))
+        bars (map-indexed
+              (fn [i point]
+                (let [mm (:precip-mm point)]
+                  {:x (+ x (* i slot-w) (/ bar-gap 2))
+                   :bar-h (mm->bar-h mm)
+                   :mm mm}))
+              points)]
+    (img/draw-text canvas (str "Rain (0-" (int hi) "mm)") x (- y 6) :font (pixel-font :regular 16))
+    (doseq [{:keys [x bar-h]} bars]
+      (when (pos? bar-h)
+        (img/draw-rect canvas x (- bottom bar-h) bar-w bar-h :fill? true)))
+    (let [{:keys [x bar-h mm]} (apply max-key :bar-h bars)]
+      (when (pos? mm)
+        (img/draw-text canvas (format "%.1fmm" (double mm)) (- x 4) (- bottom bar-h 6)
+                        :font (pixel-font :bold 16))))
+    (img/draw-line canvas x bottom (+ x w) bottom)))
 
 (defn forecast-screen []
   (let [points (take 24 (smhi/forecast smhi/gothenburg))
         canvas (img/blank-canvas)
         today (-> (ZonedDateTime/now (ZoneId/of "Europe/Stockholm"))
                   (.format (DateTimeFormatter/ofPattern "EEEE, d MMMM")))]
-    (img/draw-text canvas "Gothenburg" 40 90 :font (pixel-font :bold 48))
-    (img/draw-text canvas today 40 130 :font (pixel-font :regular 16))
-    (img/draw-line canvas 40 150 760 150)
+    (img/draw-text canvas "Gothenburg" 40 58 :font (pixel-font :bold 32))
+    (img/draw-text canvas today 40 84 :font (pixel-font :regular 16))
+    (img/draw-line canvas 40 102 760 102)
 
-    (draw-legend-key canvas 40 190 "Temperature (°C)")
-    (draw-legend-key canvas 280 190 "Wind speed (m/s)" :dash [6.0 5.0])
-    (draw-legend-key canvas 520 190 "Cloud cover (%)" :width 6.0)
+    (draw-legend-key canvas 40 136 "Temp (°C)")
+    (draw-legend-key canvas 220 136 "Wind (m/s)" :dash [6.0 5.0])
+    (draw-legend-key canvas 400 136 "Clouds (%)" :width 6.0)
+    (draw-legend-key canvas 580 136 "Rain (mm)")
 
-    (cloud-cover-strip canvas points 80 210 640)
-    (combined-chart canvas points 80 225 640 185)
+    (cloud-cover-strip canvas points 80 154 640)
+    (combined-chart canvas points 80 172 640 155)
+    (precip-bar-chart canvas points 80 355 640 85)
+    (hour-axis-labels canvas points 80 640 468)
     canvas))
 
 (defn -main [& _]
