@@ -51,8 +51,6 @@
                                                 :or {label-above? true label-below? true}}]
   (let [{:keys [plot-points max-i min-i]} layout]
     (img/draw-polyline canvas plot-points :width 2.0 :dash dash)
-    (doseq [[px py] plot-points]
-      (img/draw-dot canvas px py :radius 2))
     (let [[max-x max-y] (nth plot-points max-i)
           [min-x min-y] (nth plot-points min-i)]
       (img/draw-dot canvas max-x max-y :radius 4)
@@ -97,8 +95,14 @@
    under each chart."
   [canvas points x w y]
   (let [n (count points)
-        idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))]
-    (doseq [i (concat (range 0 n 6) [(dec n)])]
+        idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
+        regular (range 0 n 6)
+        last-i (dec n)
+        ;; Only tack on the final point if it's far enough past the last
+        ;; regular tick to read as a separate label instead of overlapping it
+        ;; — with n not a multiple of 6, the two can land just 1-2h apart.
+        indices (if (>= (- last-i (last regular)) 3) (concat regular [last-i]) regular)]
+    (doseq [i indices]
       (let [px (idx->x i)]
         (img/draw-text canvas (smhi/local-time-str (:time (nth points i))) (- px 18) y
                         :font (pixel-font :regular 16))))))
@@ -138,7 +142,7 @@
     (img/draw-line canvas x bottom (+ x w) bottom)))
 
 (defn forecast-screen []
-  (let [points (take 24 (smhi/forecast smhi/gothenburg))
+  (let [points (take 48 (smhi/forecast smhi/gothenburg))
         canvas (img/blank-canvas)
         today (-> (ZonedDateTime/now (ZoneId/of "Europe/Stockholm"))
                   (.format (DateTimeFormatter/ofPattern "EEEE, d MMMM")))]
@@ -150,10 +154,10 @@
     (draw-legend-key canvas 280 108 "Wind (m/s)" :dash [6.0 5.0])
     (draw-legend-key canvas 520 108 "Clouds (%)" :width 6.0)
 
-    (cloud-cover-strip canvas points 80 136 640 :max-width 40.0)
-    (combined-chart canvas points 80 172 640 155)
-    (precip-bar-chart canvas points 80 355 640 85)
-    (hour-axis-labels canvas points 80 640 468)
+    (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
+    (combined-chart canvas points 40 172 720 155)
+    (precip-bar-chart canvas points 40 355 720 85)
+    (hour-axis-labels canvas points 40 720 468)
     canvas))
 
 (defn -main [& _]
