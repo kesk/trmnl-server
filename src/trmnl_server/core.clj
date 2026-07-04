@@ -73,7 +73,7 @@
    (0-100%) at each timestamp — thin where skies are clear, thick where
    they're overcast. Sits above the temp/wind chart as its own row rather
    than sharing the plot box, since it isn't a value series on the same axes."
-  [canvas points x y w & {:keys [min-width max-width] :or {min-width 1.0 max-width 10.0}}]
+  [canvas points x y w & {:keys [min-width max-width] :or {min-width 1.0 max-width 20.0}}]
   (let [n (count points)
         idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
         plot-points (map-indexed (fn [i _] [(idx->x i) y]) points)
@@ -142,16 +142,15 @@
         canvas (img/blank-canvas)
         today (-> (ZonedDateTime/now (ZoneId/of "Europe/Stockholm"))
                   (.format (DateTimeFormatter/ofPattern "EEEE, d MMMM")))]
-    (img/draw-text canvas "Gothenburg" 40 58 :font (pixel-font :bold 32))
-    (img/draw-text canvas today 40 84 :font (pixel-font :regular 16))
-    (img/draw-line canvas 40 102 760 102)
+    (img/draw-text canvas "Gothenburg" 40 44 :font (pixel-font :bold 32))
+    (img/draw-text canvas today 40 68 :font (pixel-font :regular 16))
+    (img/draw-line canvas 40 84 760 84)
 
-    (draw-legend-key canvas 40 136 "Temp (°C)")
-    (draw-legend-key canvas 220 136 "Wind (m/s)" :dash [6.0 5.0])
-    (draw-legend-key canvas 400 136 "Clouds (%)" :width 6.0)
-    (draw-legend-key canvas 580 136 "Rain (mm)")
+    (draw-legend-key canvas 40 108 "Temp (°C)")
+    (draw-legend-key canvas 280 108 "Wind (m/s)" :dash [6.0 5.0])
+    (draw-legend-key canvas 520 108 "Clouds (%)" :width 6.0)
 
-    (cloud-cover-strip canvas points 80 154 640)
+    (cloud-cover-strip canvas points 80 136 640 :max-width 40.0)
     (combined-chart canvas points 80 172 640 155)
     (precip-bar-chart canvas points 80 355 640 85)
     (hour-axis-labels canvas points 80 640 468)
