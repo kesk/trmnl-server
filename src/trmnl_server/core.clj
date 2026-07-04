@@ -2,9 +2,7 @@
   (:require [clojure.java.io :as io]
             [trmnl-server.image :as img]
             [trmnl-server.smhi :as smhi])
-  (:import [java.awt Font]
-           [java.time ZoneId ZonedDateTime]
-           [java.time.format DateTimeFormatter]))
+  (:import [java.awt Font]))
 
 (def ^:private regular-font
   (Font/createFont Font/TRUETYPE_FONT (io/input-stream (io/resource "fonts/PixelOperator.ttf"))))
@@ -209,10 +207,14 @@
 (defn forecast-screen []
   (let [points (take 48 (smhi/forecast smhi/gothenburg))
         canvas (img/blank-canvas)
-        today (-> (ZonedDateTime/now (ZoneId/of "Europe/Stockholm"))
-                  (.format (DateTimeFormatter/ofPattern "EEEE, d MMMM")))]
-    (img/draw-text canvas "Gothenburg" 40 44 :font (pixel-font :bold 32))
-    (img/draw-text canvas today 40 68 :font (pixel-font :regular 16))
+        ;; The display hangs in a fixed spot (a hallway) — the viewer already
+        ;; knows where and roughly when they are, so the header leads with
+        ;; current conditions instead of city/date.
+        now (first points)
+        condition (smhi/symbol->description (:symbol now))]
+    (img/draw-text canvas (str (int (:temp now)) "°") 40 44 :font (pixel-font :bold 32))
+    (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 40 68
+                    :font (pixel-font :regular 16))
     (img/draw-line canvas 40 84 760 84)
 
     (draw-legend-key canvas 40 108 "Temp (°C)")
