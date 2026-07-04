@@ -81,9 +81,11 @@
 (defn draw-polyline
   "Connects a sequence of [x y] points with a 2px round-joined line.
    Pass :dash [on-length off-length] to draw it dashed instead of solid —
-   useful for telling two series apart on a 1-bit surface without color."
-  [{:keys [graphics]} points & {:keys [width color dash] :or {width 2.0 color Color/BLACK}}]
-  (.setColor graphics color)
+   useful for telling two series apart on a 1-bit surface without color.
+   :paint accepts any java.awt.Paint (a Color for solid fill, or e.g.
+   checkerboard-paint for a dithered fill)."
+  [{:keys [graphics]} points & {:keys [width paint dash] :or {width 2.0 paint Color/BLACK}}]
+  (.setPaint graphics paint)
   (.setStroke graphics (if dash
                           (BasicStroke. width BasicStroke/CAP_BUTT BasicStroke/JOIN_ROUND
                                         1.0 (float-array dash) 0.0)

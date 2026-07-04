@@ -62,8 +62,9 @@
         (img/draw-text canvas (label-fmt (value-key (nth points min-i))) (- min-x 16) (+ min-y 26)
                         :font (pixel-font :bold 16))))))
 
-(defn draw-legend-key [canvas x y label & {:keys [dash width] :or {width 2.0}}]
-  (img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]] :width width :dash dash)
+(defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
+  (apply img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]]
+         (concat [:width width :dash dash] (when paint [:paint paint])))
   (img/draw-text canvas label (+ x 38) y :font (pixel-font :regular 16)))
 
 (defn cloud-cover-strip
@@ -152,7 +153,7 @@
 
     (draw-legend-key canvas 40 108 "Temp (°C)")
     (draw-legend-key canvas 280 108 "Wind (m/s)" :dash [6.0 5.0])
-    (draw-legend-key canvas 520 108 "Clouds (%)" :width 6.0)
+    (draw-legend-key canvas 520 108 "Clouds (%)" :width 14.0 :paint (img/checkerboard-paint))
 
     (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
     (combined-chart canvas points 40 172 720 155)
