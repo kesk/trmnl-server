@@ -16,6 +16,10 @@ clojure -M -m trmnl-server.core
 # equivalently:
 clojure -M:run
 
+# Render synthetic per-season screens instead of a live fetch — writes
+# out/demo-{winter,spring,summer,autumn}(.png|-1bit.png)
+clojure -M -m trmnl-server.core --demo
+
 # REPL for iterating on drawing/layout code
 clojure -M -r
 ```
@@ -25,7 +29,7 @@ exploratory project (no Leiningen, no `tools.build` uberjar target).
 
 ## Architecture
 
-Three namespaces, cleanly separated by concern:
+Four namespaces, cleanly separated by concern:
 
 - **`trmnl-server.image`** — generic Java2D drawing primitives, independent of any
   weather/domain concepts. A "canvas" is a plain map `{:image BufferedImage, :graphics
@@ -47,10 +51,18 @@ Three namespaces, cleanly separated by concern:
   `data` map instead of a `parameters` array). If SMHI requests start 404ing, check
   for another API migration before assuming the code is broken.
 
-- **`trmnl-server.core`** — composes the two above into the actual screen
-  (`forecast-screen`), and is where domain-specific layout/chart logic lives (e.g.
+- **`trmnl-server.demo`** — synthetic 48-point-per-season datasets (`seasons`,
+  `season-points`) in the same point shape `smhi/forecast` produces, so `--demo` can
+  drive `forecast-screen` without hitting the network. Values are simple diurnal sine
+  curves around Gothenburg's seasonal norms, not real observations — good enough to
+  look like a typical day, not a claim of historical accuracy.
+
+- **`trmnl-server.core`** — composes the above into the actual screen
+  (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-0
+  fetches live), and is where domain-specific layout/chart logic lives (e.g.
   `line-chart`/`combined-chart`, `nice-bounds` for rounding axis extents). `-main`
-  renders the screen and writes both PNG variants to `out/`.
+  renders the live screen by default, or one screen per `demo/seasons` entry when
+  invoked with `--demo`, writing both PNG variants of each to `out/`.
 
 ### Design constraints worth knowing before extending
 

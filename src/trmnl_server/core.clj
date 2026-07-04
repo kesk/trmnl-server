@@ -1,5 +1,6 @@
 (ns trmnl-server.core
   (:require [clojure.java.io :as io]
+            [trmnl-server.demo :as demo]
             [trmnl-server.image :as img]
             [trmnl-server.smhi :as smhi])
   (:import [java.awt Font]))
@@ -204,32 +205,39 @@
       (let [boundary-x (/ (+ (idx->x (last a)) (idx->x (first b))) 2)]
         (img/draw-dashed-line canvas boundary-x top boundary-x bottom)))))
 
-(defn forecast-screen []
-  (let [points (take 48 (smhi/forecast smhi/gothenburg))
-        canvas (img/blank-canvas)
-        ;; The display hangs in a fixed spot (a hallway) — the viewer already
-        ;; knows where and roughly when they are, so the header leads with
-        ;; current conditions instead of city/date.
-        now (first points)
-        condition (smhi/symbol->description (:symbol now))]
-    (img/draw-text canvas (str (int (:temp now)) "°") 40 44 :font (pixel-font :bold 32))
-    (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 40 68
-                    :font (pixel-font :regular 16))
-    (img/draw-line canvas 40 84 760 84)
+(defn forecast-screen
+  ([] (forecast-screen (take 48 (smhi/forecast smhi/gothenburg))))
+  ([points]
+   (let [canvas (img/blank-canvas)
+         ;; The display hangs in a fixed spot (a hallway) — the viewer already
+         ;; knows where and roughly when they are, so the header leads with
+         ;; current conditions instead of city/date.
+         now (first points)
+         condition (smhi/symbol->description (:symbol now))]
+     (img/draw-text canvas (str (int (:temp now)) "°") 40 44 :font (pixel-font :bold 32))
+     (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 40 68
+                     :font (pixel-font :regular 16))
+     (img/draw-line canvas 40 84 760 84)
 
-    (draw-legend-key canvas 40 108 "Temp (°C)")
-    (draw-legend-key canvas 280 108 "Wind (m/s)" :dash [6.0 5.0])
-    (draw-legend-key canvas 520 108 "Clouds (%)" :width 14.0 :paint (img/checkerboard-paint))
+     (draw-legend-key canvas 40 108 "Temp (°C)")
+     (draw-legend-key canvas 280 108 "Wind (m/s)" :dash [6.0 5.0])
+     (draw-legend-key canvas 520 108 "Clouds (%)" :width 14.0 :paint (img/checkerboard-paint))
 
-    (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
-    (combined-chart canvas points 40 172 720 155)
-    (precip-bar-chart canvas points 40 355 720 85)
-    (hour-axis-labels canvas points 40 720 468)
-    (day-markers canvas points 40 720 118 440 454)
-    canvas))
+     (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
+     (combined-chart canvas points 40 172 720 155)
+     (precip-bar-chart canvas points 40 355 720 85)
+     (hour-axis-labels canvas points 40 720 468)
+     (day-markers canvas points 40 720 118 440 454)
+     canvas)))
 
-(defn -main [& _]
-  (let [canvas (forecast-screen)]
-    (img/save-image (:image canvas) "out/preview.png")
-    (img/save-image (img/->1-bit canvas) "out/preview-1bit.png")
-    (println "Wrote out/preview.png and out/preview-1bit.png")))
+(defn- write-screen [canvas name]
+  (img/save-image (:image canvas) (str "out/" name ".png"))
+  (img/save-image (img/->1-bit canvas) (str "out/" name "-1bit.png"))
+  (println (str "Wrote out/" name ".png and out/" name "-1bit.png")))
+
+(defn -main [& args]
+  (if (some #{"--demo"} args)
+    (doseq [{:keys [label file] :as season} demo/seasons]
+      (println (str "Rendering " label "..."))
+      (write-screen (forecast-screen (demo/season-points season)) file))
+    (write-screen (forecast-screen) "preview")))
