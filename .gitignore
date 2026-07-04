@@ -1,0 +1,10 @@
+/.cpcache/
+/target/
+/out/
+*.jar
+.nrepl-port
+.lsp/
+.clj-kondo/.cache/
+.DS_Store
+.claude/settings.local.json
+.#*
