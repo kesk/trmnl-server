@@ -78,7 +78,7 @@
         idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
         plot-points (map-indexed (fn [i _] [(idx->x i) y]) points)
         widths (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 100.0)))))) points)]
-    (img/draw-variable-line canvas plot-points widths)))
+    (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
 
 (defn combined-chart
   "Overlays temperature (solid) and wind speed (dashed) on one 24h chart,

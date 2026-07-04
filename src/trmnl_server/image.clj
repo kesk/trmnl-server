@@ -1,6 +1,7 @@
 (ns trmnl-server.image
   (:require [clojure.string :as str])
-  (:import [java.awt BasicStroke Color RenderingHints]
+  (:import [java.awt BasicStroke Color RenderingHints TexturePaint]
+           [java.awt.geom Rectangle2D$Double]
            [java.awt.image BufferedImage]
            [java.io File]
            [javax.imageio ImageIO]))
@@ -91,12 +92,30 @@
     (.drawLine graphics (int x1) (int y1) (int x2) (int y2)))
   (.setStroke graphics (BasicStroke. 1.0)))
 
+(defn checkerboard-paint
+  "A 2x2 black/white checkerboard tile, anchored at the device origin — used
+   to fill a shape with a regular dither pattern that reads as flat 50% gray.
+   A 1-bit surface can't hold an actual gray value (->1-bit/floyd-steinberg
+   would just threshold it away), but this survives untouched since every
+   pixel is already pure black or white. Anchoring at (0,0) keeps the tile
+   grid-aligned across separately drawn shapes so segments meet seamlessly."
+  []
+  (let [tile (BufferedImage. 2 2 BufferedImage/TYPE_INT_RGB)]
+    (doto tile
+      (.setRGB 0 0 -1)
+      (.setRGB 1 0 -16777216)
+      (.setRGB 0 1 -16777216)
+      (.setRGB 1 1 -1))
+    (TexturePaint. tile (Rectangle2D$Double. 0.0 0.0 2.0 2.0))))
+
 (defn draw-variable-line
   "Connects a sequence of [x y] points where each point has its own stroke
    width (interpolated across each segment) — useful for encoding a magnitude
-   in line thickness on a 1-bit surface where color/gray isn't available."
-  [{:keys [graphics]} points widths & {:keys [color] :or {color Color/BLACK}}]
-  (.setColor graphics color)
+   in line thickness on a 1-bit surface where color/gray isn't available.
+   :paint accepts any java.awt.Paint (a Color for solid fill, or e.g.
+   checkerboard-paint for a dithered fill)."
+  [{:keys [graphics]} points widths & {:keys [paint] :or {paint Color/BLACK}}]
+  (.setPaint graphics paint)
   (doseq [[[x1 y1 w1] [x2 y2 w2]] (partition 2 1 (map (fn [[x y] w] [x y w]) points widths))]
     (.setStroke graphics (BasicStroke. (float (/ (+ w1 w2) 2.0)) BasicStroke/CAP_ROUND BasicStroke/JOIN_ROUND))
     (.drawLine graphics (int x1) (int y1) (int x2) (int y2)))
