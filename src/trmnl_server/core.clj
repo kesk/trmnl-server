@@ -47,19 +47,20 @@
     {:plot-points plot-points :idx->x idx->x :max-i max-i :min-i min-i}))
 
 (defn- draw-series
-  [canvas points value-key layout label-fmt & {:keys [dash label-above? label-below?]
-                                                :or {label-above? true label-below? true}}]
+  [canvas points value-key layout label-fmt & {:keys [dash label-above? label-below? above-offset below-offset]
+                                                :or {label-above? true label-below? true
+                                                     above-offset -12 below-offset 26}}]
   (let [{:keys [plot-points max-i min-i]} layout]
     (img/draw-polyline canvas plot-points :width 2.0 :dash dash)
     (let [[max-x max-y] (nth plot-points max-i)
           [min-x min-y] (nth plot-points min-i)]
       (img/draw-dot canvas max-x max-y :radius 4)
       (when label-above?
-        (img/draw-text canvas (label-fmt (value-key (nth points max-i))) (- max-x 16) (- max-y 12)
+        (img/draw-text canvas (label-fmt (value-key (nth points max-i))) (- max-x 16) (+ max-y above-offset)
                         :font (pixel-font :bold 16)))
       (img/draw-dot canvas min-x min-y :radius 4)
       (when label-below?
-        (img/draw-text canvas (label-fmt (value-key (nth points min-i))) (- min-x 16) (+ min-y 26)
+        (img/draw-text canvas (label-fmt (value-key (nth points min-i))) (- min-x 16) (+ min-y below-offset)
                         :font (pixel-font :bold 16))))))
 
 (defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
@@ -79,15 +80,31 @@
         widths (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 100.0)))))) points)]
     (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
 
+(defn- close-points?
+  "True when two plotted points are near enough that same-offset labels
+   anchored to them would overlap."
+  [[ax ay] [bx by]]
+  (and (< (Math/abs (- ax bx)) 60) (< (Math/abs (- ay by)) 30)))
+
 (defn combined-chart
   "Overlays temperature (solid) and wind speed (dashed) on one 24h chart,
-   each scaled to its own range so the two units never share a numeric axis."
+   each scaled to its own range so the two units never share a numeric axis.
+   Since the series are scaled independently, their extrema can land right on
+   top of each other in pixel space even though the underlying values are
+   unrelated — when that happens, push the wind label further from its dot
+   so the two labels stack instead of overlapping."
   [canvas points x y w h]
   (let [temp-layout (series-layout points :temp x y w h 5 nil)
-        wind-layout (series-layout points :wind x y w h 5 0)]
+        wind-layout (series-layout points :wind x y w h 5 0)
+        max-collide? (close-points? (nth (:plot-points temp-layout) (:max-i temp-layout))
+                                     (nth (:plot-points wind-layout) (:max-i wind-layout)))
+        min-collide? (close-points? (nth (:plot-points temp-layout) (:min-i temp-layout))
+                                     (nth (:plot-points wind-layout) (:min-i wind-layout)))]
     (draw-series canvas points :temp temp-layout (fn [t] (str (int t) "°")))
     (draw-series canvas points :wind wind-layout (fn [w] (str (int (Math/round (double w))) " m/s"))
-                  :dash [6.0 5.0])))
+                  :dash [6.0 5.0]
+                  :above-offset (if max-collide? -30 -12)
+                  :below-offset (if min-collide? 44 26))))
 
 (defn- hour-axis-labels
   "Draws hour-of-day labels every 6 hours along a shared x-axis, at a fixed y.
