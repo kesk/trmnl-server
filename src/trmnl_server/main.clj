@@ -13,6 +13,7 @@
   (println (str "Wrote out/" name ".png and out/" name "-1bit.png")))
 
 (defn -main [& args]
+  (System/setProperty "java.awt.headless" "true")
   (cond
     (some #{"--demo"} args)
     (doseq [{:keys [label file] :as season} demo/seasons]
