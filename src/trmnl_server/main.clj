@@ -5,7 +5,8 @@
   (:require [trmnl-server.core :as core]
             [trmnl-server.demo :as demo]
             [trmnl-server.image :as img]
-            [trmnl-server.server :as server]))
+            [trmnl-server.server :as server])
+  (:gen-class))
 
 (defn- write-screen [canvas name]
   (img/save-image (:image canvas) (str "out/" name ".png"))

@@ -28,10 +28,21 @@ clojure -M:serve
 
 # REPL for iterating on drawing/layout code
 clojure -M -r
+
+# Build a standalone uberjar (target/trmnl-server.jar) via tools.build (see build.clj)
+clojure -T:build uber
+# Run it directly, e.g.:
+java -jar target/trmnl-server.jar --serve
+
+# Build the uberjar, ship it to the Raspberry Pi running the live server
+# (host "dashboard-pi", systemd unit trmnl-server.service, see deploy/trmnl-server.service),
+# and restart it
+bin/deploy.sh
 ```
 
-There is no test suite, linter, or build step configured — this is a `deps.edn`-only
-exploratory project (no Leiningen, no `tools.build` uberjar target).
+There is no test suite or linter configured. The only build step is the uberjar target in
+`build.clj` (via `tools.build`), used solely to produce a self-contained jar for deployment —
+this is otherwise a `deps.edn`-only exploratory project (no Leiningen).
 
 ## Architecture
 

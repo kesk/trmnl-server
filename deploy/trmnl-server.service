@@ -1,0 +1,15 @@
+[Unit]
+Description=TRMNL forecast server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seb
+WorkingDirectory=/home/seb/trmnl-server
+ExecStart=/usr/bin/java -jar /home/seb/trmnl-server/trmnl-server.jar --serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
