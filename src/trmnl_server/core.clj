@@ -1,6 +1,5 @@
 (ns trmnl-server.core
   (:require [clojure.java.io :as io]
-            [trmnl-server.demo :as demo]
             [trmnl-server.image :as img]
             [trmnl-server.smhi :as smhi])
   (:import [java.awt Font]))
@@ -229,15 +228,3 @@
      (hour-axis-labels canvas points 40 720 468)
      (day-markers canvas points 40 720 118 440 454)
      canvas)))
-
-(defn- write-screen [canvas name]
-  (img/save-image (:image canvas) (str "out/" name ".png"))
-  (img/save-image (img/->1-bit canvas) (str "out/" name "-1bit.png"))
-  (println (str "Wrote out/" name ".png and out/" name "-1bit.png")))
-
-(defn -main [& args]
-  (if (some #{"--demo"} args)
-    (doseq [{:keys [label file] :as season} demo/seasons]
-      (println (str "Rendering " label "..."))
-      (write-screen (forecast-screen (demo/season-points season)) file))
-    (write-screen (forecast-screen) "preview")))

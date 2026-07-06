@@ -12,13 +12,19 @@ from SMHI (Sweden's meteorological institute) for Gothenburg and renders it with
 
 ```bash
 # Run the generator — writes out/preview.png (RGB) and out/preview-1bit.png (thresholded)
-clojure -M -m trmnl-server.core
+clojure -M -m trmnl-server.main
 # equivalently:
 clojure -M:run
 
 # Render synthetic per-season screens instead of a live fetch — writes
 # out/demo-{winter,spring,summer,autumn}(.png|-1bit.png)
-clojure -M -m trmnl-server.core --demo
+clojure -M -m trmnl-server.main --demo
+
+# Serve the live forecast screen to a real TRMNL OG device over HTTP (see
+# trmnl-server.server below). Listens on $PORT or 8080.
+clojure -M -m trmnl-server.main --serve
+# equivalently:
+clojure -M:serve
 
 # REPL for iterating on drawing/layout code
 clojure -M -r
@@ -29,7 +35,7 @@ exploratory project (no Leiningen, no `tools.build` uberjar target).
 
 ## Architecture
 
-Four namespaces, cleanly separated by concern:
+Six namespaces, cleanly separated by concern:
 
 - **`trmnl-server.image`** — generic Java2D drawing primitives, independent of any
   weather/domain concepts. A "canvas" is a plain map `{:image BufferedImage, :graphics
@@ -60,9 +66,29 @@ Four namespaces, cleanly separated by concern:
 - **`trmnl-server.core`** — composes the above into the actual screen
   (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-0
   fetches live), and is where domain-specific layout/chart logic lives (e.g.
-  `line-chart`/`combined-chart`, `nice-bounds` for rounding axis extents). `-main`
-  renders the live screen by default, or one screen per `demo/seasons` entry when
-  invoked with `--demo`, writing both PNG variants of each to `out/`.
+  `line-chart`/`combined-chart`, `nice-bounds` for rounding axis extents).
+
+- **`trmnl-server.server`** — implements the small HTTP API a real TRMNL OG device
+  polls when pointed at a custom server: `GET /api/display` (the main poll, returns
+  JSON with an `image_url`/`filename`/`refresh_rate`), `GET /api/setup` (first-boot
+  welcome screen), `POST /api/log` (device telemetry, replied to with `204`), and
+  `GET /images/*` (serves the cached PNG bytes). Uses `http-kit` as both the Ring
+  request/response convention and the embedded server (handlers are plain
+  `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
+  `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
+  dependency given there are only 3 routes. `current-image` renders via
+  `core/forecast-screen` + `image/->1-bit`, encodes to PNG bytes in memory (no
+  disk writes — `out/` stays reserved for the batch-render modes), and caches them
+  for 10 minutes keyed by an MD5 content hash, so the `filename` embedded in
+  `/api/display`'s response only changes when the rendered image actually changes —
+  this lets the device skip re-downloading identical screens between polls.
+
+- **`trmnl-server.main`** — the CLI entry point (`-main`). Kept separate from `core`
+  purely so `core` and `server` can each require the other one-way without a cycle
+  (`server` requires `core` for `forecast-screen`; `main` requires both). Renders
+  the live screen by default, one screen per `demo/seasons` entry when invoked with
+  `--demo` (writing both PNG variants of each to `out/`), or starts the HTTP server
+  via `server/start!` when invoked with `--serve`.
 
 ### Design constraints worth knowing before extending
 
