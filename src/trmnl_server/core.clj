@@ -216,6 +216,10 @@
      (img/draw-text canvas (str (int (:temp now)) "°") 40 44 :font (pixel-font :bold 32))
      (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 40 68
                      :font (pixel-font :regular 16))
+     (let [label (str "Updated " (smhi/local-now-str))
+           font (pixel-font :regular 16)
+           w (img/text-width canvas label :font font)]
+       (img/draw-text canvas label (- 760 w) 68 :font font))
      (img/draw-line canvas 40 84 760 84)
 
      (draw-legend-key canvas 40 108 "Temp (°C)")

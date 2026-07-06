@@ -63,6 +63,14 @@
       (.atZone (ZoneId/of "Europe/Stockholm"))
       (.format (DateTimeFormatter/ofPattern "EEE"))))
 
+(defn local-now-str
+  "Current time formatted like local-time-str's siblings, but for 'now' rather
+   than a forecast point — used to stamp when a screen was rendered."
+  []
+  (-> (Instant/now)
+      (.atZone (ZoneId/of "Europe/Stockholm"))
+      (.format (DateTimeFormatter/ofPattern "d MMM HH:mm"))))
+
 (defn upcoming
   "Picks a spread of upcoming forecast points, every `step`'th entry, `count` of them."
   [points & {:keys [count step] :or {count 6 step 3}}]

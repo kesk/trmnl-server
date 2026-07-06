@@ -40,6 +40,12 @@
   (.setColor graphics color)
   (fill-string graphics text (int x) (int y)))
 
+(defn text-width
+  "Pixel width text would render at, for right/center-aligning against a fixed edge."
+  [{:keys [graphics]} text & {:keys [font]}]
+  (when font (.setFont graphics font))
+  (.stringWidth (.getFontMetrics graphics) text))
+
 (defn draw-wrapped-text
   "Draws text wrapped to fit within max-width, one line per line-height."
   [{:keys [graphics]} text x y max-width line-height & {:keys [font color] :or {color Color/BLACK}}]
