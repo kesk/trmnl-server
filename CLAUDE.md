@@ -36,12 +36,15 @@ java -jar target/trmnl-server.jar --serve
 
 # Build the uberjar, ship it to the Raspberry Pi running the live server
 # (host "dashboard-pi", systemd unit trmnl-server.service, see deploy/trmnl-server.service),
-# and restart it
-bin/deploy.sh
+# and restart it — a babashka script, not a JVM Clojure one (see deploy.clj)
+bb deploy.clj
 ```
 
 There is no test suite or linter configured. The only build step is the uberjar target in
-`build.clj` (via `tools.build`), used solely to produce a self-contained jar for deployment —
+`build.clj` (via `tools.build`), used solely to produce a self-contained jar for deployment.
+Deployment itself (`deploy.clj`) is a babashka script that shells out to `clojure -T:build uber`
+rather than requiring `build.clj` in-process, since `clojure.tools.build.api` is JVM-only and
+unavailable under babashka —
 this is otherwise a `deps.edn`-only exploratory project (no Leiningen).
 
 ## Architecture
