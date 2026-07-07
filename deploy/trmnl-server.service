@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=seb
 WorkingDirectory=/home/seb/trmnl-server
+Environment=FORECAST_HOURS=24
 ExecStart=/usr/bin/java -jar /home/seb/trmnl-server/trmnl-server.jar --serve
 Restart=on-failure
 RestartSec=5

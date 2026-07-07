@@ -5,10 +5,14 @@
 
 (def host "dashboard-pi")
 (def jar-path "target/trmnl-server.jar")
+(def unit-path "deploy/trmnl-server.service")
 
 (shell "clojure" "-T:build" "uber")
 
 (shell "scp" jar-path (str host ":~/trmnl-server/trmnl-server.jar"))
+
+(shell "scp" unit-path (str host ":~/trmnl-server.service"))
+(shell "ssh" host "sudo mv ~/trmnl-server.service /etc/systemd/system/trmnl-server.service && sudo systemctl daemon-reload")
 
 (shell "ssh" host "sudo systemctl restart trmnl-server")
 
