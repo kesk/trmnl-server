@@ -81,6 +81,20 @@
           (img/draw-text canvas (label-fmt (value-key (nth points min-i))) (- min-x 16) (+ min-y (offset-at below-offset i))
                           :font (pixel-font :bold 16)))))))
 
+(defn- weather-icon-path [symbol-code night?]
+  (str "icons/" (if night? "night" "day") "-" symbol-code ".png"))
+
+(defn draw-weather-icon
+  "Draws SMHI's official icon (bundled as pre-rasterized PNGs under
+   resources/icons/, one pair of day/night SVGs per symbol code) for a
+   forecast point inside the size x size box at x,y. Their fills (sun
+   yellow, cloud grays) sit above ->1-bit's threshold and wash to white,
+   leaving just their dark outlines — so the icons need no recoloring to fit
+   the 1-bit pipeline."
+  [canvas point x y size]
+  (let [image (img/load-image (weather-icon-path (:symbol point) (smhi/night? (:time point))))]
+    (img/draw-image canvas image x y size size)))
+
 (defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
   (apply img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]]
          (concat [:width width :dash dash] (when paint [:paint paint])))
@@ -232,8 +246,9 @@
          ;; current conditions instead of city/date.
          now (first points)
          condition (smhi/symbol->description (:symbol now))]
-     (img/draw-text canvas (str (int (:temp now)) "°") 40 44 :font (pixel-font :bold 32))
-     (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 40 68
+     (draw-weather-icon canvas now 40 14 56)
+     (img/draw-text canvas (str (int (:temp now)) "°") 110 44 :font (pixel-font :bold 32))
+     (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 110 68
                      :font (pixel-font :regular 16))
      (let [label (str "Updated " (smhi/local-now-str))
            font (pixel-font :regular 16)

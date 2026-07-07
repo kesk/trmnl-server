@@ -45,6 +45,14 @@
    18 "Light rain" 19 "Moderate rain" 20 "Heavy rain" 21 "Thunder" 22 "Light sleet"
    23 "Moderate sleet" 24 "Heavy sleet" 25 "Light snowfall" 26 "Moderate snowfall" 27 "Heavy snowfall"})
 
+(defn night?
+  "Fixed-hour heuristic for whether an SMHI timestamp falls at night, used
+   only to pick the day/night icon variant — not a real sunrise/sunset
+   calculation."
+  [iso-time]
+  (let [hour (.getHour (.atZone (Instant/parse iso-time) (ZoneId/of "Europe/Stockholm")))]
+    (or (< hour 6) (>= hour 21))))
+
 (defn local-time-str [iso-time]
   (-> (Instant/parse iso-time)
       (.atZone (ZoneId/of "Europe/Stockholm"))

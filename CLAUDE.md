@@ -69,7 +69,8 @@ Six namespaces, cleanly separated by concern:
   conversions turn the RGB working canvas into what the e-ink panel actually needs:
   `->1-bit` (hard threshold — good for text/UI) and `floyd-steinberg` (error-diffusion
   dithering — good for photos/gradients). `save-image` infers the output format from
-  the file extension.
+  the file extension. `load-image`/`draw-image` composite a raster (e.g. PNG) resource
+  onto the canvas — used for the header's weather icon (see core below).
 
 - **`trmnl-server.smhi`** — HTTP client for SMHI's public point-forecast API, using
   `java.net.http.HttpClient` directly (no HTTP dependency needed). Fetches raw JSON,
@@ -81,6 +82,9 @@ Six namespaces, cleanly separated by concern:
   replaced it with `snow1g` (same weather-symbol codes, different JSON shape — flat
   `data` map instead of a `parameters` array). If SMHI requests start 404ing, check
   for another API migration before assuming the code is broken.
+
+  Also owns `night?`, a fixed-hour heuristic (not real sunrise/sunset) used only to
+  pick the day vs. night variant of the header's weather icon.
 
 - **`trmnl-server.demo`** — synthetic per-season datasets (`seasons`, `season-points`,
   which takes an explicit `hours` count) in the same point shape `smhi/forecast`
@@ -144,3 +148,12 @@ Six namespaces, cleanly separated by concern:
 - Hex color literals like `0xFF000000` overflow Java's signed `int` in Clojure (they
   read as a `Long`); use the signed equivalents (`-16777216` for opaque black, `-1`
   for opaque white) when working with packed ARGB ints via `.setRGB`.
+- **`resources/icons/{day,night}-N.png`** (N = SMHI symbol code 1–27) are official SMHI
+  weather-symbol SVGs, pre-rasterized to 56x56 PNGs (flattened onto white, 8-bit) —
+  see `core/draw-weather-icon`, which picks the variant via `smhi/night?` and draws it
+  in the header. Their colored fills (sun yellow, cloud grays) land above `->1-bit`'s
+  128 threshold and wash to white, leaving just the dark outline strokes — this is by
+  design, not an accident, so don't "fix" it by recoloring the source PNGs. Regenerate
+  from the original SVGs (source archive was `symbols.tgz`) with e.g. `magick day-N.svg
+  -background white -flatten -resize 56x56 -depth 8 -define png:color-type=2
+  day-N.png` if a different size or the night set needs redoing.

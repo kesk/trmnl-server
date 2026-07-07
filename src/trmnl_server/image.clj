@@ -1,5 +1,6 @@
 (ns trmnl-server.image
-  (:require [clojure.string :as str])
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str])
   (:import [java.awt BasicStroke Color RenderingHints TexturePaint]
            [java.awt.geom Rectangle2D$Double]
            [java.awt.image BufferedImage]
@@ -68,6 +69,17 @@
   (if fill?
     (.fillRect graphics x y w h)
     (.drawRect graphics x y w h)))
+
+(defn load-image
+  "Loads a raster image (e.g. PNG) from the classpath, for compositing onto
+   a canvas with draw-image."
+  [resource-path]
+  (ImageIO/read (io/resource resource-path)))
+
+(defn draw-image
+  "Draws a raster image scaled into the w x h box at x,y."
+  [{:keys [graphics]} image x y w h]
+  (.drawImage graphics image (int x) (int y) (int w) (int h) nil))
 
 (defn draw-line [{:keys [graphics]} x1 y1 x2 y2 & {:keys [color] :or {color Color/BLACK}}]
   (.setColor graphics color)
