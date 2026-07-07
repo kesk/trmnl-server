@@ -33,16 +33,17 @@
 (defn- clamp [v lo hi] (max lo (min hi v)))
 
 (defn season-points
-  "Generates 48 hourly points for a season map from `seasons`, starting at
-   local midnight on start-date. Temp/wind/cloud follow simple diurnal sine
-   curves around the season's normals rather than real observations — enough
-   to look like a typical day, not a claim of historical accuracy."
+  "Generates `hours` hourly points for a season map from `seasons`, starting
+   at local midnight on start-date. Temp/wind/cloud follow simple diurnal
+   sine curves around the season's normals rather than real observations —
+   enough to look like a typical day, not a claim of historical accuracy."
   [{:keys [start-date base-temp temp-swing base-wind wind-swing
-           base-cloud cloud-swing clear-symbol precip-symbol precip-mm precip-window]}]
+           base-cloud cloud-swing clear-symbol precip-symbol precip-mm precip-window]}
+   hours]
   (let [start (-> (LocalDate/parse start-date)
                   (.atStartOfDay (ZoneId/of "Europe/Stockholm"))
                   (.toInstant))]
-    (for [h (range 48)]
+    (for [h (range hours)]
       (let [hour-of-day (mod h 24)
             temp (+ base-temp (* temp-swing (Math/sin (* 2 Math/PI (/ (- hour-of-day 9) 24.0)))))
             wind (clamp (+ base-wind (* wind-swing (Math/sin (* 2 Math/PI (/ hour-of-day 9.0))))) 0.0 30.0)

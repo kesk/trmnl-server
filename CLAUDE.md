@@ -20,8 +20,13 @@ clojure -M:run
 # out/demo-{winter,spring,summer,autumn}(.png|-1bit.png)
 clojure -M -m trmnl-server.main --demo
 
+# Override how many hourly points are fetched/rendered (default 48, i.e. 2
+# days) — applies to both the live fetch and --demo above.
+clojure -M -m trmnl-server.main --hours 24
+
 # Serve the live forecast screen to a real TRMNL OG device over HTTP (see
-# trmnl-server.server below). Listens on $PORT or 8080.
+# trmnl-server.server below). Listens on $PORT or 8080, renders $FORECAST_HOURS
+# hourly points (default 48).
 clojure -M -m trmnl-server.main --serve
 # equivalently:
 clojure -M:serve
@@ -71,16 +76,20 @@ Six namespaces, cleanly separated by concern:
   `data` map instead of a `parameters` array). If SMHI requests start 404ing, check
   for another API migration before assuming the code is broken.
 
-- **`trmnl-server.demo`** — synthetic 48-point-per-season datasets (`seasons`,
-  `season-points`) in the same point shape `smhi/forecast` produces, so `--demo` can
-  drive `forecast-screen` without hitting the network. Values are simple diurnal sine
-  curves around Gothenburg's seasonal norms, not real observations — good enough to
-  look like a typical day, not a claim of historical accuracy.
+- **`trmnl-server.demo`** — synthetic per-season datasets (`seasons`, `season-points`,
+  which takes an explicit `hours` count) in the same point shape `smhi/forecast`
+  produces, so `--demo` can drive `forecast-screen` without hitting the network.
+  Values are simple diurnal sine curves around Gothenburg's seasonal norms, not real
+  observations — good enough to look like a typical day, not a claim of historical
+  accuracy.
 
 - **`trmnl-server.core`** — composes the above into the actual screen
   (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-0
-  fetches live), and is where domain-specific layout/chart logic lives (e.g.
-  `line-chart`/`combined-chart`, `nice-bounds` for rounding axis extents).
+  fetches `live-points` of `default-forecast-hours` [48] points), and is where
+  domain-specific layout/chart logic lives (e.g. `line-chart`/`combined-chart`,
+  `nice-bounds` for rounding axis extents). `default-forecast-hours` is the single
+  source of truth for "prognosis length" — callers override it via `--hours` (main)
+  or `$FORECAST_HOURS` (server) rather than hardcoding a point count themselves.
 
 - **`trmnl-server.server`** — implements the small HTTP API a real TRMNL OG device
   polls when pointed at a custom server: `GET /api/display` (the main poll, returns
@@ -91,18 +100,21 @@ Six namespaces, cleanly separated by concern:
   `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
   `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
   dependency given there are only 3 routes. `current-image` renders via
-  `core/forecast-screen` + `image/->1-bit`, encodes to PNG bytes in memory (no
-  disk writes — `out/` stays reserved for the batch-render modes), and caches them
-  for 10 minutes keyed by an MD5 content hash, so the `filename` embedded in
-  `/api/display`'s response only changes when the rendered image actually changes —
-  this lets the device skip re-downloading identical screens between polls.
+  `core/forecast-screen` (fed `core/live-points` of `$FORECAST_HOURS`, or
+  `core/default-forecast-hours` if unset) + `image/->1-bit`, encodes to PNG bytes in
+  memory (no disk writes — `out/` stays reserved for the batch-render modes), and
+  caches them for 10 minutes keyed by an MD5 content hash, so the `filename`
+  embedded in `/api/display`'s response only changes when the rendered image
+  actually changes — this lets the device skip re-downloading identical screens
+  between polls.
 
 - **`trmnl-server.main`** — the CLI entry point (`-main`). Kept separate from `core`
   purely so `core` and `server` can each require the other one-way without a cycle
   (`server` requires `core` for `forecast-screen`; `main` requires both). Renders
   the live screen by default, one screen per `demo/seasons` entry when invoked with
   `--demo` (writing both PNG variants of each to `out/`), or starts the HTTP server
-  via `server/start!` when invoked with `--serve`.
+  via `server/start!` when invoked with `--serve`. An optional `--hours N` flag
+  overrides `core/default-forecast-hours` for both the live and `--demo` paths.
 
 ### Design constraints worth knowing before extending
 

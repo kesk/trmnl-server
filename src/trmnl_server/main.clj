@@ -13,16 +13,25 @@
   (img/save-image (img/->1-bit canvas) (str "out/" name "-1bit.png"))
   (println (str "Wrote out/" name ".png and out/" name "-1bit.png")))
 
+(defn- hours-arg
+  "Reads an optional `--hours N` flag, falling back to core/default-forecast-hours."
+  [args]
+  (let [i (.indexOf ^java.util.List (vec args) "--hours")]
+    (if (>= i 0)
+      (Integer/parseInt (nth args (inc i)))
+      core/default-forecast-hours)))
+
 (defn -main [& args]
   (System/setProperty "java.awt.headless" "true")
-  (cond
-    (some #{"--demo"} args)
-    (doseq [{:keys [label file] :as season} demo/seasons]
-      (println (str "Rendering " label "..."))
-      (write-screen (core/forecast-screen (demo/season-points season)) file))
+  (let [hours (hours-arg args)]
+    (cond
+      (some #{"--demo"} args)
+      (doseq [{:keys [label file] :as season} demo/seasons]
+        (println (str "Rendering " label "..."))
+        (write-screen (core/forecast-screen (demo/season-points season hours)) file))
 
-    (some #{"--serve"} args)
-    (server/start!)
+      (some #{"--serve"} args)
+      (server/start!)
 
-    :else
-    (write-screen (core/forecast-screen) "preview")))
+      :else
+      (write-screen (core/forecast-screen (core/live-points hours)) "preview"))))

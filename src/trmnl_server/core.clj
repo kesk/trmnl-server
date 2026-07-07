@@ -204,8 +204,19 @@
       (let [boundary-x (/ (+ (idx->x (last a)) (idx->x (first b))) 2)]
         (img/draw-dashed-line canvas boundary-x top boundary-x bottom)))))
 
+(def default-forecast-hours
+  "How many hourly points forecast-screen renders when fetching live data or
+   generating a demo season, absent an explicit override (e.g. --hours or
+   FORECAST_HOURS)."
+  48)
+
+(defn live-points
+  "Fetches a live forecast, truncated to `hours` many hourly points."
+  [hours]
+  (take hours (smhi/forecast smhi/gothenburg)))
+
 (defn forecast-screen
-  ([] (forecast-screen (take 48 (smhi/forecast smhi/gothenburg))))
+  ([] (forecast-screen (live-points default-forecast-hours)))
   ([points]
    (let [canvas (img/blank-canvas)
          ;; The display hangs in a fixed spot (a hallway) — the viewer already

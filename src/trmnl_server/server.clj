@@ -27,6 +27,9 @@
   (let [digest (.digest (MessageDigest/getInstance "MD5") bytes)]
     (apply str (map #(format "%02x" %) digest))))
 
+(defn- forecast-hours []
+  (or (some-> (System/getenv "FORECAST_HOURS") Integer/parseInt) core/default-forecast-hours))
+
 (defn current-image
   "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
    forecast when the cache is empty or older than cache-ttl-ms."
@@ -34,7 +37,7 @@
   (let [entry @cache]
     (if (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms))
       entry
-      (let [bytes (png-bytes (img/->1-bit (core/forecast-screen)))
+      (let [bytes (png-bytes (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours)))))
             entry {:bytes bytes
                    :filename (str "forecast-" (md5-hex bytes) ".png")
                    :generated-at (System/currentTimeMillis)}]
