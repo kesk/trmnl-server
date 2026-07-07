@@ -32,17 +32,27 @@
 
 (defn current-image
   "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
-   forecast when the cache is empty or older than cache-ttl-ms."
+   forecast when the cache is empty or older than cache-ttl-ms. If regeneration
+   throws (e.g. SMHI returns something other than JSON), falls back to serving
+   the last successfully rendered image rather than a bare 500 — a stale
+   forecast is more useful to the device than none. Only propagates the
+   exception when there's no prior image to fall back on."
   []
   (let [entry @cache]
     (if (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms))
       entry
-      (let [bytes (png-bytes (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours)))))
-            entry {:bytes bytes
-                   :filename (str "forecast-" (md5-hex bytes) ".png")
-                   :generated-at (System/currentTimeMillis)}]
-        (reset! cache entry)
-        entry))))
+      (try
+        (let [bytes (png-bytes (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours)))))
+              new-entry {:bytes bytes
+                         :filename (str "forecast-" (md5-hex bytes) ".png")
+                         :generated-at (System/currentTimeMillis)}]
+          (reset! cache new-entry)
+          new-entry)
+        (catch Exception e
+          (if entry
+            (do (println "Forecast regeneration failed, serving stale cache:" (.getMessage e))
+                entry)
+            (throw e)))))))
 
 (defn- image-url [base-url filename]
   (str base-url "/images/" filename))
