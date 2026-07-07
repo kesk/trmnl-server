@@ -128,20 +128,22 @@
                   :above-offset (mapv #(if % -30 -12) max-collides)
                   :below-offset (mapv #(if % 44 26) min-collides))))
 
+(def ^:private axis-label-count
+  "How many hour-of-day labels hour-axis-labels always draws, evenly spaced
+   from the first to the last point — fixed rather than hour-interval-based,
+   so changing --hours/FORECAST_HOURS changes label spacing, not label count."
+  12)
+
 (defn- hour-axis-labels
-  "Draws hour-of-day labels every 6 hours along a shared x-axis, at a fixed y.
-   Shared by combined-chart and precip-bar-chart since both plot the same
-   points across the same x span — drawn once here rather than duplicated
-   under each chart."
+  "Draws axis-label-count hour-of-day labels evenly spaced along a shared
+   x-axis, at a fixed y. Shared by combined-chart and precip-bar-chart since
+   both plot the same points across the same x span — drawn once here rather
+   than duplicated under each chart."
   [canvas points x w y]
   (let [n (count points)
         idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
-        regular (range 0 n 6)
-        last-i (dec n)
-        ;; Only tack on the final point if it's far enough past the last
-        ;; regular tick to read as a separate label instead of overlapping it
-        ;; — with n not a multiple of 6, the two can land just 1-2h apart.
-        indices (if (>= (- last-i (last regular)) 3) (concat regular [last-i]) regular)]
+        indices (distinct (for [k (range axis-label-count)]
+                             (Math/round (* k (/ (dec n) (double (dec axis-label-count)))))))]
     (doseq [i indices]
       (let [px (idx->x i)]
         (img/draw-text canvas (smhi/local-time-str (:time (nth points i))) (- px 18) y
