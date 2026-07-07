@@ -27,10 +27,29 @@ downloaded PNG before decoding it to the e-ink panel. This is firmware-internal
 (`filesystem.cpp` / `bl.cpp` in `usetrmnl/firmware`) and not something our
 server's response can cause or fix.
 
+**Update 2026-07-07 23:19**: checked `usetrmnl/trmnl-firmware` issues #270 and
+#350 (the two that surfaced for filesystem/image-save failures) — neither
+matches this error, so it doesn't look reported upstream yet.
+
+**Update 2026-07-07 23:34**: tried a soft reset (15-20s button hold) to rule
+out transient runtime state. Didn't help — the device's internal log-id
+counter restarted at `id: 1` after the reset (confirming it *was* a fresh
+post-reset boot), and that very first post-reset log entry was already the
+same `File open ERROR` / `File writing ERROR` pair, at `retry: 0`,
+`refresh_rate: 0` (i.e. before the device had even re-fetched its config).
+So this isn't cleared by resetting runtime state — next step, if pursued,
+would be a full factory reset (clears stored flash config too, not just
+runtime state) or accepting it as a firmware bug on 1.8.9.
+
+Added a `GET /status` endpoint (`src/trmnl_server/server.clj`) that shows the
+last 200 `/api/log` rows plus a rough battery estimate, so checking on this
+(and battery level) no longer requires pulling `journalctl` by hand.
+
 **To investigate later**:
-- Check `usetrmnl/firmware` GitHub issues for "File open ERROR" / `filesystem.cpp:228`.
-- Try a factory reset of the device to see if it clears (rules out
-  flash wear/corruption vs. a firmware bug on 1.8.9).
+- Check `usetrmnl/firmware` GitHub issues for "File open ERROR" / `filesystem.cpp:228`
+  again after new releases — nothing matching as of 2026-07-07.
+- Try a full factory reset (not just soft reset — see update above) to rule
+  out flash wear/corruption vs. a firmware bug on 1.8.9.
 - Confirm the device still displays the correct forecast image despite the
   error — if so, this is cosmetic/log-noise; if the screen is stale or wrong,
   it's more serious.
