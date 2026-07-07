@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An exploratory Clojure project that generates a weather-forecast screen image for a TRMNL
 e-ink display (the OG model: 800x480, 1-bit black/white). It fetches live forecast data
-from SMHI (Sweden's meteorological institute) for Gothenburg and renders it with Java2D.
+from SMHI (Sweden's meteorological institute), defaulting to Gothenburg, and renders it
+with Java2D.
 
 ## Commands
 
@@ -24,9 +25,14 @@ clojure -M -m trmnl-server.main --demo
 # days) — applies to both the live fetch and --demo above.
 clojure -M -m trmnl-server.main --hours 24
 
+# Override where the live forecast is fetched for (default Gothenburg,
+# 57.7089/11.9746). Has no effect on --demo, which always renders synthetic
+# Gothenburg climate normals.
+clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
+
 # Serve the live forecast screen to a real TRMNL OG device over HTTP (see
 # trmnl-server.server below). Listens on $PORT or 8080, renders $FORECAST_HOURS
-# hourly points (default 48).
+# hourly points (default 48) for $FORECAST_LAT/$FORECAST_LON (default Gothenburg).
 clojure -M -m trmnl-server.main --serve
 # equivalently:
 clojure -M:serve
@@ -85,11 +91,14 @@ Six namespaces, cleanly separated by concern:
 
 - **`trmnl-server.core`** — composes the above into the actual screen
   (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-0
-  fetches `live-points` of `default-forecast-hours` [48] points), and is where
-  domain-specific layout/chart logic lives (e.g. `line-chart`/`combined-chart`,
-  `nice-bounds` for rounding axis extents). `default-forecast-hours` is the single
-  source of truth for "prognosis length" — callers override it via `--hours` (main)
-  or `$FORECAST_HOURS` (server) rather than hardcoding a point count themselves.
+  fetches `live-points` of `default-forecast-hours` [48] points for
+  `default-forecast-location` [Gothenburg]), and is where domain-specific
+  layout/chart logic lives (e.g. `line-chart`/`combined-chart`, `nice-bounds` for
+  rounding axis extents). `default-forecast-hours`/`default-forecast-location` are
+  the single source of truth for "prognosis length" and "where" — callers override
+  them via `--hours`/`--lat`/`--lon` (main) or `$FORECAST_HOURS`/`$FORECAST_LAT`/
+  `$FORECAST_LON` (server) rather than hardcoding a point count or coordinates
+  themselves.
 
 - **`trmnl-server.server`** — implements the small HTTP API a real TRMNL OG device
   polls when pointed at a custom server: `GET /api/display` (the main poll, returns
@@ -100,8 +109,9 @@ Six namespaces, cleanly separated by concern:
   `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
   `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
   dependency given there are only 3 routes. `current-image` renders via
-  `core/forecast-screen` (fed `core/live-points` of `$FORECAST_HOURS`, or
-  `core/default-forecast-hours` if unset) + `image/->1-bit`, encodes to PNG bytes in
+  `core/forecast-screen` (fed `core/live-points` of `$FORECAST_HOURS`/
+  `$FORECAST_LAT`/`$FORECAST_LON`, or `core/default-forecast-hours`/
+  `core/default-forecast-location` if unset) + `image/->1-bit`, encodes to PNG bytes in
   memory (no disk writes — `out/` stays reserved for the batch-render modes), and
   caches them for 10 minutes keyed by an MD5 content hash, so the `filename`
   embedded in `/api/display`'s response only changes when the rendered image
@@ -115,6 +125,9 @@ Six namespaces, cleanly separated by concern:
   `--demo` (writing both PNG variants of each to `out/`), or starts the HTTP server
   via `server/start!` when invoked with `--serve`. An optional `--hours N` flag
   overrides `core/default-forecast-hours` for both the live and `--demo` paths.
+  An optional `--lat LAT --lon LON` pair overrides `core/default-forecast-location`
+  for the live path only (`--demo` always renders synthetic Gothenburg data
+  regardless).
 
 ### Design constraints worth knowing before extending
 

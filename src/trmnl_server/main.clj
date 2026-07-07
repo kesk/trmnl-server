@@ -21,9 +21,22 @@
       (Integer/parseInt (nth args (inc i)))
       core/default-forecast-hours)))
 
+(defn- location-arg
+  "Reads optional `--lat LAT --lon LON` flags, falling back to
+   core/default-forecast-location."
+  [args]
+  (let [args (vec args)
+        lat-i (.indexOf ^java.util.List args "--lat")
+        lon-i (.indexOf ^java.util.List args "--lon")]
+    (if (and (>= lat-i 0) (>= lon-i 0))
+      {:lat (Double/parseDouble (nth args (inc lat-i)))
+       :lon (Double/parseDouble (nth args (inc lon-i)))}
+      core/default-forecast-location)))
+
 (defn -main [& args]
   (System/setProperty "java.awt.headless" "true")
-  (let [hours (hours-arg args)]
+  (let [hours (hours-arg args)
+        location (location-arg args)]
     (cond
       (some #{"--demo"} args)
       (doseq [{:keys [label file] :as season} demo/seasons]
@@ -34,4 +47,4 @@
       (server/start!)
 
       :else
-      (write-screen (core/forecast-screen (core/live-points hours)) "preview"))))
+      (write-screen (core/forecast-screen (core/live-points hours location)) "preview"))))

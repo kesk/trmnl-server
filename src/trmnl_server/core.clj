@@ -210,13 +210,19 @@
    FORECAST_HOURS)."
   48)
 
+(def default-forecast-location
+  "Where forecast-screen fetches live data for, absent an explicit override
+   (e.g. --lat/--lon or FORECAST_LAT/FORECAST_LON)."
+  smhi/gothenburg)
+
 (defn live-points
-  "Fetches a live forecast, truncated to `hours` many hourly points."
-  [hours]
-  (take hours (smhi/forecast smhi/gothenburg)))
+  "Fetches a live forecast for `location` ({:lat :lon}), truncated to `hours`
+   many hourly points."
+  [hours location]
+  (take hours (smhi/forecast location)))
 
 (defn forecast-screen
-  ([] (forecast-screen (live-points default-forecast-hours)))
+  ([] (forecast-screen (live-points default-forecast-hours default-forecast-location)))
   ([points]
    (let [canvas (img/blank-canvas)
          ;; The display hangs in a fixed spot (a hallway) — the viewer already

@@ -3,8 +3,8 @@
 An exploratory Clojure project that generates a weather-forecast screen for a
 [TRMNL](https://usetrmnl.com/) e-ink display (the OG model: 800x480, 1-bit black/white).
 It fetches live forecast data from [SMHI](https://www.smhi.se/) (Sweden's meteorological
-institute) for Gothenburg, renders it with Java2D, and can serve it directly to a real
-TRMNL device over HTTP.
+institute), defaulting to Gothenburg, renders it with Java2D, and can serve it directly
+to a real TRMNL device over HTTP.
 
 ## Requirements
 
@@ -24,8 +24,12 @@ clojure -M:run
 # out/demo-{winter,spring,summer,autumn}(.png|-1bit.png)
 clojure -M -m trmnl-server.main --demo
 
+# Override where the live forecast is fetched for (default Gothenburg)
+clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
+
 # Serve the live forecast screen over HTTP to a real TRMNL OG device pointed
-# at a custom server. Listens on $PORT or 8080.
+# at a custom server. Listens on $PORT or 8080, defaulting to Gothenburg unless
+# $FORECAST_LAT/$FORECAST_LON are set.
 clojure -M -m trmnl-server.main --serve
 # equivalently:
 clojure -M:serve

@@ -30,6 +30,13 @@
 (defn- forecast-hours []
   (or (some-> (System/getenv "FORECAST_HOURS") Integer/parseInt) core/default-forecast-hours))
 
+(defn- forecast-location []
+  (let [lat (System/getenv "FORECAST_LAT")
+        lon (System/getenv "FORECAST_LON")]
+    (if (and lat lon)
+      {:lat (Double/parseDouble lat) :lon (Double/parseDouble lon)}
+      core/default-forecast-location)))
+
 (defn current-image
   "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
    forecast when the cache is empty or older than cache-ttl-ms. If regeneration
@@ -42,7 +49,7 @@
     (if (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms))
       entry
       (try
-        (let [bytes (png-bytes (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours)))))
+        (let [bytes (png-bytes (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) (forecast-location)))))
               new-entry {:bytes bytes
                          :filename (str "forecast-" (md5-hex bytes) ".png")
                          :generated-at (System/currentTimeMillis)}]
