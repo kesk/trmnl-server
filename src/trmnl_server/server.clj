@@ -15,8 +15,10 @@
 
 (def ^:private refresh-rate-seconds 900)
 (def ^:private cache-ttl-ms (* 10 60 1000))
+(def ^:private max-stored-logs 200)
 
 (defonce ^:private cache (atom nil))
+(defonce ^:private device-logs (atom []))
 
 (defn- png-bytes [image]
   (let [out (ByteArrayOutputStream.)]
@@ -36,6 +38,26 @@
     (if (and lat lon)
       {:lat (Double/parseDouble lat) :lon (Double/parseDouble lon)}
       core/default-forecast-location)))
+
+(defn- battery-percent
+  "Rough charge estimate from a raw battery_voltage reading (LiPo, ~3V empty to
+   ~4.2V full). Not the device's exact curve — just enough to flag a low battery."
+  [voltage]
+  (when voltage
+    (-> (/ (- voltage 3) 0.012) (max 1.0) (min 100.0) Math/round)))
+
+(defn- battery-label [pct]
+  (cond
+    (nil? pct) "unknown"
+    (< pct 15) "LOW"
+    (< pct 30) "watch"
+    :else "ok"))
+
+(defn- escape-html [s]
+  (-> (str s)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")))
 
 (defn current-image
   "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
@@ -85,7 +107,11 @@
                     :message "Welcome to trmnl-server"})))
 
 (defn- log-response [request]
-  (println "Device log:" (slurp (:body request)))
+  (let [body (slurp (:body request))
+        entries (:logs (try (json/read-str body :key-fn keyword) (catch Exception _ nil)))]
+    (println "Device log:" body)
+    (when (seq entries)
+      (swap! device-logs #(->> (concat % entries) (take-last max-stored-logs) vec))))
   {:status 204})
 
 (defn- image-response []
@@ -93,12 +119,44 @@
    :headers {"Content-Type" "image/png"}
    :body (:bytes (current-image))})
 
+(defn- html-response [body]
+  {:status 200
+   :headers {"Content-Type" "text/html; charset=utf-8"}
+   :body body})
+
+(defn- status-response []
+  (let [logs (reverse @device-logs)
+        latest-voltage (some :battery_voltage logs)
+        pct (battery-percent latest-voltage)]
+    (html-response
+     (str "<html><head><title>trmnl-server status</title></head><body>"
+          "<h1>Battery</h1>"
+          "<p>" (if latest-voltage
+                  (String/format java.util.Locale/US "%.3fV (~%d%%, %s)"
+                                  (to-array [latest-voltage pct (battery-label pct)]))
+                  "no data yet")
+          "</p>"
+          "<h1>Recent device log rows (" (count logs) ")</h1>"
+          "<table border=\"1\" cellpadding=\"4\">"
+          "<tr><th>time</th><th>message</th><th>source</th><th>battery</th><th>wifi</th><th>retry</th></tr>"
+          (apply str
+                 (for [{:keys [created_at message source_path source_line
+                               battery_voltage wifi_signal wifi_status retry]} logs]
+                   (str "<tr><td>" (some-> created_at (java.time.Instant/ofEpochSecond)) "</td>"
+                        "<td>" (escape-html message) "</td>"
+                        "<td>" (escape-html source_path) ":" source_line "</td>"
+                        "<td>" battery_voltage "</td>"
+                        "<td>" (escape-html wifi_status) " (" wifi_signal ")</td>"
+                        "<td>" retry "</td></tr>")))
+          "</table></body></html>"))))
+
 (defn- handler [base-url]
   (fn [{:keys [request-method uri] :as request}]
     (cond
       (and (= request-method :get) (= uri "/api/display")) (display-response base-url)
       (and (= request-method :get) (= uri "/api/setup")) (setup-response base-url)
       (and (= request-method :post) (= uri "/api/log")) (log-response request)
+      (and (= request-method :get) (= uri "/status")) (status-response)
       (and (= request-method :get) (str/starts-with? uri "/images/")) (image-response)
       :else {:status 404})))
 
