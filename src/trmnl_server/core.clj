@@ -2,7 +2,8 @@
   (:require [clojure.java.io :as io]
             [trmnl-server.image :as img]
             [trmnl-server.smhi :as smhi])
-  (:import [java.awt Font]))
+  (:import [java.awt Color Font]
+           [java.awt.image BufferedImage]))
 
 (def ^:private regular-font
   (Font/createFont Font/TRUETYPE_FONT (io/input-stream (io/resource "fonts/PixelOperator.ttf"))))
@@ -94,6 +95,32 @@
   [canvas point x y size]
   (let [image (img/load-image (weather-icon-path (:symbol point) (smhi/night? (:time point))))]
     (img/draw-image canvas image x y size size)))
+
+(defn draw-stale-badge
+  "Draws a filled warning-triangle-with-exclamation-mark badge in an x,y size
+   box. Stamped onto a served image when it's a stale last-known-good render
+   (server.clj falling back because a live SMHI fetch just failed) — the
+   frozen 'Uppdaterad' timestamp alone is too easy to miss at a glance on the
+   device."
+  [canvas x y size]
+  (img/draw-polygon canvas
+    [[(+ x (/ size 2.0)) y] [x (+ y size)] [(+ x size) (+ y size)]]
+    :fill? true)
+  (img/draw-rect canvas (- (+ x (/ size 2.0)) 1.5) (+ y (* size 0.34)) 3 (* size 0.26)
+    :fill? true :color Color/WHITE)
+  (img/draw-dot canvas (+ x (/ size 2.0)) (+ y (* size 0.82)) :radius 1.6 :color Color/WHITE))
+
+(defn stamp-stale-badge
+  "Returns a copy of a rendered BufferedImage (e.g. a final ->1-bit screen)
+   with draw-stale-badge stamped onto its top-right corner — the original is
+   left untouched. Used both by server.clj's stale-cache fallback and by
+   --demo (to produce a sample stale image without needing a real SMHI
+   outage)."
+  [^BufferedImage image]
+  (let [copy (BufferedImage. (.getWidth image) (.getHeight image) (.getType image))]
+    (doto (.createGraphics copy) (.drawImage image 0 0 nil) (.dispose))
+    (draw-stale-badge (img/canvas-from copy) 766 4 20)
+    copy))
 
 (defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
   (apply img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]]

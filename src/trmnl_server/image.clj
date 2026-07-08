@@ -145,6 +145,28 @@
   (.setColor graphics color)
   (.fillOval graphics (int (- x radius)) (int (- y radius)) (int (* 2 radius)) (int (* 2 radius))))
 
+(defn draw-polygon
+  "Fills (or outlines) a closed polygon given a seq of [x y] vertices."
+  [{:keys [graphics]} points & {:keys [fill? color] :or {color Color/BLACK}}]
+  (.setColor graphics color)
+  (let [xs (int-array (map (comp int first) points))
+        ys (int-array (map (comp int second) points))
+        n  (count points)]
+    (if fill?
+      (.fillPolygon graphics xs ys n)
+      (.drawPolygon graphics xs ys n))))
+
+(defn canvas-from
+  "Wraps an already-rendered BufferedImage as a canvas map, so more can be
+   drawn onto it (e.g. overlaying a marker on a cached image) instead of
+   starting fresh via blank-canvas."
+  [image]
+  (let [g (.createGraphics image)]
+    (.setRenderingHint g RenderingHints/KEY_ANTIALIASING RenderingHints/VALUE_ANTIALIAS_OFF)
+    (.setRenderingHint g RenderingHints/KEY_TEXT_ANTIALIASING RenderingHints/VALUE_TEXT_ANTIALIAS_OFF)
+    (.setColor g Color/BLACK)
+    {:image image :graphics g}))
+
 (defn ->1-bit
   "Hard-threshold an RGB canvas down to 1-bit black/white. Good for text/UI screens."
   [{:keys [image]} & {:keys [threshold] :or {threshold 128}}]

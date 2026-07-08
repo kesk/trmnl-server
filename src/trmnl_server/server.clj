@@ -63,25 +63,37 @@
   "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
    forecast when the cache is empty or older than cache-ttl-ms. If regeneration
    throws (e.g. SMHI returns something other than JSON), falls back to serving
-   the last successfully rendered image rather than a bare 500 — a stale
-   forecast is more useful to the device than none. Only propagates the
-   exception when there's no prior image to fall back on."
+   the last successfully rendered image — with a warning badge stamped on a
+   copy of it — rather than a bare 500. A stale forecast is more useful to the
+   device than none; the badge is what lets you notice at a glance that it's
+   stale and go check the logs. Only propagates the exception when there's no
+   prior image to fall back on."
   []
   (let [entry @cache]
     (if (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms))
       entry
       (try
-        (let [bytes     (png-bytes (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) (forecast-location)))))
-              new-entry {:bytes        bytes
+        (let [image     (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) (forecast-location))))
+              bytes     (png-bytes image)
+              new-entry {:image        image
+                         :bytes        bytes
                          :filename     (str "forecast-" (md5-hex bytes) ".png")
                          :generated-at (System/currentTimeMillis)}]
           (reset! cache new-entry)
           new-entry)
         (catch Exception e
           (if entry
-            (do (println "Forecast regeneration failed, serving stale cache:" (.getMessage e))
-              entry)
+            (let [stale-bytes (or (:stale-bytes entry) (png-bytes (core/stamp-stale-badge (:image entry))))
+                  stale-entry (assoc entry
+                                :stale-bytes stale-bytes
+                                :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png"))]
+              (println "Forecast regeneration failed, serving stale cache:" (.getMessage e))
+              (reset! cache stale-entry)
+              stale-entry)
             (throw e)))))))
+
+(defn- serve-bytes [entry] (or (:stale-bytes entry) (:bytes entry)))
+(defn- serve-filename [entry] (or (:stale-filename entry) (:filename entry)))
 
 (defn- image-url [base-url filename]
   (str base-url "/images/" filename))
@@ -92,9 +104,10 @@
    :body    (json/write-str body)})
 
 (defn- display-response [base-url]
-  (let [entry (current-image)]
-    (json-response {:filename          (:filename entry)
-                    :image_url         (image-url base-url (:filename entry))
+  (let [entry    (current-image)
+        filename (serve-filename entry)]
+    (json-response {:filename          filename
+                    :image_url         (image-url base-url filename)
                     :image_url_timeout 0
                     :refresh_rate      refresh-rate-seconds
                     :reset_firmware    false
@@ -103,7 +116,7 @@
 
 (defn- setup-response [base-url]
   (let [entry (current-image)]
-    (json-response {:image_url (image-url base-url (:filename entry))
+    (json-response {:image_url (image-url base-url (serve-filename entry))
                     :message   "Welcome to trmnl-server"})))
 
 (defn- log-response [request]
@@ -117,7 +130,7 @@
 (defn- image-response []
   {:status  200
    :headers {"Content-Type" "image/png"}
-   :body    (:bytes (current-image))})
+   :body    (serve-bytes (current-image))})
 
 (defn- html-response [body]
   {:status  200

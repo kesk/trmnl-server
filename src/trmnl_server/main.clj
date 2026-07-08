@@ -13,6 +13,16 @@
   (img/save-image (img/->1-bit canvas) (str "out/" name "-1bit.png"))
   (println (str "Wrote out/" name ".png and out/" name "-1bit.png")))
 
+(defn- write-stale-demo
+  "Writes out/demo-stale.png: one season's screen with the stale-warning badge
+   (server.clj's SMHI-fetch-failure fallback) stamped on it, so the badge can
+   be eyeballed without needing a real SMHI outage."
+  [hours]
+  (let [bw     (img/->1-bit (core/forecast-screen (demo/season-points (first demo/seasons) hours)))
+        marked (core/stamp-stale-badge bw)]
+    (img/save-image marked "out/demo-stale.png")
+    (println "Wrote out/demo-stale.png")))
+
 (defn- hours-arg
   "Reads an optional `--hours N` flag, falling back to core/default-forecast-hours."
   [args]
@@ -39,9 +49,11 @@
         location (location-arg args)]
     (cond
       (some #{"--demo"} args)
-      (doseq [{:keys [label file] :as season} demo/seasons]
-        (println (str "Rendering " label "..."))
-        (write-screen (core/forecast-screen (demo/season-points season hours)) file))
+      (do
+        (doseq [{:keys [label file] :as season} demo/seasons]
+          (println (str "Rendering " label "..."))
+          (write-screen (core/forecast-screen (demo/season-points season hours)) file))
+        (write-stale-demo hours))
 
       (some #{"--serve"} args)
       (server/start!)
