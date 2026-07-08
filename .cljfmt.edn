@@ -1,0 +1,3 @@
+{:indents             {#re ".*" [[:inner 0]]}
+ :align-form-columns? true
+ :align-map-columns?  true}
