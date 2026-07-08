@@ -127,7 +127,8 @@
 (defn- status-response []
   (let [logs (reverse @device-logs)
         latest-voltage (some :battery_voltage logs)
-        pct (battery-percent latest-voltage)]
+        pct (battery-percent latest-voltage)
+        latest-firmware (some :firmware_version logs)]
     (html-response
      (str "<html><head><title>trmnl-server status</title></head><body>"
           "<h1>Battery</h1>"
@@ -136,18 +137,21 @@
                                   (to-array [latest-voltage pct (battery-label pct)]))
                   "no data yet")
           "</p>"
+          "<h1>Firmware</h1>"
+          "<p>" (if latest-firmware (escape-html latest-firmware) "no data yet") "</p>"
           "<h1>Recent device log rows (" (count logs) ")</h1>"
           "<table border=\"1\" cellpadding=\"4\">"
-          "<tr><th>time</th><th>message</th><th>source</th><th>battery</th><th>wifi</th><th>retry</th></tr>"
+          "<tr><th>time</th><th>message</th><th>source</th><th>battery</th><th>wifi</th><th>retry</th><th>firmware</th></tr>"
           (apply str
                  (for [{:keys [created_at message source_path source_line
-                               battery_voltage wifi_signal wifi_status retry]} logs]
+                               battery_voltage wifi_signal wifi_status retry firmware_version]} logs]
                    (str "<tr><td>" (some-> created_at (java.time.Instant/ofEpochSecond)) "</td>"
                         "<td>" (escape-html message) "</td>"
                         "<td>" (escape-html source_path) ":" source_line "</td>"
                         "<td>" battery_voltage "</td>"
                         "<td>" (escape-html wifi_status) " (" wifi_signal ")</td>"
-                        "<td>" retry "</td></tr>")))
+                        "<td>" retry "</td>"
+                        "<td>" (escape-html firmware_version) "</td></tr>")))
           "</table></body></html>"))))
 
 (defn- handler [base-url]
