@@ -190,7 +190,7 @@
                               :bar-h (mm->bar-h mm)
                               :mm    mm}))
                          points))]
-    (img/draw-text canvas (str "Rain (0-" (int hi) "mm)") x (- y 6) :font (pixel-font :regular 16))
+    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x (- y 6) :font (pixel-font :regular 16))
     (doseq [{:keys [x bar-h]} bars]
       (when (pos? bar-h)
         (img/draw-rect canvas x (- bottom bar-h) bar-w bar-h :fill? true)))
@@ -250,15 +250,15 @@
      (img/draw-text canvas (str (int (:temp now)) "°") 110 44 :font (pixel-font :bold 32))
      (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 110 68
        :font (pixel-font :regular 16))
-     (let [label (str "Updated " (smhi/local-now-str))
+     (let [label (str "Uppdaterad " (smhi/local-now-str))
            font  (pixel-font :regular 16)
            w     (img/text-width canvas label :font font)]
        (img/draw-text canvas label (- 760 w) 68 :font font))
      (img/draw-line canvas 40 84 760 84)
 
      (draw-legend-key canvas 40 108 "Temp (°C)")
-     (draw-legend-key canvas 280 108 "Wind (m/s)" :dash [6.0 5.0])
-     (draw-legend-key canvas 520 108 "Clouds (%)" :width 14.0 :paint (img/checkerboard-paint))
+     (draw-legend-key canvas 280 108 "Vind (m/s)" :dash [6.0 5.0])
+     (draw-legend-key canvas 520 108 "Moln (%)" :width 14.0 :paint (img/checkerboard-paint))
 
      (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
      (combined-chart canvas points 40 172 720 155)

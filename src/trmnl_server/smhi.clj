@@ -4,7 +4,10 @@
   (:import [java.net URI]
            [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]
            [java.time Instant ZoneId]
-           [java.time.format DateTimeFormatter]))
+           [java.time.format DateTimeFormatter]
+           [java.util Locale]))
+
+(def ^:private swedish (Locale/forLanguageTag "sv"))
 
 (def gothenburg {:lat 57.7089 :lon 11.9746})
 
@@ -38,12 +41,12 @@
     (map ->forecast-point)))
 
 (def symbol->description
-  {1  "Clear sky"           2  "Nearly clear"       3  "Variable cloudiness"   4  "Halfclear sky"
-   5  "Cloudy sky"          6  "Overcast"           7  "Fog"                   8  "Light rain showers"     9  "Moderate rain showers"
-   10 "Heavy rain showers"  11 "Thunderstorm"       12 "Light sleet showers"   13 "Moderate sleet showers"
-   14 "Heavy sleet showers" 15 "Light snow showers" 16 "Moderate snow showers" 17 "Heavy snow showers"
-   18 "Light rain"          19 "Moderate rain"      20 "Heavy rain"            21 "Thunder"                22 "Light sleet"
-   23 "Moderate sleet"      24 "Heavy sleet"        25 "Light snowfall"        26 "Moderate snowfall"      27 "Heavy snowfall"})
+  {1  "Klart väder"                 2  "Mestadels klart"          3  "Växlande molnighet"       4  "Halvklart"
+   5  "Molnigt"                     6  "Mulet"                    7  "Dimma"                    8  "Lätta regnskurar"            9  "Måttliga regnskurar"
+   10 "Kraftiga regnskurar"         11 "Åskväder"                 12 "Lätta snöblandade skurar" 13 "Måttliga snöblandade skurar"
+   14 "Kraftiga snöblandade skurar" 15 "Lätta snöbyar"            16 "Måttliga snöbyar"         17 "Kraftiga snöbyar"
+   18 "Lätt regn"                   19 "Måttligt regn"            20 "Kraftigt regn"            21 "Åska"                        22 "Lätt snöblandat regn"
+   23 "Måttligt snöblandat regn"    24 "Kraftigt snöblandat regn" 25 "Lätt snöfall"             26 "Måttligt snöfall"            27 "Kraftigt snöfall"})
 
 (defn night?
   "Fixed-hour heuristic for whether an SMHI timestamp falls at night, used
@@ -69,7 +72,7 @@
 (defn local-day-label [iso-time]
   (-> (Instant/parse iso-time)
     (.atZone (ZoneId/of "Europe/Stockholm"))
-    (.format (DateTimeFormatter/ofPattern "EEE"))))
+    (.format (DateTimeFormatter/ofPattern "EEE" swedish))))
 
 (defn local-now-str
   "Current time formatted like local-time-str's siblings, but for 'now' rather
@@ -77,7 +80,7 @@
   []
   (-> (Instant/now)
     (.atZone (ZoneId/of "Europe/Stockholm"))
-    (.format (DateTimeFormatter/ofPattern "d MMM HH:mm"))))
+    (.format (DateTimeFormatter/ofPattern "d MMM HH:mm" swedish))))
 
 (defn upcoming
   "Picks a spread of upcoming forecast points, every `step`'th entry, `count` of them."
