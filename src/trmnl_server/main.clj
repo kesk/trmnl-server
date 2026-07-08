@@ -25,7 +25,7 @@
   "Reads optional `--lat LAT --lon LON` flags, falling back to
    core/default-forecast-location."
   [args]
-  (let [args (vec args)
+  (let [args  (vec args)
         lat-i (.indexOf ^java.util.List args "--lat")
         lon-i (.indexOf ^java.util.List args "--lon")]
     (if (and (>= lat-i 0) (>= lon-i 0))
@@ -35,7 +35,7 @@
 
 (defn -main [& args]
   (System/setProperty "java.awt.headless" "true")
-  (let [hours (hours-arg args)
+  (let [hours    (hours-arg args)
         location (location-arg args)]
     (cond
       (some #{"--demo"} args)

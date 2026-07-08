@@ -17,7 +17,7 @@
   ([] (blank-canvas og-width og-height))
   ([w h]
    (let [image (BufferedImage. w h BufferedImage/TYPE_INT_RGB)
-         g (.createGraphics image)]
+         g     (.createGraphics image)]
      (.setRenderingHint g RenderingHints/KEY_ANTIALIASING RenderingHints/VALUE_ANTIALIAS_OFF)
      (.setRenderingHint g RenderingHints/KEY_TEXT_ANTIALIASING RenderingHints/VALUE_TEXT_ANTIALIAS_OFF)
      (.setColor g Color/WHITE)
@@ -31,8 +31,8 @@
    routes text through the ordinary shape-fill path (governed by KEY_ANTIALIASING,
    which IS honored) to guarantee hard, un-antialiased glyph edges."
   [graphics ^String text x y]
-  (let [frc (.getFontRenderContext graphics)
-        gv (.createGlyphVector (.getFont graphics) frc text)
+  (let [frc     (.getFontRenderContext graphics)
+        gv      (.createGlyphVector (.getFont graphics) frc text)
         outline (.getOutline gv (float x) (float y))]
     (.fill graphics outline)))
 
@@ -52,11 +52,11 @@
   [{:keys [graphics]} text x y max-width line-height & {:keys [font color] :or {color Color/BLACK}}]
   (when font (.setFont graphics font))
   (.setColor graphics color)
-  (let [fm (.getFontMetrics graphics)
+  (let [fm    (.getFontMetrics graphics)
         lines (loop [words (str/split text #"\s+") line "" lines []]
                 (if (empty? words)
                   (cond-> lines (seq line) (conj line))
-                  (let [word (first words)
+                  (let [word      (first words)
                         candidate (if (seq line) (str line " " word) word)]
                     (if (and (seq line) (> (.stringWidth fm candidate) max-width))
                       (recur words "" (conj lines line))
@@ -92,7 +92,7 @@
   [{:keys [graphics]} x1 y1 x2 y2 & {:keys [color] :or {color Color/BLACK}}]
   (.setColor graphics color)
   (.setStroke graphics (BasicStroke. 1.0 BasicStroke/CAP_BUTT BasicStroke/JOIN_MITER
-                                     1.0 (float-array [2.0 3.0]) 0.0))
+                         1.0 (float-array [2.0 3.0]) 0.0))
   (.drawLine graphics (int x1) (int y1) (int x2) (int y2))
   (.setStroke graphics (BasicStroke. 1.0)))
 
@@ -105,9 +105,9 @@
   [{:keys [graphics]} points & {:keys [width paint dash] :or {width 2.0 paint Color/BLACK}}]
   (.setPaint graphics paint)
   (.setStroke graphics (if dash
-                          (BasicStroke. width BasicStroke/CAP_BUTT BasicStroke/JOIN_ROUND
-                                        1.0 (float-array dash) 0.0)
-                          (BasicStroke. width BasicStroke/CAP_ROUND BasicStroke/JOIN_ROUND)))
+                         (BasicStroke. width BasicStroke/CAP_BUTT BasicStroke/JOIN_ROUND
+                           1.0 (float-array dash) 0.0)
+                         (BasicStroke. width BasicStroke/CAP_ROUND BasicStroke/JOIN_ROUND)))
   (doseq [[[x1 y1] [x2 y2]] (partition 2 1 points)]
     (.drawLine graphics (int x1) (int y1) (int x2) (int y2)))
   (.setStroke graphics (BasicStroke. 1.0)))
@@ -148,11 +148,11 @@
 (defn ->1-bit
   "Hard-threshold an RGB canvas down to 1-bit black/white. Good for text/UI screens."
   [{:keys [image]} & {:keys [threshold] :or {threshold 128}}]
-  (let [w (.getWidth image) h (.getHeight image)
+  (let [w  (.getWidth image)                                   h (.getHeight image)
         bw (BufferedImage. w h BufferedImage/TYPE_BYTE_BINARY)]
     (dotimes [y h]
       (dotimes [x w]
-        (let [c (Color. (.getRGB image x y))
+        (let [c    (Color. (.getRGB image x y))
               gray (/ (+ (.getRed c) (.getGreen c) (.getBlue c)) 3)]
           (.setRGB bw x y (if (< gray threshold) -16777216 -1)))))
     bw))
@@ -161,7 +161,7 @@
   "Dither an RGB canvas down to 1-bit using Floyd-Steinberg error diffusion.
    Better than ->1-bit for photos/gradients since it preserves perceived shading."
   [{:keys [image]}]
-  (let [w (.getWidth image) h (.getHeight image)
+  (let [w    (.getWidth image)      h (.getHeight image)
         gray (double-array (* w h))]
     (dotimes [y h]
       (dotimes [x w]
@@ -170,7 +170,7 @@
     (let [bw (BufferedImage. w h BufferedImage/TYPE_BYTE_BINARY)]
       (dotimes [y h]
         (dotimes [x w]
-          (let [i (+ x (* y w))
+          (let [i   (+ x (* y w))
                 old (aget gray i)
                 new (if (< old 128.0) 0.0 255.0)
                 err (- old new)]
@@ -187,6 +187,6 @@
 
 (defn save-image [image path]
   (let [file (File. ^String path)
-        fmt (-> path (subs (inc (.lastIndexOf ^String path "."))) )]
+        fmt  (-> path (subs (inc (.lastIndexOf ^String path "."))))]
     (.mkdirs (.getParentFile file))
     (ImageIO/write image fmt file)))

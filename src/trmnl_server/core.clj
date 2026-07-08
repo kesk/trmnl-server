@@ -21,8 +21,8 @@
   "Rounds [min max] outward to a multiple of step, with a little padding.
    :floor clamps the low end (e.g. wind speed can't sensibly go below 0)."
   [values step & {:keys [floor]}]
-  (let [lo (apply min values)
-        hi (apply max values)
+  (let [lo  (apply min values)
+        hi  (apply max values)
         lo' (* step (Math/floor (/ (- lo 2) step)))
         hi' (* step (Math/ceil (/ (+ hi 2) step)))]
     [(if floor (max floor lo') lo') hi']))
@@ -34,10 +34,10 @@
    it's dropped rather than labeled."
   [points]
   (->> points
-       (map-indexed vector)
-       (partition-by (fn [[_ point]] (smhi/local-date (:time point))))
-       (map #(map first %))
-       (filter #(> (count %) 1))))
+    (map-indexed vector)
+    (partition-by (fn [[_ point]] (smhi/local-date (:time point))))
+    (map #(map first %))
+    (filter #(> (count %) 1))))
 
 (defn- series-layout
   "Maps a value-key's series onto the chart box, scaled to its own min/max.
@@ -49,15 +49,15 @@
    second day's peak still gets its own label even if it's milder than the
    first day's."
   [points value-key x y w h round-step floor]
-  (let [values (map value-key points)
-        [lo hi] (nice-bounds values round-step :floor floor)
-        n (count points)
-        value->y (fn [v] (+ y (* h (/ (- hi v) (double (- hi lo))))))
-        idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
+  (let [values      (map value-key points)
+        [lo hi]     (nice-bounds values round-step :floor floor)
+        n           (count points)
+        value->y    (fn [v] (+ y (* h (/ (- hi v) (double (- hi lo))))))
+        idx->x      (fn [i] (+ x (* w (/ i (double (dec n))))))
         plot-points (map-indexed (fn [i point] [(idx->x i) (value->y (value-key point))]) points)
-        extrema (for [group (day-groups points)]
-                  {:max-i (apply max-key #(value-key (nth points %)) group)
-                   :min-i (apply min-key #(value-key (nth points %)) group)})]
+        extrema     (for [group (day-groups points)]
+                      {:max-i (apply max-key #(value-key (nth points %)) group)
+                       :min-i (apply min-key #(value-key (nth points %)) group)})]
     {:plot-points plot-points :idx->x idx->x :extrema extrema}))
 
 (defn- offset-at [offset i]
@@ -65,8 +65,8 @@
 
 (defn- draw-series
   [canvas points value-key layout label-fmt & {:keys [dash label-above? label-below? above-offset below-offset]
-                                                :or {label-above? true label-below? true
-                                                     above-offset -12 below-offset 26}}]
+                                               :or   {label-above? true label-below? true
+                                                      above-offset -12  below-offset 26}}]
   (let [{:keys [plot-points extrema]} layout]
     (img/draw-polyline canvas plot-points :width 2.0 :dash dash)
     (doseq [[i {:keys [max-i min-i]}] (map-indexed vector extrema)]
@@ -75,11 +75,11 @@
         (img/draw-dot canvas max-x max-y :radius 4)
         (when label-above?
           (img/draw-text canvas (label-fmt (value-key (nth points max-i))) (- max-x 16) (+ max-y (offset-at above-offset i))
-                          :font (pixel-font :bold 16)))
+            :font (pixel-font :bold 16)))
         (img/draw-dot canvas min-x min-y :radius 4)
         (when label-below?
           (img/draw-text canvas (label-fmt (value-key (nth points min-i))) (- min-x 16) (+ min-y (offset-at below-offset i))
-                          :font (pixel-font :bold 16)))))))
+            :font (pixel-font :bold 16)))))))
 
 (defn- weather-icon-path [symbol-code night?]
   (str "icons/" (if night? "night" "day") "-" symbol-code ".png"))
@@ -97,7 +97,7 @@
 
 (defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
   (apply img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]]
-         (concat [:width width :dash dash] (when paint [:paint paint])))
+    (concat [:width width :dash dash] (when paint [:paint paint])))
   (img/draw-text canvas label (+ x 38) y :font (pixel-font :regular 16)))
 
 (defn cloud-cover-strip
@@ -106,10 +106,10 @@
    they're overcast. Sits above the temp/wind chart as its own row rather
    than sharing the plot box, since it isn't a value series on the same axes."
   [canvas points x y w & {:keys [min-width max-width] :or {min-width 1.0 max-width 20.0}}]
-  (let [n (count points)
-        idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
+  (let [n           (count points)
+        idx->x      (fn [i] (+ x (* w (/ i (double (dec n))))))
         plot-points (map-indexed (fn [i _] [(idx->x i) y]) points)
-        widths (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 100.0)))))) points)]
+        widths      (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 100.0)))))) points)]
     (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
 
 (defn- close-points?
@@ -127,20 +127,20 @@
    each day has its own label pair), push the wind label further from its dot
    so the two labels stack instead of overlapping."
   [canvas points x y w h]
-  (let [temp-layout (series-layout points :temp x y w h 5 nil)
-        wind-layout (series-layout points :wind x y w h 5 0)
-        day-pairs (map vector (:extrema temp-layout) (:extrema wind-layout))
+  (let [temp-layout  (series-layout points :temp x y w h 5 nil)
+        wind-layout  (series-layout points :wind x y w h 5 0)
+        day-pairs    (map vector (:extrema temp-layout) (:extrema wind-layout))
         max-collides (mapv (fn [[t w]] (close-points? (nth (:plot-points temp-layout) (:max-i t))
-                                                        (nth (:plot-points wind-layout) (:max-i w))))
-                            day-pairs)
+                                         (nth (:plot-points wind-layout) (:max-i w))))
+                       day-pairs)
         min-collides (mapv (fn [[t w]] (close-points? (nth (:plot-points temp-layout) (:min-i t))
-                                                        (nth (:plot-points wind-layout) (:min-i w))))
-                            day-pairs)]
+                                         (nth (:plot-points wind-layout) (:min-i w))))
+                       day-pairs)]
     (draw-series canvas points :temp temp-layout (fn [t] (str (int t) "°")))
     (draw-series canvas points :wind wind-layout (fn [w] (str (int (Math/round (double w))) " m/s"))
-                  :dash [6.0 5.0]
-                  :above-offset (mapv #(if % -30 -12) max-collides)
-                  :below-offset (mapv #(if % 44 26) min-collides))))
+      :dash [6.0 5.0]
+      :above-offset (mapv #(if % -30 -12) max-collides)
+      :below-offset (mapv #(if % 44 26) min-collides))))
 
 (def ^:private axis-label-count
   "How many hour-of-day labels hour-axis-labels always draws, evenly spaced
@@ -154,14 +154,14 @@
    both plot the same points across the same x span — drawn once here rather
    than duplicated under each chart."
   [canvas points x w y]
-  (let [n (count points)
-        idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
+  (let [n       (count points)
+        idx->x  (fn [i] (+ x (* w (/ i (double (dec n))))))
         indices (distinct (for [k (range axis-label-count)]
-                             (Math/round (* k (/ (dec n) (double (dec axis-label-count)))))))]
+                            (Math/round (* k (/ (dec n) (double (dec axis-label-count)))))))]
     (doseq [i indices]
       (let [px (idx->x i)]
         (img/draw-text canvas (smhi/local-time-str (:time (nth points i))) (- px 18) y
-                        :font (pixel-font :regular 16))))))
+          :font (pixel-font :regular 16))))))
 
 (defn precip-bar-chart
   "Draws precipitation (mm) as one bottom-anchored vertical bar per forecast
@@ -172,24 +172,24 @@
    rather than one max across the whole span, so a rainy first day doesn't
    hide a smaller-but-still-notable second-day shower."
   [canvas points x y w h]
-  (let [n (count points)
-        values (map :precip-mm points)
-        raw-max (apply max values)
+  (let [n         (count points)
+        values    (map :precip-mm points)
+        raw-max   (apply max values)
         ;; Headroom scales with the data instead of nice-bounds' flat +2 padding,
         ;; which is sized for °C/m/s ranges and would swamp typical sub-1mm rain.
-        hi (max 1 (Math/ceil (* raw-max 1.15)))
-        slot-w (/ w (double n))
-        bar-w (* slot-w 0.7)
-        bar-gap (* slot-w 0.3)
-        bottom (+ y h)
+        hi        (max 1 (Math/ceil (* raw-max 1.15)))
+        slot-w    (/ w (double n))
+        bar-w     (* slot-w 0.7)
+        bar-gap   (* slot-w 0.3)
+        bottom    (+ y h)
         mm->bar-h (fn [mm] (* h (/ mm (double hi))))
-        bars (vec (map-indexed
-                   (fn [i point]
-                     (let [mm (:precip-mm point)]
-                       {:x (+ x (* i slot-w) (/ bar-gap 2))
-                        :bar-h (mm->bar-h mm)
-                        :mm mm}))
-                   points))]
+        bars      (vec (map-indexed
+                         (fn [i point]
+                           (let [mm (:precip-mm point)]
+                             {:x     (+ x (* i slot-w) (/ bar-gap 2))
+                              :bar-h (mm->bar-h mm)
+                              :mm    mm}))
+                         points))]
     (img/draw-text canvas (str "Rain (0-" (int hi) "mm)") x (- y 6) :font (pixel-font :regular 16))
     (doseq [{:keys [x bar-h]} bars]
       (when (pos? bar-h)
@@ -198,7 +198,7 @@
       (let [{:keys [x bar-h mm]} (apply max-key :bar-h (map bars group))]
         (when (pos? mm)
           (img/draw-text canvas (format "%.1fmm" (double mm)) (- x 4) (- bottom bar-h 6)
-                          :font (pixel-font :bold 16)))))
+            :font (pixel-font :bold 16)))))
     (img/draw-line canvas x bottom (+ x w) bottom)))
 
 (defn- day-markers
@@ -209,13 +209,13 @@
    day-groups' rule of skipping a lone-point sliver day, since there's nothing
    meaningful to center a label over."
   [canvas points x w top bottom label-y]
-  (let [n (count points)
+  (let [n      (count points)
         idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
         groups (day-groups points)]
     (doseq [group groups]
       (let [center-x (/ (+ (idx->x (first group)) (idx->x (last group))) 2)]
         (img/draw-text canvas (smhi/local-day-label (:time (nth points (first group)))) (- center-x 12) label-y
-                        :font (pixel-font :bold 16))))
+          :font (pixel-font :bold 16))))
     (doseq [[a b] (partition 2 1 groups)]
       (let [boundary-x (/ (+ (idx->x (last a)) (idx->x (first b))) 2)]
         (img/draw-dashed-line canvas boundary-x top boundary-x bottom)))))
@@ -240,19 +240,19 @@
 (defn forecast-screen
   ([] (forecast-screen (live-points default-forecast-hours default-forecast-location)))
   ([points]
-   (let [canvas (img/blank-canvas)
+   (let [canvas    (img/blank-canvas)
          ;; The display hangs in a fixed spot (a hallway) — the viewer already
          ;; knows where and roughly when they are, so the header leads with
          ;; current conditions instead of city/date.
-         now (first points)
+         now       (first points)
          condition (smhi/symbol->description (:symbol now))]
      (draw-weather-icon canvas now 40 14 56)
      (img/draw-text canvas (str (int (:temp now)) "°") 110 44 :font (pixel-font :bold 32))
      (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 110 68
-                     :font (pixel-font :regular 16))
+       :font (pixel-font :regular 16))
      (let [label (str "Updated " (smhi/local-now-str))
-           font (pixel-font :regular 16)
-           w (img/text-width canvas label :font font)]
+           font  (pixel-font :regular 16)
+           w     (img/text-width canvas label :font font)]
        (img/draw-text canvas label (- 760 w) 68 :font font))
      (img/draw-line canvas 40 84 760 84)
 

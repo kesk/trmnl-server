@@ -55,9 +55,9 @@
 
 (defn- escape-html [s]
   (-> (str s)
-      (str/replace "&" "&amp;")
-      (str/replace "<" "&lt;")
-      (str/replace ">" "&gt;")))
+    (str/replace "&" "&amp;")
+    (str/replace "<" "&lt;")
+    (str/replace ">" "&gt;")))
 
 (defn current-image
   "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
@@ -71,43 +71,43 @@
     (if (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms))
       entry
       (try
-        (let [bytes (png-bytes (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) (forecast-location)))))
-              new-entry {:bytes bytes
-                         :filename (str "forecast-" (md5-hex bytes) ".png")
+        (let [bytes     (png-bytes (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) (forecast-location)))))
+              new-entry {:bytes        bytes
+                         :filename     (str "forecast-" (md5-hex bytes) ".png")
                          :generated-at (System/currentTimeMillis)}]
           (reset! cache new-entry)
           new-entry)
         (catch Exception e
           (if entry
             (do (println "Forecast regeneration failed, serving stale cache:" (.getMessage e))
-                entry)
+              entry)
             (throw e)))))))
 
 (defn- image-url [base-url filename]
   (str base-url "/images/" filename))
 
 (defn- json-response [body]
-  {:status 200
+  {:status  200
    :headers {"Content-Type" "application/json"}
-   :body (json/write-str body)})
+   :body    (json/write-str body)})
 
 (defn- display-response [base-url]
   (let [entry (current-image)]
-    (json-response {:filename (:filename entry)
-                    :image_url (image-url base-url (:filename entry))
+    (json-response {:filename          (:filename entry)
+                    :image_url         (image-url base-url (:filename entry))
                     :image_url_timeout 0
-                    :refresh_rate refresh-rate-seconds
-                    :reset_firmware false
-                    :update_firmware false
-                    :firmware_url nil})))
+                    :refresh_rate      refresh-rate-seconds
+                    :reset_firmware    false
+                    :update_firmware   false
+                    :firmware_url      nil})))
 
 (defn- setup-response [base-url]
   (let [entry (current-image)]
     (json-response {:image_url (image-url base-url (:filename entry))
-                    :message "Welcome to trmnl-server"})))
+                    :message   "Welcome to trmnl-server"})))
 
 (defn- log-response [request]
-  (let [body (slurp (:body request))
+  (let [body    (slurp (:body request))
         entries (:logs (try (json/read-str body :key-fn keyword) (catch Exception _ nil)))]
     (println "Device log:" body)
     (when (seq entries)
@@ -115,44 +115,44 @@
   {:status 204})
 
 (defn- image-response []
-  {:status 200
+  {:status  200
    :headers {"Content-Type" "image/png"}
-   :body (:bytes (current-image))})
+   :body    (:bytes (current-image))})
 
 (defn- html-response [body]
-  {:status 200
+  {:status  200
    :headers {"Content-Type" "text/html; charset=utf-8"}
-   :body body})
+   :body    body})
 
 (defn- status-response []
-  (let [logs (reverse @device-logs)
-        latest-voltage (some :battery_voltage logs)
-        pct (battery-percent latest-voltage)
+  (let [logs            (reverse @device-logs)
+        latest-voltage  (some :battery_voltage logs)
+        pct             (battery-percent latest-voltage)
         latest-firmware (some :firmware_version logs)]
     (html-response
-     (str "<html><head><title>trmnl-server status</title></head><body>"
-          "<h1>Battery</h1>"
-          "<p>" (if latest-voltage
-                  (String/format java.util.Locale/US "%.3fV (~%d%%, %s)"
-                                  (to-array [latest-voltage pct (battery-label pct)]))
-                  "no data yet")
-          "</p>"
-          "<h1>Firmware</h1>"
-          "<p>" (if latest-firmware (escape-html latest-firmware) "no data yet") "</p>"
-          "<h1>Recent device log rows (" (count logs) ")</h1>"
-          "<table border=\"1\" cellpadding=\"4\">"
-          "<tr><th>time</th><th>message</th><th>source</th><th>battery</th><th>wifi</th><th>retry</th><th>firmware</th></tr>"
-          (apply str
-                 (for [{:keys [created_at message source_path source_line
-                               battery_voltage wifi_signal wifi_status retry firmware_version]} logs]
-                   (str "<tr><td>" (some-> created_at (java.time.Instant/ofEpochSecond)) "</td>"
-                        "<td>" (escape-html message) "</td>"
-                        "<td>" (escape-html source_path) ":" source_line "</td>"
-                        "<td>" battery_voltage "</td>"
-                        "<td>" (escape-html wifi_status) " (" wifi_signal ")</td>"
-                        "<td>" retry "</td>"
-                        "<td>" (escape-html firmware_version) "</td></tr>")))
-          "</table></body></html>"))))
+      (str "<html><head><title>trmnl-server status</title></head><body>"
+        "<h1>Battery</h1>"
+        "<p>" (if latest-voltage
+                (String/format java.util.Locale/US "%.3fV (~%d%%, %s)"
+                  (to-array [latest-voltage pct (battery-label pct)]))
+                "no data yet")
+        "</p>"
+        "<h1>Firmware</h1>"
+        "<p>" (if latest-firmware (escape-html latest-firmware) "no data yet") "</p>"
+        "<h1>Recent device log rows (" (count logs) ")</h1>"
+        "<table border=\"1\" cellpadding=\"4\">"
+        "<tr><th>time</th><th>message</th><th>source</th><th>battery</th><th>wifi</th><th>retry</th><th>firmware</th></tr>"
+        (apply str
+          (for [{:keys [created_at message source_path source_line
+                        battery_voltage wifi_signal wifi_status retry firmware_version]} logs]
+            (str "<tr><td>" (some-> created_at (java.time.Instant/ofEpochSecond)) "</td>"
+              "<td>" (escape-html message) "</td>"
+              "<td>" (escape-html source_path) ":" source_line "</td>"
+              "<td>" battery_voltage "</td>"
+              "<td>" (escape-html wifi_status) " (" wifi_signal ")</td>"
+              "<td>" retry "</td>"
+              "<td>" (escape-html firmware_version) "</td></tr>")))
+        "</table></body></html>"))))
 
 (defn- handler [base-url]
   (fn [{:keys [request-method uri] :as request}]
@@ -169,17 +169,17 @@
    to \"localhost\" if none is found (e.g. no network connection)."
   []
   (or (some->> (NetworkInterface/getNetworkInterfaces)
-               enumeration-seq
-               (mapcat #(enumeration-seq (.getInetAddresses %)))
-               (some #(when (and (instance? java.net.Inet4Address %) (not (.isLoopbackAddress %))) %))
-               .getHostAddress)
-      "localhost"))
+        enumeration-seq
+        (mapcat #(enumeration-seq (.getInetAddresses %)))
+        (some #(when (and (instance? java.net.Inet4Address %) (not (.isLoopbackAddress %))) %))
+        .getHostAddress)
+    "localhost"))
 
 (defn start!
   "Starts the HTTP server. http-kit's worker threads are non-daemon, so the JVM
    stays alive after this (and -main) returns."
   []
-  (let [port (or (some-> (System/getenv "PORT") Integer/parseInt) 8080)
+  (let [port     (or (some-> (System/getenv "PORT") Integer/parseInt) 8080)
         base-url (str "http://" (lan-ip) ":" port)]
     (httpkit/run-server (handler base-url) {:port port})
     (println (str "TRMNL server listening on " base-url))

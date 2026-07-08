@@ -10,40 +10,40 @@
 
 (defn- forecast-url [{:keys [lat lon]}]
   (format "https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1/geotype/point/lon/%s/lat/%s/data.json"
-          lon lat))
+    lon lat))
 
 (defn fetch-raw-forecast [location]
-  (let [client (HttpClient/newHttpClient)
-        request (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create (forecast-url location)))
-                    (.GET)
-                    (.build))
+  (let [client   (HttpClient/newHttpClient)
+        request  (-> (HttpRequest/newBuilder)
+                   (.uri (URI/create (forecast-url location)))
+                   (.GET)
+                   (.build))
         response (.send client request (HttpResponse$BodyHandlers/ofString))]
     (json/read-str (.body response) :key-fn keyword)))
 
 (defn- ->forecast-point [{:keys [time data]}]
-  {:time time
-   :temp (:air_temperature data)
-   :symbol (:symbol_code data)
-   :wind (:wind_speed data)
+  {:time          time
+   :temp          (:air_temperature data)
+   :symbol        (:symbol_code data)
+   :wind          (:wind_speed data)
    :precip-chance (:probability_of_precipitation data)
-   :precip-mm (:precipitation_amount_mean data)
-   :cloud-cover (:cloud_area_fraction data)})
+   :precip-mm     (:precipitation_amount_mean data)
+   :cloud-cover   (:cloud_area_fraction data)})
 
 (defn forecast
   "Returns a seq of forecast points for the given location, sorted by time (nearest first)."
   [location]
   (->> (fetch-raw-forecast location)
-       :timeSeries
-       (map ->forecast-point)))
+    :timeSeries
+    (map ->forecast-point)))
 
 (def symbol->description
-  {1 "Clear sky" 2 "Nearly clear" 3 "Variable cloudiness" 4 "Halfclear sky"
-   5 "Cloudy sky" 6 "Overcast" 7 "Fog" 8 "Light rain showers" 9 "Moderate rain showers"
-   10 "Heavy rain showers" 11 "Thunderstorm" 12 "Light sleet showers" 13 "Moderate sleet showers"
+  {1  "Clear sky"           2  "Nearly clear"       3  "Variable cloudiness"   4  "Halfclear sky"
+   5  "Cloudy sky"          6  "Overcast"           7  "Fog"                   8  "Light rain showers"     9  "Moderate rain showers"
+   10 "Heavy rain showers"  11 "Thunderstorm"       12 "Light sleet showers"   13 "Moderate sleet showers"
    14 "Heavy sleet showers" 15 "Light snow showers" 16 "Moderate snow showers" 17 "Heavy snow showers"
-   18 "Light rain" 19 "Moderate rain" 20 "Heavy rain" 21 "Thunder" 22 "Light sleet"
-   23 "Moderate sleet" 24 "Heavy sleet" 25 "Light snowfall" 26 "Moderate snowfall" 27 "Heavy snowfall"})
+   18 "Light rain"          19 "Moderate rain"      20 "Heavy rain"            21 "Thunder"                22 "Light sleet"
+   23 "Moderate sleet"      24 "Heavy sleet"        25 "Light snowfall"        26 "Moderate snowfall"      27 "Heavy snowfall"})
 
 (defn night?
   "Fixed-hour heuristic for whether an SMHI timestamp falls at night, used
@@ -55,29 +55,29 @@
 
 (defn local-time-str [iso-time]
   (-> (Instant/parse iso-time)
-      (.atZone (ZoneId/of "Europe/Stockholm"))
-      (.format (DateTimeFormatter/ofPattern "HH:mm"))))
+    (.atZone (ZoneId/of "Europe/Stockholm"))
+    (.format (DateTimeFormatter/ofPattern "HH:mm"))))
 
 (defn local-date
   "The Europe/Stockholm calendar date an SMHI timestamp falls on — the unit
    day/night min-max labels are grouped by."
   [iso-time]
   (-> (Instant/parse iso-time)
-      (.atZone (ZoneId/of "Europe/Stockholm"))
-      (.toLocalDate)))
+    (.atZone (ZoneId/of "Europe/Stockholm"))
+    (.toLocalDate)))
 
 (defn local-day-label [iso-time]
   (-> (Instant/parse iso-time)
-      (.atZone (ZoneId/of "Europe/Stockholm"))
-      (.format (DateTimeFormatter/ofPattern "EEE"))))
+    (.atZone (ZoneId/of "Europe/Stockholm"))
+    (.format (DateTimeFormatter/ofPattern "EEE"))))
 
 (defn local-now-str
   "Current time formatted like local-time-str's siblings, but for 'now' rather
    than a forecast point — used to stamp when a screen was rendered."
   []
   (-> (Instant/now)
-      (.atZone (ZoneId/of "Europe/Stockholm"))
-      (.format (DateTimeFormatter/ofPattern "d MMM HH:mm"))))
+    (.atZone (ZoneId/of "Europe/Stockholm"))
+    (.format (DateTimeFormatter/ofPattern "d MMM HH:mm"))))
 
 (defn upcoming
   "Picks a spread of upcoming forecast points, every `step`'th entry, `count` of them."
