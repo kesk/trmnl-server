@@ -141,10 +141,26 @@
     (draw-stale-badge (img/canvas-from copy) 766 4 20)
     copy))
 
+(def ^:private legend-font (pixel-font :regular 16))
+
 (defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
   (apply img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]]
     (concat [:width width :dash dash] (when paint [:paint paint])))
-  (img/draw-text canvas label (+ x 38) y :font (pixel-font :regular 16)))
+  (img/draw-text canvas label (+ x 38) y :font legend-font))
+
+(defn draw-legend-row
+  "Lays a row of legend keys out across [x, x+w] so the first key is flush
+   left, the last flush right, and the gaps between them are equal — keeping
+   the row balanced under the full chart width rather than clustered at the
+   left. Each key is `[label opts]` matching draw-legend-key's args; its drawn
+   width is the 38px swatch-plus-gap lead-in plus the label's pixel width."
+  [canvas x y w keys]
+  (let [key-w  (fn [[label _]] (+ 38 (img/text-width canvas label :font legend-font)))
+        widths (map key-w keys)
+        gap    (/ (- w (reduce + widths)) (max 1 (dec (count keys))))
+        starts (reductions + x (map #(+ % gap) (butlast widths)))]
+    (doseq [[[label opts] kx] (map vector keys starts)]
+      (apply draw-legend-key canvas kx y label (apply concat opts)))))
 
 (defn cloud-cover-strip
   "Draws a horizontal band along y whose local thickness encodes cloud cover
@@ -354,9 +370,10 @@
        (img/draw-text canvas label (- 760 w) 68 :font font))
      (img/draw-line canvas 40 84 760 84)
 
-     (draw-legend-key canvas 40 108 "Temp (°C)")
-     (draw-legend-key canvas 280 108 "Vind (m/s)" :dash [6.0 5.0])
-     (draw-legend-key canvas 520 108 "Moln (%)" :width 14.0 :paint (img/checkerboard-paint))
+     (draw-legend-row canvas 40 108 720
+       [["Temp (°C)" {}]
+        ["Vind (m/s)" {:dash [6.0 5.0]}]
+        ["Moln (%)" {:width 14.0 :paint (img/checkerboard-paint)}]])
 
      ;; precip-bar-chart's "Regn (0-Xmm)" title sits at (- precip-y 6); cap
      ;; combined-chart's below-labels a bit above that so a collision-pushed
