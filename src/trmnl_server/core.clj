@@ -61,9 +61,6 @@
                        :min-i (apply min-key #(value-key (nth points %)) group)})]
     {:plot-points plot-points :idx->x idx->x :extrema extrema}))
 
-(defn- offset-at [offset i]
-  (if (sequential? offset) (nth offset i) offset))
-
 (defn- draw-series-line
   "Just the polyline, no dots/labels -- combined-chart draws both series'
    lines before either series' labels, so a label (with its white halo) always
@@ -72,51 +69,37 @@
   [canvas layout & {:keys [dash]}]
   (img/draw-polyline canvas (:plot-points layout) :width 2.0 :dash dash))
 
+(defn- draw-extremum-label
+  "Draws one extremum's dot and (nudged) label. placement is a
+   {:dx :dy :leader? :max-y} map decided up front by combined-chart: :dx/:dy
+   nudge the label off its dot to dodge the other series' colliding label,
+   :leader? draws a recessive dashed hairline from the dot to a displaced label
+   (before the label, so the label's white halo clears the leader too) so it's
+   still clear which point it belongs to, and :max-y (optional) caps how far
+   down the label can be pushed, so a min value near the bottom of the chart
+   box can't shove its label into whatever's drawn below the chart (e.g.
+   precip-bar-chart's own bars and labels)."
+  [canvas dot-x dot-y text {:keys [dx dy leader? max-y]}]
+  (img/draw-dot canvas dot-x dot-y :radius 4 :halo? true)
+  (let [label-x (+ (- dot-x 16) dx)
+        label-y (cond-> (+ dot-y dy) max-y (min max-y))]
+    (when leader?
+      (img/draw-dashed-line canvas dot-x dot-y label-x (- label-y 6)))
+    (img/draw-text canvas text label-x label-y :font (pixel-font :bold 16) :halo? true)))
+
 (defn- draw-series-labels
-  "Dots + extrema labels for one series. :above-x-offset/:below-x-offset
-   (like the y-axis :above-offset/:below-offset) let a colliding label be
-   pushed sideways as well as up/down -- vertical offset alone isn't enough
-   when two series' extrema land at the same x, since pushing both labels
-   further from their (identical-x) dots doesn't add any horizontal gap
-   between them. When a label's offset moves it off its default anchor
-   (:above-leader?/:below-leader? true for that day), a recessive dashed
-   hairline is drawn from the dot to the label first, so it's still clear which point a
-   displaced label belongs to -- drawn before the label so its white halo
-   clears the label's own connecting line too, not just the other series'.
-   :below-max-y caps how far down a below-label's collision offset can push
-   it, so a min value near the bottom of the chart box can't shove its label
-   into whatever's drawn below the chart (e.g. precip-bar-chart's own bars
-   and labels)."
-  [canvas points value-key layout label-fmt & {:keys [label-above? label-below?
-                                                      above-offset below-offset
-                                                      above-x-offset below-x-offset
-                                                      above-leader? below-leader?
-                                                      below-max-y]
-                                               :or   {label-above?   true  label-below?   true
-                                                      above-offset   -12   below-offset   26
-                                                      above-x-offset 0     below-x-offset 0
-                                                      above-leader?  false below-leader?  false}}]
+  "Dots + extrema labels for one series. Placement is decided up front by
+   combined-chart and handed in as a per-day
+   {:above {:dx :dy :leader? :max-y} :below {…}} seq (one entry per day/extrema
+   pair) -- see draw-extremum-label for what each placement field does."
+  [canvas points value-key layout label-fmt placements]
   (let [{:keys [plot-points extrema]} layout]
     (doseq [[i {:keys [max-i min-i]}] (map-indexed vector extrema)]
-      (let [[max-x max-y] (nth plot-points max-i)
-            [min-x min-y] (nth plot-points min-i)]
-        (img/draw-dot canvas max-x max-y :radius 4 :halo? true)
-        (when label-above?
-          (let [label-x (+ (- max-x 16) (offset-at above-x-offset i))
-                label-y (+ max-y (offset-at above-offset i))]
-            (when (offset-at above-leader? i)
-              (img/draw-dashed-line canvas max-x max-y label-x (- label-y 6)))
-            (img/draw-text canvas (label-fmt (value-key (nth points max-i))) label-x label-y
-              :font (pixel-font :bold 16) :halo? true)))
-        (img/draw-dot canvas min-x min-y :radius 4 :halo? true)
-        (when label-below?
-          (let [label-x (+ (- min-x 16) (offset-at below-x-offset i))
-                label-y (cond-> (+ min-y (offset-at below-offset i))
-                          below-max-y (min below-max-y))]
-            (when (offset-at below-leader? i)
-              (img/draw-dashed-line canvas min-x min-y label-x (- label-y 6)))
-            (img/draw-text canvas (label-fmt (value-key (nth points min-i))) label-x label-y
-              :font (pixel-font :bold 16) :halo? true)))))))
+      (let [[max-x max-y]         (nth plot-points max-i)
+            [min-x min-y]         (nth plot-points min-i)
+            {:keys [above below]} (nth placements i)]
+        (draw-extremum-label canvas max-x max-y (label-fmt (value-key (nth points max-i))) above)
+        (draw-extremum-label canvas min-x min-y (label-fmt (value-key (nth points min-i))) below)))))
 
 (defn- weather-icon-path [symbol-code night?]
   (str "icons/" (if night? "night" "day") "-" symbol-code ".png"))
@@ -230,23 +213,23 @@
                        day-pairs)
         min-collides (mapv (fn [[t w]] (close-points? (nth (:plot-points temp-layout) (:min-i t))
                                          (nth (:plot-points wind-layout) (:min-i w))))
-                       day-pairs)]
+                       day-pairs)
+        ;; On a temp/wind collision the two overlapping labels back away from each
+        ;; other -- temp left (-dx), wind right (+dx) -- and the wind label also
+        ;; drops/rises further (its dy grows) so a leadered pair doesn't restack.
+        temp-place   (mapv (fn [max? min?]
+                             {:above {:dx (if max? -24 0) :dy -12 :leader? max?}
+                              :below {:dx (if min? -24 0) :dy 26 :leader? min? :max-y below-max-y}})
+                       max-collides min-collides)
+        wind-place   (mapv (fn [max? min?]
+                             {:above {:dx (if max? 24 0) :dy (if max? -30 -12) :leader? max?}
+                              :below {:dx (if min? 24 0) :dy (if min? 44 26) :leader? min? :max-y below-max-y}})
+                       max-collides min-collides)]
     (draw-series-line canvas temp-layout)
     (draw-series-line canvas wind-layout :dash [6.0 5.0])
-    (draw-series-labels canvas points :temp temp-layout (fn [t] (str (int t) "°"))
-      :above-x-offset (mapv #(if % -24 0) max-collides)
-      :below-x-offset (mapv #(if % -24 0) min-collides)
-      :above-leader? max-collides
-      :below-leader? min-collides
-      :below-max-y below-max-y)
-    (draw-series-labels canvas points :wind wind-layout (fn [w] (str (int (Math/round (double w))) " m/s"))
-      :above-offset (mapv #(if % -30 -12) max-collides)
-      :below-offset (mapv #(if % 44 26) min-collides)
-      :above-x-offset (mapv #(if % 24 0) max-collides)
-      :below-x-offset (mapv #(if % 24 0) min-collides)
-      :above-leader? max-collides
-      :below-leader? min-collides
-      :below-max-y below-max-y)))
+    (draw-series-labels canvas points :temp temp-layout (fn [t] (str (int t) "°")) temp-place)
+    (draw-series-labels canvas points :wind wind-layout
+      (fn [w] (str (int (Math/round (double w))) " m/s")) wind-place)))
 
 (def ^:private axis-label-count
   "How many hour-of-day labels hour-axis-labels always draws, evenly spaced
