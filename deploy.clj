@@ -18,15 +18,15 @@
 
 (defn healthy? []
   (->> (shell {:continue true}
-              "ssh" host "curl -sf -o /dev/null http://localhost:8080/api/display")
-       :exit
-       zero?))
+         "ssh" host "curl -sf -o /dev/null http://localhost:8080/api/display")
+    :exit
+    zero?))
 
 (println "Waiting for server to come back up...")
 (loop [attempts-left 20]
   (cond
     (healthy?) (println "Deployed and healthy.")
     (pos? attempts-left) (do (Thread/sleep 2000)
-                              (recur (dec attempts-left)))
+                           (recur (dec attempts-left)))
     :else (do (println "Server did not become healthy within 40s of restart")
-              (System/exit 1))))
+            (System/exit 1))))
