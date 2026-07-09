@@ -1,6 +1,7 @@
 /.cpcache/
 /target/
 /out/
+/scratch/
 *.jar
 .nrepl-port
 .lsp/

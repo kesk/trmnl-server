@@ -29,17 +29,30 @@
   "Fills text as glyph outlines rather than Graphics2D/drawString. Some JDK/platform
    font rasterizers antialias drawString regardless of KEY_TEXT_ANTIALIASING, so this
    routes text through the ordinary shape-fill path (governed by KEY_ANTIALIASING,
-   which IS honored) to guarantee hard, un-antialiased glyph edges."
-  [graphics ^String text x y]
+   which IS honored) to guarantee hard, un-antialiased glyph edges.
+
+   :halo-color, if given, is stroked around the glyph outlines before the fill --
+   a cheap way to keep text legible where a chart line passes behind it, since a
+   1-bit surface has no gray/opacity to fall back on for that."
+  [graphics ^String text x y & {:keys [halo-color halo-width] :or {halo-width 5.0}}]
   (let [frc     (.getFontRenderContext graphics)
         gv      (.createGlyphVector (.getFont graphics) frc text)
         outline (.getOutline gv (float x) (float y))]
+    (when halo-color
+      (let [text-color (.getColor graphics)]
+        (.setColor graphics halo-color)
+        (.setStroke graphics (BasicStroke. halo-width BasicStroke/CAP_ROUND BasicStroke/JOIN_ROUND))
+        (.draw graphics outline)
+        (.setColor graphics text-color)))
     (.fill graphics outline)))
 
-(defn draw-text [{:keys [graphics]} text x y & {:keys [font color] :or {color Color/BLACK}}]
+(defn draw-text
+  ":halo? true surrounds the glyphs with a white outline before filling them
+   black, so the label stays readable if a chart line is drawn underneath it."
+  [{:keys [graphics]} text x y & {:keys [font color halo?] :or {color Color/BLACK}}]
   (when font (.setFont graphics font))
   (.setColor graphics color)
-  (fill-string graphics text (int x) (int y)))
+  (fill-string graphics text (int x) (int y) :halo-color (when halo? Color/WHITE)))
 
 (defn text-width
   "Pixel width text would render at, for right/center-aligning against a fixed edge."
@@ -141,7 +154,15 @@
     (.drawLine graphics (int x1) (int y1) (int x2) (int y2)))
   (.setStroke graphics (BasicStroke. 1.0)))
 
-(defn draw-dot [{:keys [graphics]} x y & {:keys [radius color] :or {radius 4 color Color/BLACK}}]
+(defn draw-dot
+  ":halo? true rings the dot in white first, same idea as draw-text's halo --
+   keeps it visually distinct when a line passes close by, or when two dots
+   (e.g. two series' extrema) land right next to each other."
+  [{:keys [graphics]} x y & {:keys [radius color halo?] :or {radius 4 color Color/BLACK}}]
+  (when halo?
+    (.setColor graphics Color/WHITE)
+    (let [halo-radius (+ radius 3)]
+      (.fillOval graphics (int (- x halo-radius)) (int (- y halo-radius)) (int (* 2 halo-radius)) (int (* 2 halo-radius)))))
   (.setColor graphics color)
   (.fillOval graphics (int (- x radius)) (int (- y radius)) (int (* 2 radius)) (int (* 2 radius))))
 
