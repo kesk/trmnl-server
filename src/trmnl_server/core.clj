@@ -175,6 +175,31 @@
         widths      (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 100.0)))))) points)]
     (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
 
+(defn- rain-background
+  "Shades a light stippled column behind every hour that has any
+   precipitation, spanning from the cloud strip all the way down to the
+   axis line above the hour labels -- purely decorative, flagging \"it's
+   raining this hour\" across the whole chart rather than just on its own
+   bar below. Columns line up with precip-bar-chart's own slot-per-point
+   geometry (w/n wide, not the (n-1)-divisor spacing series-layout uses for
+   plotting points), so the shading matches the bar underneath it. Adjacent
+   rainy hours share their dividing edge (both computed via the same
+   slot-edge fn) rather than each rect getting an independently-rounded
+   x/width, so a run of consecutive rainy hours doesn't develop stray 1px
+   gaps where rounding happens to truncate the two sides differently. Drawn
+   first, before the cloud strip/combined chart/rain bars, so their own
+   fills, lines, and text all render on top of the light stipple instead of
+   competing with it."
+  [canvas points x cloud-y bottom-y w]
+  (let [n         (count points)
+        slot-edge (fn [i] (+ x (Math/round (* w (/ i (double n))))))]
+    (doseq [[i point] (map-indexed vector points)]
+      (when (pos? (:precip-mm point))
+        (let [left  (slot-edge i)
+              right (slot-edge (inc i))]
+          (img/draw-rect canvas left cloud-y (- right left) (- bottom-y cloud-y)
+            :fill? true :paint (img/stipple-paint)))))))
+
 (defn- close-points?
   "True when two plotted points are near enough that same-offset labels
    anchored to them would overlap."
@@ -273,7 +298,7 @@
                               :bar-h (mm->bar-h mm)
                               :mm    mm}))
                          points))]
-    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x (- y 6) :font (pixel-font :regular 16))
+    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x (- y 6) :font (pixel-font :regular 16) :halo? true)
     (doseq [{:keys [x bar-h]} bars]
       (when (pos? bar-h)
         (img/draw-rect canvas x (- bottom bar-h) bar-w bar-h :fill? true)))
@@ -281,7 +306,7 @@
       (let [{:keys [x bar-h mm]} (apply max-key :bar-h (map bars group))]
         (when (pos? mm)
           (img/draw-text canvas (format "%.1fmm" (double mm)) (- x 4) (- bottom bar-h 6)
-            :font (pixel-font :bold 16)))))
+            :font (pixel-font :bold 16) :halo? true))))
     (img/draw-line canvas x bottom (+ x w) bottom)))
 
 (defn- day-markers
@@ -345,13 +370,15 @@
      (draw-legend-key canvas 280 108 "Vind (m/s)" :dash [6.0 5.0])
      (draw-legend-key canvas 520 108 "Moln (%)" :width 14.0 :paint (img/checkerboard-paint))
 
-     (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
      ;; precip-bar-chart's "Regn (0-Xmm)" title sits at (- precip-y 6); cap
      ;; combined-chart's below-labels a bit above that so a collision-pushed
      ;; min-label can never land on top of it (or the bars/labels beneath).
-     (let [precip-y 355]
+     (let [precip-y 355
+           precip-h 85]
+       (rain-background canvas points 40 136 (+ precip-y precip-h) 720)
+       (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
        (combined-chart canvas points 40 172 720 155 :below-max-y (- precip-y 20))
-       (precip-bar-chart canvas points 40 precip-y 720 85))
+       (precip-bar-chart canvas points 40 precip-y 720 precip-h))
      (hour-axis-labels canvas points 40 720 468)
      (day-markers canvas points 40 720 118 440 454)
      canvas)))

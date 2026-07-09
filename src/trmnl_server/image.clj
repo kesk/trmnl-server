@@ -77,8 +77,12 @@
     (doseq [[i line] (map-indexed vector lines)]
       (fill-string graphics line (int x) (int (+ y (* i line-height)))))))
 
-(defn draw-rect [{:keys [graphics]} x y w h & {:keys [fill? color] :or {color Color/BLACK}}]
-  (.setColor graphics color)
+(defn draw-rect
+  ":paint accepts any java.awt.Paint (a Color for solid fill, or e.g.
+   checkerboard-paint/stipple-paint for a dithered fill) and takes priority
+   over :color when both are given."
+  [{:keys [graphics]} x y w h & {:keys [fill? color paint] :or {color Color/BLACK}}]
+  (.setPaint graphics (or paint color))
   (if fill?
     (.fillRect graphics x y w h)
     (.drawRect graphics x y w h)))
@@ -140,6 +144,19 @@
       (.setRGB 0 1 -16777216)
       (.setRGB 1 1 -1))
     (TexturePaint. tile (Rectangle2D$Double. 0.0 0.0 2.0 2.0))))
+
+(defn stipple-paint
+  "A sparse dot tile (1 black pixel in an otherwise-white 4x4 tile) — much
+   lighter than checkerboard-paint's flat 50% gray, for shading a background
+   region without it reading as solid or fighting with whatever's drawn on
+   top of it."
+  []
+  (let [size 4
+        tile (BufferedImage. size size BufferedImage/TYPE_INT_RGB)]
+    (dotimes [y size]
+      (dotimes [x size]
+        (.setRGB tile x y (if (and (zero? x) (zero? y)) -16777216 -1))))
+    (TexturePaint. tile (Rectangle2D$Double. 0.0 0.0 (double size) (double size)))))
 
 (defn draw-variable-line
   "Connects a sequence of [x y] points where each point has its own stroke
