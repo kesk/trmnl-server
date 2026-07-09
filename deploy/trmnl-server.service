@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=seb
 WorkingDirectory=/home/seb/trmnl-server
-Environment=FORECAST_HOURS=24
+Environment=FORECAST_HOURS=23
 Environment=FORECAST_LAT=57.715722
 Environment=FORECAST_LON=12.035778
 ExecStart=/usr/bin/java -jar /home/seb/trmnl-server/trmnl-server.jar --serve
