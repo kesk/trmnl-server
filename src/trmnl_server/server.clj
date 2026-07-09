@@ -18,6 +18,7 @@
 (def ^:private max-stored-logs 200)
 
 (defonce ^:private cache (atom nil))
+(defonce ^:private regen-lock (Object.))
 (defonce ^:private device-logs (atom []))
 
 (defn- png-bytes [image]
@@ -67,30 +68,39 @@
    copy of it — rather than a bare 500. A stale forecast is more useful to the
    device than none; the badge is what lets you notice at a glance that it's
    stale and go check the logs. Only propagates the exception when there's no
-   prior image to fall back on."
+   prior image to fall back on.
+
+   The regeneration path is serialized on regen-lock so two requests arriving on
+   an expired cache don't both fetch SMHI and re-render; the second re-checks the
+   cache inside the lock and reuses the entry the first one just produced."
   []
-  (let [entry @cache]
-    (if (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms))
+  (let [fresh? (fn [entry] (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms)))
+        entry  @cache]
+    (if (fresh? entry)
       entry
-      (try
-        (let [image     (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) (forecast-location))))
-              bytes     (png-bytes image)
-              new-entry {:image        image
-                         :bytes        bytes
-                         :filename     (str "forecast-" (md5-hex bytes) ".png")
-                         :generated-at (System/currentTimeMillis)}]
-          (reset! cache new-entry)
-          new-entry)
-        (catch Exception e
-          (if entry
-            (let [stale-bytes (or (:stale-bytes entry) (png-bytes (core/stamp-stale-badge (:image entry))))
-                  stale-entry (assoc entry
-                                :stale-bytes stale-bytes
-                                :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png"))]
-              (println "Forecast regeneration failed, serving stale cache:" (.getMessage e))
-              (reset! cache stale-entry)
-              stale-entry)
-            (throw e)))))))
+      (locking regen-lock
+        (let [entry @cache]
+          (if (fresh? entry)
+            entry
+            (try
+              (let [image     (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) (forecast-location))))
+                    bytes     (png-bytes image)
+                    new-entry {:image        image
+                               :bytes        bytes
+                               :filename     (str "forecast-" (md5-hex bytes) ".png")
+                               :generated-at (System/currentTimeMillis)}]
+                (reset! cache new-entry)
+                new-entry)
+              (catch Exception e
+                (if entry
+                  (let [stale-bytes (or (:stale-bytes entry) (png-bytes (core/stamp-stale-badge (:image entry))))
+                        stale-entry (assoc entry
+                                      :stale-bytes stale-bytes
+                                      :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png"))]
+                    (println "Forecast regeneration failed, serving stale cache:" (.getMessage e))
+                    (reset! cache stale-entry)
+                    stale-entry)
+                  (throw e))))))))))
 
 (defn- serve-bytes [entry] (or (:stale-bytes entry) (:bytes entry)))
 (defn- serve-filename [entry] (or (:stale-filename entry) (:filename entry)))
