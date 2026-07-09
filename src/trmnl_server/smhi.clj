@@ -3,7 +3,7 @@
   (:require [clojure.data.json :as json])
   (:import [java.net URI]
            [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]
-           [java.time Instant ZoneId]
+           [java.time Duration Instant ZoneId]
            [java.time.format DateTimeFormatter]
            [java.util Locale]))
 
@@ -16,9 +16,12 @@
     lon lat))
 
 (defn fetch-raw-forecast [location]
-  (let [client   (HttpClient/newHttpClient)
+  (let [client   (-> (HttpClient/newBuilder)
+                   (.connectTimeout (Duration/ofSeconds 10))
+                   (.build))
         request  (-> (HttpRequest/newBuilder)
                    (.uri (URI/create (forecast-url location)))
+                   (.timeout (Duration/ofSeconds 10))
                    (.GET)
                    (.build))
         response (.send client request (HttpResponse$BodyHandlers/ofString))]
