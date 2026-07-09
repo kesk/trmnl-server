@@ -87,8 +87,13 @@ Six namespaces, cleanly separated by concern:
   `data` map instead of a `parameters` array). If SMHI requests start 404ing, check
   for another API migration before assuming the code is broken.
 
-  Also owns `night?`, a fixed-hour heuristic (not real sunrise/sunset) used only to
-  pick the day vs. night variant of the header's weather icon.
+  Also owns `sun-times` (astronomical sunrise/sunset for a location + date via
+  the NOAA sunrise equation — pure arithmetic, no network call or dependency,
+  and it flags polar day/night at high latitudes) and `night?`, which uses it to
+  decide whether a timestamp falls between sunset and sunrise. Both feed only the
+  choice of day vs. night variant for the header's weather icon; `night?` takes
+  the forecast `location` (`{:lat :lon}`), so callers thread that down (see
+  `core/forecast-screen`'s location arg).
 
 - **`trmnl-server.demo`** — synthetic per-season datasets (`seasons`, `season-points`,
   which takes an explicit `hours` count) in the same point shape `smhi/forecast`
@@ -98,9 +103,12 @@ Six namespaces, cleanly separated by concern:
   accuracy.
 
 - **`trmnl-server.core`** — composes the above into the actual screen
-  (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-0
-  fetches `live-points` of `default-forecast-hours` [23] points for
-  `default-forecast-location` [Gothenburg]), and is where domain-specific
+  (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-2
+  additionally takes the `{:lat :lon}` location that seq is for [used only to place
+  the header icon's day/night variant via `smhi/night?`; arity-1 defaults it to
+  Gothenburg, which is also what `--demo` renders], arity-0 fetches `live-points` of
+  `default-forecast-hours` [23] points for `default-forecast-location` [Gothenburg]),
+  and is where domain-specific
   layout/chart logic lives (e.g. `line-chart`/`combined-chart`, `nice-bounds` for
   rounding axis extents). `default-forecast-hours`/`default-forecast-location` are
   the single source of truth for "prognosis length" and "where" — callers override

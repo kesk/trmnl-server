@@ -59,4 +59,4 @@
       (server/start!)
 
       :else
-      (write-screen (core/forecast-screen (core/live-points hours location)) "preview"))))
+      (write-screen (core/forecast-screen (core/live-points hours location) location) "preview"))))

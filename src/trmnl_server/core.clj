@@ -111,8 +111,8 @@
    yellow, cloud grays) sit above ->1-bit's threshold and wash to white,
    leaving just their dark outlines — so the icons need no recoloring to fit
    the 1-bit pipeline."
-  [canvas point x y size]
-  (let [image (img/load-image (weather-icon-path (:symbol point) (smhi/night? (:time point))))]
+  [canvas point location x y size]
+  (let [image (img/load-image (weather-icon-path (:symbol point) (smhi/night? location (:time point))))]
     (img/draw-image canvas image x y size size)))
 
 (defn draw-stale-badge
@@ -331,15 +331,20 @@
   (take hours (smhi/forecast location)))
 
 (defn forecast-screen
-  ([] (forecast-screen (live-points default-forecast-hours default-forecast-location)))
-  ([points]
+  ([] (forecast-screen (live-points default-forecast-hours default-forecast-location)
+        default-forecast-location))
+  ;; `location` is only used to place the header icon's day/night variant via
+  ;; sunrise/sunset; it defaults to Gothenburg, which is also what --demo's
+  ;; synthetic data represents, so demo callers can omit it.
+  ([points] (forecast-screen points default-forecast-location))
+  ([points location]
    (let [canvas    (img/blank-canvas)
          ;; The display hangs in a fixed spot (a hallway) — the viewer already
          ;; knows where and roughly when they are, so the header leads with
          ;; current conditions instead of city/date.
          now       (first points)
          condition (smhi/symbol->description (:symbol now))]
-     (draw-weather-icon canvas now 40 14 56)
+     (draw-weather-icon canvas now location 40 14 56)
      (img/draw-text canvas (str (int (:temp now)) "°") 110 44 :font (pixel-font :bold 32))
      (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 110 68
        :font (pixel-font :regular 16))

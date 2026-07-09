@@ -51,14 +51,6 @@
    18 "Lätt regn"                   19 "Måttligt regn"            20 "Kraftigt regn"            21 "Åska"                        22 "Lätt snöblandat regn"
    23 "Måttligt snöblandat regn"    24 "Kraftigt snöblandat regn" 25 "Lätt snöfall"             26 "Måttligt snöfall"            27 "Kraftigt snöfall"})
 
-(defn night?
-  "Fixed-hour heuristic for whether an SMHI timestamp falls at night, used
-   only to pick the day/night icon variant — not a real sunrise/sunset
-   calculation."
-  [iso-time]
-  (let [hour (.getHour (.atZone (Instant/parse iso-time) (ZoneId/of "Europe/Stockholm")))]
-    (or (< hour 6) (>= hour 21))))
-
 (defn local-time-str [iso-time]
   (-> (Instant/parse iso-time)
     (.atZone (ZoneId/of "Europe/Stockholm"))
@@ -71,6 +63,54 @@
   (-> (Instant/parse iso-time)
     (.atZone (ZoneId/of "Europe/Stockholm"))
     (.toLocalDate)))
+
+(defn- julian->instant [jd]
+  (Instant/ofEpochMilli (long (* (- jd 2440587.5) 86400000.0))))
+
+(defn sun-times
+  "Sunrise and sunset Instants for `location` ({:lat :lon}) on the
+   Europe/Stockholm calendar date that `iso-time` falls on, via the NOAA
+   sunrise equation (accurate to ~1 min — plenty for picking an icon, and no
+   network call or dependency). Returns {:sunrise Instant :sunset Instant}, or
+   {:polar-day? true} / {:polar-night? true} at high latitudes on days when the
+   sun never sets / never rises."
+  [{:keys [lat lon]} iso-time]
+  (let [;; J2000 (2451545.0) is 2000-01-01 12:00 UTC, whose epoch day is 10957,
+        ;; so (epoch-day + 2440588.0) is the Julian date at noon UTC and n the
+        ;; whole days since J2000 — the mean-solar-noon base the equation wants.
+        n       (- (+ (.toEpochDay (local-date iso-time)) 2440588.0) 2451545.0)
+        j*      (- n (/ lon 360.0))                       ; mean solar noon (lon east-positive → noon comes earlier in UTC)
+        m       (mod (+ 357.5291 (* 0.98560028 j*)) 360.0) ; solar mean anomaly (deg)
+        mr      (Math/toRadians m)
+        c       (+ (* 1.9148 (Math/sin mr))               ; equation of the center
+                  (* 0.0200 (Math/sin (* 2 mr)))
+                  (* 0.0003 (Math/sin (* 3 mr))))
+        lambda  (Math/toRadians (mod (+ m c 180.0 102.9372) 360.0)) ; ecliptic longitude
+        transit (+ 2451545.0 j* (* 0.0053 (Math/sin mr)) (* -0.0069 (Math/sin (* 2 lambda))))
+        decl    (Math/asin (* (Math/sin lambda) (Math/sin (Math/toRadians 23.44))))
+        latr    (Math/toRadians lat)
+        cos-w   (/ (- (Math/sin (Math/toRadians -0.833)) ; -0.833° = refraction + solar radius
+                     (* (Math/sin latr) (Math/sin decl)))
+                  (* (Math/cos latr) (Math/cos decl)))]
+    (cond
+      (< cos-w -1.0) {:polar-day? true}
+      (> cos-w 1.0)  {:polar-night? true}
+      :else (let [w (/ (Math/toDegrees (Math/acos cos-w)) 360.0)]
+              {:sunrise (julian->instant (- transit w))
+               :sunset  (julian->instant (+ transit w))}))))
+
+(defn night?
+  "Whether `iso-time` falls between sunset and sunrise at `location`
+   ({:lat :lon}), via the astronomical sun-times calculation — used only to
+   pick the day/night icon variant. Correct year-round (unlike a fixed-hour
+   cutoff), and handles polar day/night at high latitudes."
+  [location iso-time]
+  (let [t                                                (Instant/parse iso-time)
+        {:keys [sunrise sunset polar-day? polar-night?]} (sun-times location iso-time)]
+    (cond
+      polar-day?   false
+      polar-night? true
+      :else        (or (.isBefore t sunrise) (.isAfter t sunset)))))
 
 (defn local-day-label [iso-time]
   (-> (Instant/parse iso-time)

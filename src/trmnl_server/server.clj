@@ -83,7 +83,8 @@
           (if (fresh? entry)
             entry
             (try
-              (let [image     (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) (forecast-location))))
+              (let [location  (forecast-location)
+                    image     (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) location) location))
                     bytes     (png-bytes image)
                     new-entry {:image        image
                                :bytes        bytes
