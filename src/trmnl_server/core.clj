@@ -182,13 +182,15 @@
    than duplicated under each chart."
   [canvas points x w y]
   (let [n       (count points)
+        font    (pixel-font :regular 16)
         idx->x  (fn [i] (+ x (* w (/ i (double (dec n))))))
         indices (distinct (for [k (range axis-label-count)]
                             (Math/round (* k (/ (dec n) (double (dec axis-label-count)))))))]
     (doseq [i indices]
-      (let [px (idx->x i)]
-        (img/draw-text canvas (smhi/local-time-str (:time (nth points i))) (- px 18) y
-          :font (pixel-font :regular 16))))))
+      (let [px    (idx->x i)
+            label (smhi/local-time-str (:time (nth points i)))
+            lw    (img/text-width canvas label :font font)]
+        (img/draw-text canvas label (- px (/ lw 2.0)) y :font font)))))
 
 (defn precip-bar-chart
   "Draws precipitation (mm) as one bottom-anchored vertical bar per forecast
@@ -243,15 +245,17 @@
       (let [center-x (/ (+ (idx->x (first group)) (idx->x (last group))) 2)]
         (img/draw-text canvas (smhi/local-day-label (:time (nth points (first group)))) (- center-x 12) label-y
           :font (pixel-font :bold 16))))
-    (doseq [[a b] (partition 2 1 groups)]
-      (let [boundary-x (/ (+ (idx->x (last a)) (idx->x (first b))) 2)]
+    (doseq [[_a b] (partition 2 1 groups)]
+      (let [boundary-x (idx->x (first b))]
         (img/draw-dashed-line canvas boundary-x top boundary-x bottom)))))
 
 (def default-forecast-hours
   "How many hourly points forecast-screen renders when fetching live data or
    generating a demo season, absent an explicit override (e.g. --hours or
-   FORECAST_HOURS)."
-  48)
+   FORECAST_HOURS). 23 rather than a round 24/48: hour-axis-labels' 12 labels
+   only land at perfectly even pixel spacing when (hours - 1) is a multiple of
+   11, and 23 is the smallest such count above a day."
+  23)
 
 (def default-forecast-location
   "Where forecast-screen fetches live data for, absent an explicit override

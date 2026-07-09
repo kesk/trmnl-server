@@ -21,8 +21,8 @@ clojure -M:run
 # out/demo-{winter,spring,summer,autumn}(.png|-1bit.png)
 clojure -M -m trmnl-server.main --demo
 
-# Override how many hourly points are fetched/rendered (default 48, i.e. 2
-# days) — applies to both the live fetch and --demo above.
+# Override how many hourly points are fetched/rendered (default 23) —
+# applies to both the live fetch and --demo above.
 clojure -M -m trmnl-server.main --hours 24
 
 # Override where the live forecast is fetched for (default Gothenburg,
@@ -32,7 +32,7 @@ clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 
 # Serve the live forecast screen to a real TRMNL OG device over HTTP (see
 # trmnl-server.server below). Listens on $PORT or 8080, renders $FORECAST_HOURS
-# hourly points (default 48) for $FORECAST_LAT/$FORECAST_LON (default Gothenburg).
+# hourly points (default 23) for $FORECAST_LAT/$FORECAST_LON (default Gothenburg).
 clojure -M -m trmnl-server.main --serve
 # equivalently:
 clojure -M:serve
@@ -99,7 +99,7 @@ Six namespaces, cleanly separated by concern:
 
 - **`trmnl-server.core`** — composes the above into the actual screen
   (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-0
-  fetches `live-points` of `default-forecast-hours` [48] points for
+  fetches `live-points` of `default-forecast-hours` [23] points for
   `default-forecast-location` [Gothenburg]), and is where domain-specific
   layout/chart logic lives (e.g. `line-chart`/`combined-chart`, `nice-bounds` for
   rounding axis extents). `default-forecast-hours`/`default-forecast-location` are
