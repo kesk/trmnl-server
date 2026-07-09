@@ -102,7 +102,6 @@
                     stale-entry)
                   (throw e))))))))))
 
-(defn- serve-bytes [entry] (or (:stale-bytes entry) (:bytes entry)))
 (defn- serve-filename [entry] (or (:stale-filename entry) (:filename entry)))
 
 (defn- image-url [base-url filename]
@@ -137,10 +136,21 @@
       (swap! device-logs #(->> (concat % entries) (take-last max-stored-logs) vec))))
   {:status 204})
 
-(defn- image-response []
+(defn- png-response [bytes]
   {:status  200
    :headers {"Content-Type" "image/png"}
-   :body    (serve-bytes (current-image))})
+   :body    bytes})
+
+(defn- image-response [uri]
+  ;; Serve only the bytes whose content hash matches the requested filename, so a
+  ;; cache rollover between the device's /api/display poll and its image fetch
+  ;; 404s (prompting a re-poll) instead of silently serving mismatched bytes.
+  (let [requested (subs uri (count "/images/"))
+        entry     (current-image)]
+    (condp = requested
+      (:stale-filename entry) (png-response (:stale-bytes entry))
+      (:filename entry)       (png-response (:bytes entry))
+      {:status 404})))
 
 (defn- html-response [body]
   {:status  200
@@ -184,7 +194,7 @@
       (and (= request-method :get) (= uri "/api/setup")) (setup-response base-url)
       (and (= request-method :post) (= uri "/api/log")) (log-response request)
       (and (= request-method :get) (= uri "/status")) (status-response)
-      (and (= request-method :get) (str/starts-with? uri "/images/")) (image-response)
+      (and (= request-method :get) (str/starts-with? uri "/images/")) (image-response uri)
       :else {:status 404})))
 
 (defn- lan-ip
