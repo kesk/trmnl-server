@@ -7,13 +7,17 @@
 (def jar-path "target/trmnl-server.jar")
 (def unit-path "deploy/trmnl-server.service")
 
+(println "Build uber jar")
 (shell "clojure" "-T:build" "uber")
 
+(println "Copy jar")
 (shell "scp" jar-path (str host ":~/trmnl-server/trmnl-server.jar"))
 
+(println "Copy service file")
 (shell "scp" unit-path (str host ":~/trmnl-server.service"))
 (shell "ssh" host "sudo mv ~/trmnl-server.service /etc/systemd/system/trmnl-server.service && sudo systemctl daemon-reload")
 
+(println "Restart trmnl-server")
 (shell "ssh" host "sudo systemctl restart trmnl-server")
 
 (defn healthy? []
