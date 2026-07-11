@@ -40,25 +40,65 @@
     (map #(map first %))
     (filter #(> (count %) 1))))
 
+(defn- local-max?
+  "True when vs[i] is a turning point at or above its neighbours (the left edge
+   of a plateau, so a run of equal values yields one candidate). Array endpoints
+   count, so a still-rising/-falling forecast edge — where the visible high/low
+   actually sits — is a candidate too."
+  [vs i]
+  (let [n (count vs) v (nth vs i)]
+    (and (or (zero? i)       (> v (nth vs (dec i))))
+      (or (= i (dec n)) (>= v (nth vs (inc i)))))))
+
+(defn- saddle-toward
+  "Walking from peak i in step direction (+1/-1), the lowest value passed before
+   reaching a point strictly higher than vs[i]. If the edge is reached first (no
+   higher ground that way) the descent bottoms out at series-min — so the global
+   maximum, hemmed in by nothing on either side, sees series-min both ways."
+  [vs i step series-min]
+  (let [n (count vs) vi (nth vs i)]
+    (loop [j (+ i step) col Double/POSITIVE_INFINITY]
+      (cond
+        (or (neg? j) (>= j n)) (min col series-min)
+        (> (nth vs j) vi)      col
+        :else                  (recur (+ j step) (min col (double (nth vs j))))))))
+
+(defn- peaks
+  "Local maxima of value-seq vs, each tagged with its topographic prominence —
+   height above the higher of the two saddles separating it from taller ground
+   (the global max gets the full range, since both saddles bottom out at the
+   series minimum). Prominence-descending, so the first is the global maximum.
+   Run on the negated series to get minima the same way."
+  [vs]
+  (let [series-min (double (apply min vs))]
+    (->> (range (count vs))
+      (filter #(local-max? vs %))
+      (map (fn [i]
+             {:i    i
+              :prom (- (double (nth vs i))
+                      (max (saddle-toward vs i -1 series-min)
+                        (saddle-toward vs i 1 series-min)))}))
+      (sort-by :prom >))))
+
 (defn- series-layout
   "Maps a value-key's series onto the chart box, scaled to its own min/max.
    Independent per-series scaling (rather than one shared numeric axis) is what
    makes it honest to overlay two different units on one chart: there's no
    single y-axis pretending °C and m/s are comparable, so each line's actual
-   values only ever appear via its own direct labels. A single global min/max
-   is found across the whole span (one high + one low label per series) —
-   enough for the ~1-day forecast the device shows, and it keeps the labels
-   from bunching up around a midnight divider the way per-day extrema did."
+   values only ever appear via its own direct labels. `:candidates` holds the
+   series' turning points, prominence-ranked (see peaks) as {:maxima :minima};
+   the first of each is the global high/low (always labeled), the rest feed
+   combined-chart's greedy pick of a couple of extra local labels."
   [points value-key x y w h round-step floor]
-  (let [values      (map value-key points)
+  (let [values      (mapv value-key points)
         [lo hi]     (nice-bounds values round-step :floor floor)
         n           (count points)
         value->y    (fn [v] (+ y (* h (/ (- hi v) (double (- hi lo))))))
         idx->x      (fn [i] (+ x (* w (/ i (double (dec n))))))
-        plot-points (map-indexed (fn [i point] [(idx->x i) (value->y (value-key point))]) points)
-        extrema     {:max-i (apply max-key #(value-key (nth points %)) (range n))
-                     :min-i (apply min-key #(value-key (nth points %)) (range n))}]
-    {:plot-points plot-points :idx->x idx->x :extrema extrema}))
+        plot-points (map-indexed (fn [i point] [(idx->x i) (value->y (value-key point))]) points)]
+    {:plot-points plot-points
+     :idx->x      idx->x
+     :candidates  {:maxima (peaks values) :minima (peaks (mapv - values))}}))
 
 (defn- draw-series-line
   "Just the polyline, no dots/labels -- combined-chart draws both series'
@@ -86,18 +126,56 @@
       (img/draw-dashed-line canvas dot-x dot-y label-x (- label-y 6)))
     (img/draw-text canvas text label-x label-y :font (pixel-font :bold 16) :halo? true)))
 
-(defn- draw-series-labels
-  "Dots + high/low labels for one series' global extrema. Placement is decided
-   up front by combined-chart and handed in as a single
-   {:above {:dx :dy :leader? :max-y} :below {…}} map (:above for the max,
-   :below for the min) -- see draw-extremum-label for what each field does."
-  [canvas points value-key layout label-fmt {:keys [above below]}]
-  (let [{:keys [plot-points extrema]} layout
-        {:keys [max-i min-i]}         extrema
-        [max-x max-y]                 (nth plot-points max-i)
-        [min-x min-y]                 (nth plot-points min-i)]
-    (draw-extremum-label canvas max-x max-y (label-fmt (value-key (nth points max-i))) above)
-    (draw-extremum-label canvas min-x min-y (label-fmt (value-key (nth points min-i))) below)))
+(defn- close-points?
+  "True when two plotted points are near enough that same-offset labels
+   anchored to them would overlap."
+  [[ax ay] [bx by]]
+  (and (< (Math/abs (- ax bx)) 60) (< (Math/abs (- ay by)) 30)))
+
+(defn- series-label-specs
+  "Builds the {:dot :text :place} label specs for one series: its two global
+   extrema (placement decided up front by combined-chart as {:above … :below …}
+   -- see draw-extremum-label for the fields) plus any greedily-picked extra
+   local turning points. Extras are chosen only when clear of every other label
+   (see pick-extras), so they need no collision nudging: a plain offset up for a
+   max, down for a min (capped by :max-y, like the globals, so a low near the
+   chart floor can't shove its label into whatever's drawn below)."
+  [points value-key layout label-fmt {:keys [above below]} global-max-i global-min-i extras below-max-y]
+  (let [pp   (:plot-points layout)
+        spec (fn [i place] {:dot (nth pp i) :text (label-fmt (value-key (nth points i))) :place place})]
+    (concat
+      [(spec global-max-i above)
+       (spec global-min-i below)]
+      (for [{:keys [i kind]} extras]
+        (spec i (if (= kind :max)
+                  {:dx 0 :dy -12}
+                  {:dx 0 :dy 26 :max-y below-max-y}))))))
+
+(defn- pick-extras
+  "Greedily picks up to `cap` extra turning-point labels for one series, in
+   prominence order across its maxima and minima, skipping the two global
+   extrema (already labeled) and any candidate whose dot lands close to a label
+   already placed -- the four globals, the other series' extras, and extras
+   chosen earlier here, all threaded in via `placed-dots`. Returns
+   {:accepted [{:i :kind}…] :dots <placed-dots grown by the accepted ones>}, so
+   the next series can seed its own pick with everything placed so far and no
+   two extras ever crowd each other."
+  [layout global-idxs placed-dots cap]
+  (let [{:keys [candidates plot-points]} layout
+        pool                             (->> (concat (map #(assoc % :kind :max) (:maxima candidates))
+                                                (map #(assoc % :kind :min) (:minima candidates)))
+                                           (remove #(contains? global-idxs (:i %)))
+                                           (filter #(pos? (:prom %)))  ; skip flat shoulders/plateaus -- not real turning points
+                                           (sort-by :prom >))]
+    (reduce (fn [{:keys [accepted dots] :as acc} cand]
+              (if (>= (count accepted) cap)
+                (reduced acc)
+                (let [dot (nth plot-points (:i cand))]
+                  (if (some #(close-points? dot %) dots)
+                    acc
+                    {:accepted (conj accepted cand) :dots (conj dots dot)}))))
+      {:accepted [] :dots (vec placed-dots)}
+      pool)))
 
 (defn- weather-icon-path [symbol-code night?]
   (str "icons/" (if night? "night" "day") "-" symbol-code ".png"))
@@ -199,12 +277,6 @@
           (img/draw-rect canvas left cloud-y (- right left) (- bottom-y cloud-y)
             :fill? true :paint (img/stipple-paint)))))))
 
-(defn- close-points?
-  "True when two plotted points are near enough that same-offset labels
-   anchored to them would overlap."
-  [[ax ay] [bx by]]
-  (and (< (Math/abs (- ax bx)) 60) (< (Math/abs (- ay by)) 30)))
-
 (defn combined-chart
   "Overlays temperature (solid) and wind speed (dashed) on one 24h-per-day
    chart, each scaled to its own range so the two units never share a numeric
@@ -216,30 +288,47 @@
    it's still clear which point it belongs to. Both lines are drawn before either
    series' labels/dots, so a label's white halo (see image/draw-text) always
    sits on top of both lines rather than getting drawn over by whichever
-   line is plotted second. :below-max-y (see draw-series-labels) keeps a
+   line is plotted second. Beyond each series' global high/low it adds up to two
+   extra prominence-ranked local extrema that stay clear of the other labels
+   (see pick-extras). :below-max-y (see series-label-specs) keeps a
    collision-pushed min-label from dropping into whatever's drawn below this
    chart's box -- forecast-screen passes the y where precip-bar-chart starts."
   [canvas points x y w h & {:keys [below-max-y]}]
   (let [temp-layout (series-layout points :temp x y w h 5 nil)
         wind-layout (series-layout points :wind x y w h 5 0)
-        temp-ext    (:extrema temp-layout)
-        wind-ext    (:extrema wind-layout)
-        max-collide (close-points? (nth (:plot-points temp-layout) (:max-i temp-ext))
-                      (nth (:plot-points wind-layout) (:max-i wind-ext)))
-        min-collide (close-points? (nth (:plot-points temp-layout) (:min-i temp-ext))
-                      (nth (:plot-points wind-layout) (:min-i wind-ext)))
+        temp-max-i  (:i (first (:maxima (:candidates temp-layout))))
+        temp-min-i  (:i (first (:minima (:candidates temp-layout))))
+        wind-max-i  (:i (first (:maxima (:candidates wind-layout))))
+        wind-min-i  (:i (first (:minima (:candidates wind-layout))))
+        tp          (:plot-points temp-layout)
+        wp          (:plot-points wind-layout)
+        max-collide (close-points? (nth tp temp-max-i) (nth wp wind-max-i))
+        min-collide (close-points? (nth tp temp-min-i) (nth wp wind-min-i))
         ;; On a temp/wind collision the two overlapping labels back away from each
         ;; other -- temp left (-dx), wind right (+dx) -- and the wind label also
         ;; drops/rises further (its dy grows) so a leadered pair doesn't restack.
         temp-place  {:above {:dx (if max-collide -24 0) :dy -12 :leader? max-collide}
                      :below {:dx (if min-collide -24 0) :dy 26 :leader? min-collide :max-y below-max-y}}
         wind-place  {:above {:dx (if max-collide 24 0) :dy (if max-collide -30 -12) :leader? max-collide}
-                     :below {:dx (if min-collide 24 0) :dy (if min-collide 44 26) :leader? min-collide :max-y below-max-y}}]
+                     :below {:dx (if min-collide 24 0) :dy (if min-collide 44 26) :leader? min-collide :max-y below-max-y}}
+        ;; Beyond the four global extrema, add up to two extra local turning
+        ;; points per series, prominence-ranked, each kept clear of every label
+        ;; already placed (the globals, then the other series' extras) -- so the
+        ;; ~1-day curve shows a secondary peak/valley where there's room without
+        ;; the labels bunching up.
+        global-dots [(nth tp temp-max-i) (nth tp temp-min-i) (nth wp wind-max-i) (nth wp wind-min-i)]
+        temp-extras (pick-extras temp-layout #{temp-max-i temp-min-i} global-dots 2)
+        wind-extras (pick-extras wind-layout #{wind-max-i wind-min-i} (:dots temp-extras) 2)]
     (draw-series-line canvas temp-layout)
     (draw-series-line canvas wind-layout :dash [6.0 5.0])
-    (draw-series-labels canvas points :temp temp-layout (fn [t] (str (int t) "°")) temp-place)
-    (draw-series-labels canvas points :wind wind-layout
-      (fn [w] (str (int (Math/round (double w))) " m/s")) wind-place)))
+    (doseq [{:keys [dot text place]}
+            (concat
+              (series-label-specs points :temp temp-layout (fn [t] (str (int t) "°"))
+                temp-place temp-max-i temp-min-i (:accepted temp-extras) below-max-y)
+              (series-label-specs points :wind wind-layout
+                (fn [w] (str (int (Math/round (double w))) " m/s"))
+                wind-place wind-max-i wind-min-i (:accepted wind-extras) below-max-y))]
+      (draw-extremum-label canvas (first dot) (second dot) text place))))
 
 (def ^:private axis-label-count
   "How many hour-of-day labels hour-axis-labels always draws, evenly spaced
