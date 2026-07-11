@@ -162,14 +162,16 @@
 
 (defn cloud-cover-strip
   "Draws a horizontal band along y whose local thickness encodes cloud cover
-   (0-100%) at each timestamp — thin where skies are clear, thick where
-   they're overcast. Sits above the temp/wind chart as its own row rather
-   than sharing the plot box, since it isn't a value series on the same axes."
+   at each timestamp — thin where skies are clear, thick where they're
+   overcast. SMHI reports cloud_area_fraction in octas (0-8, 8 = fully
+   overcast), so scale against 8, not 100. Sits above the temp/wind chart as
+   its own row rather than sharing the plot box, since it isn't a value series
+   on the same axes."
   [canvas points x y w & {:keys [min-width max-width] :or {min-width 1.0 max-width 20.0}}]
   (let [n           (count points)
         idx->x      (fn [i] (+ x (* w (/ i (double (dec n))))))
         plot-points (map-indexed (fn [i _] [(idx->x i) y]) points)
-        widths      (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 100.0)))))) points)]
+        widths      (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 8.0)))))) points)]
     (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
 
 (defn- rain-background
