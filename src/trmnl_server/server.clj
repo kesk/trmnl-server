@@ -9,10 +9,13 @@
             [org.httpkit.server :as httpkit]
             [trmnl-server.core :as core]
             [trmnl-server.image :as img])
-  (:import [java.io ByteArrayOutputStream]
+  (:import [ch.qos.logback.classic Logger]
+           [ch.qos.logback.core FileAppender]
+           [java.io ByteArrayOutputStream File]
            [java.net NetworkInterface]
            [java.security MessageDigest]
-           [javax.imageio ImageIO]))
+           [javax.imageio ImageIO]
+           [org.slf4j LoggerFactory]))
 
 ;; Dedicated logger name for device telemetry (POST /api/log); logback (resources/logback.xml)
 ;; routes it to its own device.log rather than the main server log.
@@ -142,6 +145,47 @@
       (swap! device-logs #(->> (concat % entries) (take-last max-stored-logs) vec))))
   {:status 204})
 
+(defn- device-log-file
+  "The active device.log path, read straight from logback's DEVICE appender so it stays
+   in sync with resources/logback.xml (including any DEVICE_LOG_FILE override) rather
+   than being duplicated here. nil when logback isn't the backend or the appender is
+   absent (e.g. a REPL under a different config), so seeding just no-ops."
+  []
+  (let [logger   (LoggerFactory/getLogger device-logger)
+        appender (when (instance? Logger logger)
+                   (Logger/.getAppender logger "DEVICE"))]
+    (when (instance? FileAppender appender)
+      (FileAppender/.getFile appender))))
+
+(defn- parse-device-log-line
+  "Pulls the entry maps out of one device.log line: a timestamp prefix followed by the
+   raw POST body (`{\"logs\":[…]}`). Returns that :logs seq, or nil for a blank/malformed
+   line."
+  [line]
+  (when-let [i (str/index-of line "{")]
+    (:logs (try (json/read-str (subs line i) :key-fn keyword)
+             (catch Exception _ nil)))))
+
+(defn- seed-device-logs!
+  "Warms the device-logs atom from the tail of the active device.log at startup, so
+   /status isn't blank after a restart/redeploy — the atom is otherwise only filled by
+   live POSTs and lost on exit. Reads just the active file (the current daily-rolled
+   window, normally already ≥ the max-stored-logs cap), not the gzipped archives.
+   Best-effort: any read/parse problem just leaves the atom as it was."
+  []
+  (try
+    (when-let [path (device-log-file)]
+      (let [file (File. ^String path)]
+        (when (.isFile file)
+          (let [entries (->> (str/split-lines (slurp file))
+                          (mapcat parse-device-log-line)
+                          (take-last max-stored-logs)
+                          vec)]
+            (when (seq entries)
+              (swap! device-logs #(->> (concat entries %) (take-last max-stored-logs) vec)))))))
+    (catch Exception e
+      (log/warn e "Could not seed device-logs from device.log"))))
+
 (defn- png-response [bytes]
   {:status  200
    :headers {"Content-Type" "image/png"}
@@ -220,6 +264,7 @@
   []
   (let [port     (or (some-> (System/getenv "PORT") Integer/parseInt) 8080)
         base-url (str "http://" (lan-ip) ":" port)]
+    (seed-device-logs!)
     (httpkit/run-server (handler base-url) {:port port})
     (log/info (str "TRMNL server listening on " base-url))
     (log/info "Point your TRMNL OG's custom server URL to the above.")))

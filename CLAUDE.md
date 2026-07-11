@@ -169,7 +169,11 @@ logs to the dedicated `trmnl-server.device` logger (see `server/device-logger` a
 `log/log` — tools.logging's explicit-logger-name arity, not the namespace default),
 which logback routes to `logs/device.log` (override with `DEVICE_LOG_FILE`) with
 `additivity="false"` so it stays out of the main log. It's still echoed to the console
-so `journalctl`/live tailing shows everything in one stream. The CLI
+so `journalctl`/live tailing shows everything in one stream. The in-memory
+`device-logs` atom that backs the `/status` page is **seeded from the tail of the
+active `device.log` at startup** (`seed-device-logs!`, which reads the appender's path
+straight from logback rather than duplicating it), so `/status` survives a
+restart/redeploy instead of starting blank. The CLI
 batch-render feedback in `main` (`"Wrote out/…"`, `"Rendering …"`) is deliberately
 still `println` — that's interactive terminal output for a human running the command,
 not server diagnostics.
