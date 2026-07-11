@@ -30,7 +30,7 @@
 (loop [attempts-left 20]
   (cond
     (healthy?) (println "Deployed and healthy.")
-    (pos? attempts-left) (do (Thread/sleep 2000)
+    (pos? attempts-left) (do (Thread/sleep 1000)
                            (recur (dec attempts-left)))
     :else (do (println "Server did not become healthy within 40s of restart")
             (System/exit 1))))
