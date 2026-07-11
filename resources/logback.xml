@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logging config for trmnl-server. tools.logging routes through SLF4J to logback.
+
+  STDOUT keeps output flowing to the terminal (and, under systemd, to journald) exactly
+  as the old println calls did. FILE and DEVICE are rolling file appenders: they write
+  to an active file and, once a day, roll it to a gzipped, date-stamped archive, keeping
+  ~a month of history and deleting older archives — so the files can't grow unbounded and
+  fill the Pi's SD card, with no external logrotate needed. Override the active paths with
+  the LOG_FILE / DEVICE_LOG_FILE env vars (the systemd unit sets WorkingDirectory, so the
+  defaults are relative to that).
+-->
+<configuration>
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{0} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>${LOG_FILE:-logs/trmnl-server.log}</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+      <!-- Roll daily to e.g. trmnl-server.log.2026-07-11.gz; keep 30 archives (~a
+           month), then delete the oldest. totalSizeCap is a belt-and-suspenders limit
+           so a runaway day can't fill the disk before maxHistory catches up. -->
+      <fileNamePattern>${LOG_FILE:-logs/trmnl-server.log}.%d{yyyy-MM-dd}.gz</fileNamePattern>
+      <maxHistory>30</maxHistory>
+      <totalSizeCap>100MB</totalSizeCap>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{0} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <appender name="DEVICE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>${DEVICE_LOG_FILE:-logs/device.log}</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+      <fileNamePattern>${DEVICE_LOG_FILE:-logs/device.log}.%d{yyyy-MM-dd}.gz</fileNamePattern>
+      <maxHistory>30</maxHistory>
+      <totalSizeCap>100MB</totalSizeCap>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!--
+    Device telemetry (POST /api/log) goes to its own logger so it lands in device.log
+    rather than cluttering the main server log. additivity="false" keeps it out of the
+    root FILE appender; STDOUT is listed explicitly so it still shows in the console /
+    journald for live tailing.
+  -->
+  <logger name="trmnl-server.device" level="INFO" additivity="false">
+    <appender-ref ref="STDOUT" />
+    <appender-ref ref="DEVICE" />
+  </logger>
+
+  <root level="INFO">
+    <appender-ref ref="STDOUT" />
+    <appender-ref ref="FILE" />
+  </root>
+</configuration>

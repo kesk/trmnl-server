@@ -1,6 +1,7 @@
 /.cpcache/
 /target/
 /out/
+/logs/
 /scratch/
 *.jar
 .nrepl-port

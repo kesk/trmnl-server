@@ -132,7 +132,9 @@ Six namespaces, cleanly separated by concern:
   caches them for 10 minutes keyed by an MD5 content hash, so the `filename`
   embedded in `/api/display`'s response only changes when the rendered image
   actually changes — this lets the device skip re-downloading identical screens
-  between polls.
+  between polls. Server-side diagnostics (startup banner, device-log receipts,
+  stale-cache warnings) go through `clojure.tools.logging`, not `println` — see the
+  logging note below.
 
 - **`trmnl-server.main`** — the CLI entry point (`-main`). Kept separate from `core`
   purely so `core` and `server` can each require the other one-way without a cycle
@@ -144,6 +146,33 @@ Six namespaces, cleanly separated by concern:
   An optional `--lat LAT --lon LON` pair overrides `core/default-forecast-location`
   for the live path only (`--demo` always renders synthetic Gothenburg data
   regardless).
+
+### Logging
+
+Server-side logging uses `clojure.tools.logging` routed through SLF4J to **logback**
+(`ch.qos.logback/logback-classic`) — the one place the project departs from its
+otherwise dependency-light stance, because file logging on the Pi wanted a real
+appender rather than hand-rolled `println` redirection. Config is
+`resources/logback.xml` (bundled into the uberjar via `:paths`): a console appender
+(so stdout/journald keep the old behaviour) plus two `RollingFileAppender`s. Each rolls
+its file **daily** (`TimeBasedRollingPolicy`) to a gzipped, date-stamped archive
+(e.g. `trmnl-server.log.2026-07-11.gz`), keeps `maxHistory` 30 (~a month) then deletes
+the oldest, with a `totalSizeCap` as a backstop — so the logs self-manage on the Pi's
+SD card without any external `logrotate`. The main log path defaults to
+`logs/trmnl-server.log` relative to the process's working directory (the systemd unit's
+`WorkingDirectory`, so `/home/seb/trmnl-server/logs/…` in prod); override it with the
+`LOG_FILE` env var. logback creates the parent dir if missing.
+
+Device telemetry (`POST /api/log`) is deliberately **split into its own file** so the
+high-volume, JSON-blob device rows don't drown out the server's own diagnostics: it
+logs to the dedicated `trmnl-server.device` logger (see `server/device-logger` and
+`log/log` — tools.logging's explicit-logger-name arity, not the namespace default),
+which logback routes to `logs/device.log` (override with `DEVICE_LOG_FILE`) with
+`additivity="false"` so it stays out of the main log. It's still echoed to the console
+so `journalctl`/live tailing shows everything in one stream. The CLI
+batch-render feedback in `main` (`"Wrote out/…"`, `"Rendering …"`) is deliberately
+still `println` — that's interactive terminal output for a human running the command,
+not server diagnostics.
 
 ### Design constraints worth knowing before extending
 

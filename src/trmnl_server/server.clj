@@ -5,6 +5,7 @@
    handler convention and the embedded server, rather than a heavier Ring+Jetty stack."
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [org.httpkit.server :as httpkit]
             [trmnl-server.core :as core]
             [trmnl-server.image :as img])
@@ -12,6 +13,10 @@
            [java.net NetworkInterface]
            [java.security MessageDigest]
            [javax.imageio ImageIO]))
+
+;; Dedicated logger name for device telemetry (POST /api/log); logback (resources/logback.xml)
+;; routes it to its own device.log rather than the main server log.
+(def ^:private device-logger "trmnl-server.device")
 
 (def ^:private refresh-rate-seconds 900)
 (def ^:private cache-ttl-ms (* 10 60 1000))
@@ -98,7 +103,7 @@
                         stale-entry (assoc entry
                                       :stale-bytes stale-bytes
                                       :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png"))]
-                    (println "Forecast regeneration failed, serving stale cache:" (.getMessage e))
+                    (log/warn e "Forecast regeneration failed, serving stale cache")
                     (reset! cache stale-entry)
                     stale-entry)
                   (throw e))))))))))
@@ -132,7 +137,7 @@
 (defn- log-response [request]
   (let [body    (slurp (:body request))
         entries (:logs (try (json/read-str body :key-fn keyword) (catch Exception _ nil)))]
-    (println "Device log:" body)
+    (log/log device-logger :info nil body)
     (when (seq entries)
       (swap! device-logs #(->> (concat % entries) (take-last max-stored-logs) vec))))
   {:status 204})
@@ -216,5 +221,5 @@
   (let [port     (or (some-> (System/getenv "PORT") Integer/parseInt) 8080)
         base-url (str "http://" (lan-ip) ":" port)]
     (httpkit/run-server (handler base-url) {:port port})
-    (println (str "TRMNL server listening on " base-url))
-    (println "Point your TRMNL OG's custom server URL to the above.")))
+    (log/info (str "TRMNL server listening on " base-url))
+    (log/info "Point your TRMNL OG's custom server URL to the above.")))
