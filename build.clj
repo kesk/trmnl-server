@@ -14,7 +14,14 @@
                :target-dir class-dir})
   (b/compile-clj {:basis basis
                   :src-dirs ["src"]
-                  :class-dir class-dir})
+                  :class-dir class-dir
+                  ;; Quiet logback's startup status dump (incl. the build-only
+                  ;; "logback.xml occurs multiple times on the classpath" WARN,
+                  ;; from resources/ also being copied into target/classes) that
+                  ;; AOT compilation triggers when it loads the logging nses.
+                  ;; Build-scoped only — runtime logback config on the Pi is
+                  ;; untouched, so a genuine misconfig still surfaces at startup.
+                  :java-opts ["-Dlogback.statusListenerClass=ch.qos.logback.core.status.NopStatusListener"]})
   (b/uber {:class-dir class-dir
            :uber-file uber-file
            :basis basis
