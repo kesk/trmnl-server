@@ -100,6 +100,17 @@
      :idx->x      idx->x
      :candidates  {:maxima (peaks values) :minima (peaks (mapv - values))}}))
 
+(defn- draw-series-halo
+  "A white underlay stroked wider than the data line, laid down before the
+   black line so the line reads cleanly where it crosses the rain-background
+   stipple (or the cloud strip) instead of visually merging with the texture --
+   the polyline analogue of draw-text/draw-dot's white halo. combined-chart
+   lays down BOTH series' halos before either black line (the same ordering it
+   uses for the labels), so one series' halo never eats a notch out of the
+   other's line where the two cross. On plain-white areas it's a no-op."
+  [canvas layout & {:keys [dash]}]
+  (img/draw-polyline canvas (:plot-points layout) :width 6.0 :paint Color/WHITE :dash dash))
+
 (defn- draw-series-line
   "Just the polyline, no dots/labels -- combined-chart draws both series'
    lines before either series' labels, so a label (with its white halo) always
@@ -285,7 +296,9 @@
    underlying values are unrelated — when that happens both labels back away
    from each other (temp left, wind right) rather than just one of them moving,
    with a thin leader line from each displaced label back to its own dot so
-   it's still clear which point it belongs to. Both lines are drawn before either
+   it's still clear which point it belongs to. Each line gets a white halo (see
+   draw-series-halo) so it stays legible where it crosses the rain-background
+   stipple. Both lines are drawn before either
    series' labels/dots, so a label's white halo (see image/draw-text) always
    sits on top of both lines rather than getting drawn over by whichever
    line is plotted second. Beyond each series' global high/low it adds up to two
@@ -319,6 +332,10 @@
         global-dots [(nth tp temp-max-i) (nth tp temp-min-i) (nth wp wind-max-i) (nth wp wind-min-i)]
         temp-extras (pick-extras temp-layout #{temp-max-i temp-min-i} global-dots 2)
         wind-extras (pick-extras wind-layout #{wind-max-i wind-min-i} (:dots temp-extras) 2)]
+    ;; Both series' white halos first, then both black lines (like the labels
+    ;; below), so neither halo notches the other line where they cross.
+    (draw-series-halo canvas temp-layout)
+    (draw-series-halo canvas wind-layout :dash [6.0 5.0])
     (draw-series-line canvas temp-layout)
     (draw-series-line canvas wind-layout :dash [6.0 5.0])
     (doseq [{:keys [dot text place]}
