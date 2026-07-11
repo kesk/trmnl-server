@@ -45,10 +45,10 @@
    Independent per-series scaling (rather than one shared numeric axis) is what
    makes it honest to overlay two different units on one chart: there's no
    single y-axis pretending °C and m/s are comparable, so each line's actual
-   values only ever appear via its own direct labels. Min/max are found once
-   per calendar day (rather than once across the whole multi-day span) so a
-   second day's peak still gets its own label even if it's milder than the
-   first day's."
+   values only ever appear via its own direct labels. A single global min/max
+   is found across the whole span (one high + one low label per series) —
+   enough for the ~1-day forecast the device shows, and it keeps the labels
+   from bunching up around a midnight divider the way per-day extrema did."
   [points value-key x y w h round-step floor]
   (let [values      (map value-key points)
         [lo hi]     (nice-bounds values round-step :floor floor)
@@ -56,9 +56,8 @@
         value->y    (fn [v] (+ y (* h (/ (- hi v) (double (- hi lo))))))
         idx->x      (fn [i] (+ x (* w (/ i (double (dec n))))))
         plot-points (map-indexed (fn [i point] [(idx->x i) (value->y (value-key point))]) points)
-        extrema     (for [group (day-groups points)]
-                      {:max-i (apply max-key #(value-key (nth points %)) group)
-                       :min-i (apply min-key #(value-key (nth points %)) group)})]
+        extrema     {:max-i (apply max-key #(value-key (nth points %)) (range n))
+                     :min-i (apply min-key #(value-key (nth points %)) (range n))}]
     {:plot-points plot-points :idx->x idx->x :extrema extrema}))
 
 (defn- draw-series-line
@@ -88,18 +87,17 @@
     (img/draw-text canvas text label-x label-y :font (pixel-font :bold 16) :halo? true)))
 
 (defn- draw-series-labels
-  "Dots + extrema labels for one series. Placement is decided up front by
-   combined-chart and handed in as a per-day
-   {:above {:dx :dy :leader? :max-y} :below {…}} seq (one entry per day/extrema
-   pair) -- see draw-extremum-label for what each placement field does."
-  [canvas points value-key layout label-fmt placements]
-  (let [{:keys [plot-points extrema]} layout]
-    (doseq [[i {:keys [max-i min-i]}] (map-indexed vector extrema)]
-      (let [[max-x max-y]         (nth plot-points max-i)
-            [min-x min-y]         (nth plot-points min-i)
-            {:keys [above below]} (nth placements i)]
-        (draw-extremum-label canvas max-x max-y (label-fmt (value-key (nth points max-i))) above)
-        (draw-extremum-label canvas min-x min-y (label-fmt (value-key (nth points min-i))) below)))))
+  "Dots + high/low labels for one series' global extrema. Placement is decided
+   up front by combined-chart and handed in as a single
+   {:above {:dx :dy :leader? :max-y} :below {…}} map (:above for the max,
+   :below for the min) -- see draw-extremum-label for what each field does."
+  [canvas points value-key layout label-fmt {:keys [above below]}]
+  (let [{:keys [plot-points extrema]} layout
+        {:keys [max-i min-i]}         extrema
+        [max-x max-y]                 (nth plot-points max-i)
+        [min-x min-y]                 (nth plot-points min-i)]
+    (draw-extremum-label canvas max-x max-y (label-fmt (value-key (nth points max-i))) above)
+    (draw-extremum-label canvas min-x min-y (label-fmt (value-key (nth points min-i))) below)))
 
 (defn- weather-icon-path [symbol-code night?]
   (str "icons/" (if night? "night" "day") "-" symbol-code ".png"))
@@ -208,39 +206,33 @@
 (defn combined-chart
   "Overlays temperature (solid) and wind speed (dashed) on one 24h-per-day
    chart, each scaled to its own range so the two units never share a numeric
-   axis. Since the series are scaled independently, a day's temp and wind
-   extrema can land right on top of each other in pixel space even though the
-   underlying values are unrelated — when that happens (checked per day, since
-   each day has its own label pair), both labels back away from each other
-   (temp left, wind right) rather than just one of them moving, with a thin
-   leader line from each displaced label back to its own dot so it's still
-   clear which point it belongs to. Both lines are drawn before either
+   axis. Since the series are scaled independently, the temp and wind high (or
+   low) can land right on top of each other in pixel space even though the
+   underlying values are unrelated — when that happens both labels back away
+   from each other (temp left, wind right) rather than just one of them moving,
+   with a thin leader line from each displaced label back to its own dot so
+   it's still clear which point it belongs to. Both lines are drawn before either
    series' labels/dots, so a label's white halo (see image/draw-text) always
    sits on top of both lines rather than getting drawn over by whichever
    line is plotted second. :below-max-y (see draw-series-labels) keeps a
    collision-pushed min-label from dropping into whatever's drawn below this
    chart's box -- forecast-screen passes the y where precip-bar-chart starts."
   [canvas points x y w h & {:keys [below-max-y]}]
-  (let [temp-layout  (series-layout points :temp x y w h 5 nil)
-        wind-layout  (series-layout points :wind x y w h 5 0)
-        day-pairs    (map vector (:extrema temp-layout) (:extrema wind-layout))
-        max-collides (mapv (fn [[t w]] (close-points? (nth (:plot-points temp-layout) (:max-i t))
-                                         (nth (:plot-points wind-layout) (:max-i w))))
-                       day-pairs)
-        min-collides (mapv (fn [[t w]] (close-points? (nth (:plot-points temp-layout) (:min-i t))
-                                         (nth (:plot-points wind-layout) (:min-i w))))
-                       day-pairs)
+  (let [temp-layout (series-layout points :temp x y w h 5 nil)
+        wind-layout (series-layout points :wind x y w h 5 0)
+        temp-ext    (:extrema temp-layout)
+        wind-ext    (:extrema wind-layout)
+        max-collide (close-points? (nth (:plot-points temp-layout) (:max-i temp-ext))
+                      (nth (:plot-points wind-layout) (:max-i wind-ext)))
+        min-collide (close-points? (nth (:plot-points temp-layout) (:min-i temp-ext))
+                      (nth (:plot-points wind-layout) (:min-i wind-ext)))
         ;; On a temp/wind collision the two overlapping labels back away from each
         ;; other -- temp left (-dx), wind right (+dx) -- and the wind label also
         ;; drops/rises further (its dy grows) so a leadered pair doesn't restack.
-        temp-place   (mapv (fn [max? min?]
-                             {:above {:dx (if max? -24 0) :dy -12 :leader? max?}
-                              :below {:dx (if min? -24 0) :dy 26 :leader? min? :max-y below-max-y}})
-                       max-collides min-collides)
-        wind-place   (mapv (fn [max? min?]
-                             {:above {:dx (if max? 24 0) :dy (if max? -30 -12) :leader? max?}
-                              :below {:dx (if min? 24 0) :dy (if min? 44 26) :leader? min? :max-y below-max-y}})
-                       max-collides min-collides)]
+        temp-place  {:above {:dx (if max-collide -24 0) :dy -12 :leader? max-collide}
+                     :below {:dx (if min-collide -24 0) :dy 26 :leader? min-collide :max-y below-max-y}}
+        wind-place  {:above {:dx (if max-collide 24 0) :dy (if max-collide -30 -12) :leader? max-collide}
+                     :below {:dx (if min-collide 24 0) :dy (if min-collide 44 26) :leader? min-collide :max-y below-max-y}}]
     (draw-series-line canvas temp-layout)
     (draw-series-line canvas wind-layout :dash [6.0 5.0])
     (draw-series-labels canvas points :temp temp-layout (fn [t] (str (int t) "°")) temp-place)
