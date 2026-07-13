@@ -92,19 +92,42 @@
               (< (.lastModified f) cutoff))
         (.delete f)))))
 
+(def ^:private archive-name-pattern
+  ;; forecast-<yyyyMMdd-HHmmss>-<8 hex content-hash chars>.png; the hash is captured for dedupe.
+  #"forecast-\d{8}-\d{6}-([0-9a-f]{8})\.png")
+
+(defn- last-archived-hash
+  "Short content hash of the most recently written archive file, or nil when the dir is
+   empty or its newest file predates the hashed-filename scheme. Lets archive-image! skip
+   re-writing a render byte-identical to the one already on top of the archive."
+  [^File dir]
+  (some->> (.listFiles dir)
+    (filter #(.isFile ^File %))
+    (sort-by #(- (.lastModified ^File %)))
+    first
+    (#(.getName ^File %))
+    (re-matches archive-name-pattern)
+    second))
+
 (defn- archive-image!
-  "Persists freshly rendered PNG bytes to the rolling archive dir and prunes the 24h
-   window, so a problematic screen spotted after the fact can still be recovered and
-   saved. Best-effort: any IO failure is logged and swallowed so it never breaks the
-   serving path. Runs under current-image's regen-lock, so writes are already serialized."
-  [bytes]
+  "Persists a freshly rendered PNG to the rolling archive dir as
+   `forecast-<ts>-<hash8>.png` and prunes the 24h window, so a problematic screen spotted
+   after the fact can still be recovered and saved. Dedupes: a render byte-identical to the
+   newest archived one (same content hash) is skipped, so the gallery stays a list of
+   *distinct* screens rather than ~100 near-duplicates a day. `hash` is the render's MD5
+   (already computed for the cache filename), so no extra hashing here. Best-effort: any IO
+   failure is logged and swallowed so it never breaks the serving path. Runs under
+   current-image's regen-lock, so writes are already serialized."
+  [bytes hash]
   (try
-    (let [dir (io/file (archive-dir))]
+    (let [dir        (io/file (archive-dir))
+          short-hash (subs hash 0 8)]
       (.mkdirs dir)
-      (let [stamp (.format (java.time.LocalDateTime/now) archive-timestamp)]
-        (with-open [out (io/output-stream (io/file dir (str "forecast-" stamp ".png")))]
-          (.write out ^bytes bytes)))
-      (prune-archive! dir))
+      (when-not (= short-hash (last-archived-hash dir))
+        (let [stamp (.format (java.time.LocalDateTime/now) archive-timestamp)]
+          (with-open [out (io/output-stream (io/file dir (str "forecast-" stamp "-" short-hash ".png")))]
+            (.write out ^bytes bytes)))
+        (prune-archive! dir)))
     (catch Exception e
       (log/warn e "Could not archive rendered image"))))
 
@@ -134,12 +157,13 @@
               (let [location  (forecast-location)
                     image     (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) location) location))
                     bytes     (png-bytes image)
+                    hash      (md5-hex bytes)
                     new-entry {:image        image
                                :bytes        bytes
-                               :filename     (str "forecast-" (md5-hex bytes) ".png")
+                               :filename     (str "forecast-" hash ".png")
                                :generated-at (System/currentTimeMillis)}]
                 (reset! cache new-entry)
-                (archive-image! bytes)
+                (archive-image! bytes hash)
                 new-entry)
               (catch Exception e
                 (if entry

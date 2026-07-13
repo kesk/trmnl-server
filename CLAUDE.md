@@ -147,15 +147,23 @@ Six namespaces, cleanly separated by concern:
 
   **Rolling image archive**: every *successful* render (i.e. each new cache entry,
   so ~one per 10-min cache miss, not the stale-fallback copies) is also written to
-  disk by `archive-image!` as `forecast-<yyyyMMdd-HHmmss>.png` under `archive/`
+  disk by `archive-image!` as `forecast-<yyyyMMdd-HHmmss>-<hash8>.png` under `archive/`
   (relative to the working dir, like `logs/`; override with `$ARCHIVE_DIR`), and
   files older than 24h are pruned by mtime on each write — so the folder self-manages
   a rolling 24h window with no cron. This exists so a problematic screen spotted after
-  the fact can still be recovered and saved. The write is best-effort (any IO error is
-  logged and swallowed, never breaking the serving path) and runs under the same
-  `regen-lock` as the render. Browse/download them via the `/archive` gallery
-  (newest first); `archive-file-response` only serves flat `forecast-*.png` basenames,
-  so the route can't be walked out of the archive dir.
+  the fact can still be recovered and saved. `<hash8>` is the first 8 chars of the
+  render's MD5 (the same content hash the cache filename uses), and the write is
+  **deduped**: a render byte-identical to the newest archived file (matching hash) is
+  skipped, so the gallery stays a list of *distinct* screens rather than ~100
+  near-identical ones a day — SMHI only republishes the point forecast ~hourly and the
+  screen has no live clock, so most consecutive renders are identical. (A consequence:
+  in the degenerate all-identical case the single archived file can outlive the 24h
+  window, since pruning only runs when something new is written — which is the desired
+  behaviour, keeping the last known screen rather than emptying the archive.) The write
+  is best-effort (any IO error is logged and swallowed, never breaking the serving path)
+  and runs under the same `regen-lock` as the render. Browse/download them via the
+  `/archive` gallery (newest first); `archive-file-response` only serves flat
+  `forecast-*.png` basenames, so the route can't be walked out of the archive dir.
 
 - **`trmnl-server.main`** — the CLI entry point (`-main`). Kept separate from `core`
   purely so `core` and `server` can each require the other one-way without a cycle
