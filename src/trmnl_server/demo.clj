@@ -58,3 +58,33 @@
          :cloud-cover   (Math/round cloud)
          :precip-mm     (if raining? precip-mm 0.0)
          :precip-chance (if raining? 80 5)}))))
+
+(defn rain-test-points
+  "A deliberately unrealistic day that decouples rain probability from rain
+   amount to exercise every case the precipitation chart has to render — the one
+   thing the season datasets can't show, since season-points ties chance and mm
+   together. Across the day: likely-but-light (high chance, ~0mm — a tall
+   probability line over no bar), unlikely-but-heavy (low chance, big mm — the
+   low line crossing tall black bars, which tests the white-over-black line
+   pass), likely-and-heavy (both high), and dry. Hour-of-day based so it still
+   honours --hours like the seasons do."
+  [hours]
+  (let [start (-> (LocalDate/parse "2026-07-12")
+                (.atStartOfDay (ZoneId/of "Europe/Stockholm"))
+                (.toInstant))]
+    (for [h (range hours)]
+      (let [hod         (mod h 24)
+            [chance mm] (cond
+                          (<= 6 hod 9)   [75 0.05] ; likely but light
+                          (<= 10 hod 13) [20 2.2]  ; heavy but unlikely
+                          (<= 14 hod 17) [85 1.5]  ; likely and heavy
+                          :else          [8 0.0])  ; dry
+            wet?        (or (pos? mm) (>= chance 50))
+            temp        (+ 16 (* 4 (Math/sin (* 2 Math/PI (/ (- hod 9) 24.0)))))]
+        {:time          (str (.plusSeconds start (* h 3600)))
+         :temp          (Math/round temp)
+         :wind          (+ 3.0 (double (mod h 3)))
+         :symbol        (if wet? 18 3)
+         :cloud-cover   (if wet? 7 3)
+         :precip-mm     mm
+         :precip-chance chance}))))

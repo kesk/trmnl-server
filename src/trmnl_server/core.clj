@@ -375,9 +375,14 @@
    point. Kept as its own row with its own 0-based scale — per the no-shared-axis
    rule, mm must not be folded onto the temp/wind chart's independently-scaled
    pixel box, since 0mm has to mean the same thing as every other 0mm here.
-   Labels the wettest bar per calendar day (like the temp/wind extrema above)
-   rather than one max across the whole span, so a rainy first day doesn't
-   hide a smaller-but-still-notable second-day shower."
+   Draws the title, the bars, and the baseline, and RETURNS
+   {:mm-labels [{:x :top :mm}...] :bar-rects [[x y w h]...]}: the wettest-bar-
+   per-day label specs for precip-mm-labels to draw afterwards (deferred so they
+   land on top of the probability line and keep their white halos legible where
+   it crosses), and the filled bar rectangles for precip-probability-line to
+   clip its white pass to. Wettest-per-day (like the temp/wind extrema above)
+   rather than one max across the whole span, so a rainy first day doesn't hide
+   a smaller-but-still-notable second-day shower."
   [canvas points x y w h]
   (let [n         (count points)
         values    (map :precip-mm points)
@@ -401,12 +406,64 @@
     (doseq [{:keys [x bar-h]} bars]
       (when (pos? bar-h)
         (img/draw-rect canvas x (- bottom bar-h) bar-w bar-h :fill? true)))
-    (doseq [group (day-groups points)]
-      (let [{:keys [x bar-h mm]} (apply max-key :bar-h (map bars group))]
-        (when (pos? mm)
-          (img/draw-text canvas (format "%.1fmm" (double mm)) (- x 4) (- bottom bar-h 6)
-            :font (pixel-font :bold 16) :halo? true))))
-    (img/draw-line canvas x bottom (+ x w) bottom)))
+    (img/draw-line canvas x bottom (+ x w) bottom)
+    {:mm-labels (->> (day-groups points)
+                  (map (fn [group] (apply max-key :bar-h (map bars group))))
+                  (filter #(pos? (:mm %)))
+                  (mapv (fn [{:keys [x bar-h mm]}] {:x x :top (- bottom bar-h) :mm mm})))
+     :bar-rects (->> bars
+                  (filter #(pos? (:bar-h %)))
+                  (mapv (fn [{:keys [x bar-h]}] [x (- bottom bar-h) bar-w bar-h])))}))
+
+(defn precip-mm-labels
+  "Draws the wettest-per-day mm labels from precip-bar-chart's returned specs.
+   Split out so it runs AFTER precip-probability-line, letting each label's white
+   halo mask the dashed line where the two overlap (a halo only masks what's
+   drawn before it)."
+  [canvas specs]
+  (doseq [{:keys [x top mm]} specs]
+    (img/draw-text canvas (format "%.1fmm" (double mm)) (- x 4) (- top 6)
+      :font (pixel-font :bold 16) :halo? true)))
+
+(defn precip-probability-line
+  "Overlays probability-of-precipitation as a recessive dashed line across
+   precip-bar-chart's box, on a fixed 0-100% scale independent of the mm bars
+   underneath -- so an hour that's likely-but-light (high chance, ~0mm, hence no
+   visible bar) still shows a signal, which is exactly where amount alone says
+   nothing. Dashed rather than solid so it reads as a separate series from the
+   solid mm bars on the 1-bit surface, per the texture-not-color rule. Drawn in
+   two passes so it stays visible even where a low chance passes through a tall
+   mm bar (a lot of rain, low odds): a plain black pass (correct everywhere the
+   line is over white or the sparse rain-background stipple -- a black dash over
+   a stipple dot is still black, so nothing is erased), then a white pass clipped
+   to bar-rects so it reads white-on-black only over the solid bars. This gives
+   black-elsewhere/white-over-bars without XOR's side effect of flipping the
+   stipple pixels the line crosses. Shares precip-bar-chart's x/y/w/h box and
+   plots at slot centers; drawn after the bars but before their mm labels, so it
+   sits over the bars yet under the haloed labels."
+  [canvas points x y w h bar-rects]
+  (let [n      (count points)
+        slot-w (/ w (double n))
+        bottom (+ y h)
+        chance (fn [p] (or (:precip-chance p) 0))
+        pt->x  (fn [i] (+ x (* i slot-w) (/ slot-w 2)))
+        pct->y (fn [pct] (- bottom (* h (/ pct 100.0))))
+        plot   (vec (map-indexed (fn [i p] [(pt->x i) (pct->y (chance p))]) points))
+        peak   (apply max (map chance points))]
+    ;; Right-aligned tag naming the dashed series and carrying the headline
+    ;; number, mirroring precip-bar-chart's left-aligned "Regn (0-Xmm)" title at
+    ;; the same y. The peak lives here -- in the guaranteed-clear band above the
+    ;; strip -- rather than floating at the line's vertex, where on a rainy hour
+    ;; it would land on the wettest bar's mm label (peak chance and peak amount
+    ;; coincide) and mash together; and marking *which* hour it falls on with a
+    ;; dot doesn't read anyway (the peak sits on a plateau corner and/or atop the
+    ;; black bars), so the line's shape carries "when" instead.
+    (let [tag  (str "Regnrisk (max " (int peak) "%)")
+          font (pixel-font :regular 16)
+          tw   (img/text-width canvas tag :font font)]
+      (img/draw-text canvas tag (- (+ x w) tw) (- y 6) :font font :halo? true))
+    (img/draw-polyline canvas plot :dash [5.0 4.0] :width 2.0)
+    (img/draw-polyline canvas plot :dash [5.0 4.0] :width 2.0 :paint Color/WHITE :clip bar-rects)))
 
 (defn- day-markers
   "Draws a weekday label centered over each calendar day's x-span, plus a
@@ -483,7 +540,13 @@
        (rain-background canvas points 40 136 (+ precip-y precip-h) 720)
        (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
        (combined-chart canvas points 40 172 720 155 :below-max-y (- precip-y 20))
-       (precip-bar-chart canvas points 40 precip-y 720 precip-h))
+       ;; Three z-layers in the precip strip: bars, then the (XOR) probability
+       ;; line over them, then the mm labels on top -- so the line stays visible
+       ;; through a tall bar while each label's halo still masks the line where
+       ;; they overlap (a halo only masks what's drawn before it).
+       (let [{:keys [mm-labels bar-rects]} (precip-bar-chart canvas points 40 precip-y 720 precip-h)]
+         (precip-probability-line canvas points 40 precip-y 720 precip-h bar-rects)
+         (precip-mm-labels canvas mm-labels)))
      (hour-axis-labels canvas points 40 720 468)
      (day-markers canvas points 40 720 118 440 454)
      canvas)))

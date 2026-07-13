@@ -53,6 +53,8 @@
         (doseq [{:keys [label file] :as season} demo/seasons]
           (println (str "Rendering " label "..."))
           (write-screen (core/forecast-screen (demo/season-points season hours)) file))
+        (println "Rendering Rain test...")
+        (write-screen (core/forecast-screen (demo/rain-test-points hours)) "demo-rain-test")
         (write-stale-demo hours))
 
       (some #{"--serve"} args)

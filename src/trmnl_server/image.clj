@@ -2,7 +2,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.awt BasicStroke Color RenderingHints TexturePaint]
-           [java.awt.geom Rectangle2D$Double]
+           [java.awt.geom Area Rectangle2D$Double]
            [java.awt.image BufferedImage]
            [java.io File]
            [javax.imageio ImageIO]))
@@ -118,15 +118,27 @@
    Pass :dash [on-length off-length] to draw it dashed instead of solid —
    useful for telling two series apart on a 1-bit surface without color.
    :paint accepts any java.awt.Paint (a Color for solid fill, or e.g.
-   checkerboard-paint for a dithered fill)."
-  [{:keys [graphics]} points & {:keys [width paint dash] :or {width 2.0 paint Color/BLACK}}]
+   checkerboard-paint for a dithered fill).
+   :clip, a seq of [x y w h] rects, restricts drawing to their union. Used to
+   paint a second, white pass of a line only where it overlaps the precip bars,
+   so the line reads white-on-black there while a plain black pass covers the
+   rest — visible over the bars without XOR-inverting the rain-background stipple
+   the line also crosses."
+  [{:keys [graphics]} points & {:keys [width paint dash clip] :or {width 2.0 paint Color/BLACK}}]
   (.setPaint graphics paint)
   (.setStroke graphics (if dash
                          (BasicStroke. width BasicStroke/CAP_BUTT BasicStroke/JOIN_ROUND
                            1.0 (float-array dash) 0.0)
                          (BasicStroke. width BasicStroke/CAP_ROUND BasicStroke/JOIN_ROUND)))
-  (doseq [[[x1 y1] [x2 y2]] (partition 2 1 points)]
-    (.drawLine graphics (int x1) (int y1) (int x2) (int y2)))
+  (let [old-clip (when clip (.getClip graphics))]
+    (when clip
+      (let [area (Area.)]
+        (doseq [[rx ry rw rh] clip]
+          (.add area (Area. (Rectangle2D$Double. (double rx) (double ry) (double rw) (double rh)))))
+        (.setClip graphics area)))
+    (doseq [[[x1 y1] [x2 y2]] (partition 2 1 points)]
+      (.drawLine graphics (int x1) (int y1) (int x2) (int y2)))
+    (when clip (.setClip graphics old-clip)))
   (.setStroke graphics (BasicStroke. 1.0)))
 
 (defn checkerboard-paint

@@ -18,7 +18,8 @@ clojure -M -m trmnl-server.main
 clojure -M:run
 
 # Render synthetic per-season screens instead of a live fetch — writes
-# out/demo-{winter,spring,summer,autumn}(.png|-1bit.png)
+# out/demo-{winter,spring,summer,autumn}(.png|-1bit.png), plus
+# out/demo-rain-test(.png|-1bit.png), a chart stress-test day (see demo below)
 clojure -M -m trmnl-server.main --demo
 
 # Override how many hourly points are fetched/rendered (default 23) —
@@ -100,7 +101,11 @@ Six namespaces, cleanly separated by concern:
   produces, so `--demo` can drive `forecast-screen` without hitting the network.
   Values are simple diurnal sine curves around Gothenburg's seasonal norms, not real
   observations — good enough to look like a typical day, not a claim of historical
-  accuracy.
+  accuracy. Also `rain-test-points` (rendered by `--demo` to `out/demo-rain-test`):
+  a deliberately unrealistic day that *decouples* rain probability from amount —
+  likely-but-light, unlikely-but-heavy, likely-and-heavy, dry — to exercise every
+  case the precip chart renders (notably the low-chance/high-mm line crossing tall
+  bars), which the season datasets can't show since they tie chance and mm together.
 
 - **`trmnl-server.core`** — composes the above into the actual screen
   (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-2
@@ -139,8 +144,9 @@ Six namespaces, cleanly separated by concern:
 - **`trmnl-server.main`** — the CLI entry point (`-main`). Kept separate from `core`
   purely so `core` and `server` can each require the other one-way without a cycle
   (`server` requires `core` for `forecast-screen`; `main` requires both). Renders
-  the live screen by default, one screen per `demo/seasons` entry when invoked with
-  `--demo` (writing both PNG variants of each to `out/`), or starts the HTTP server
+  the live screen by default, one screen per `demo/seasons` entry plus the
+  `demo/rain-test-points` stress-test day when invoked with `--demo` (writing both
+  PNG variants of each to `out/`), or starts the HTTP server
   via `server/start!` when invoked with `--serve`. An optional `--hours N` flag
   overrides `core/default-forecast-hours` for both the live and `--demo` paths.
   An optional `--lat LAT --lon LON` pair overrides `core/default-forecast-location`
