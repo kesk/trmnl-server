@@ -81,7 +81,11 @@ Six namespaces, cleanly separated by concern:
   `java.net.http.HttpClient` directly (no HTTP dependency needed). Fetches raw JSON,
   normalizes each `timeSeries` entry into a flat `{:time :temp :symbol :wind
   :precip-chance :precip-mm :cloud-cover}` map. Also owns the `symbol_code` → text mapping (1–27) and
-  timezone-aware formatting helpers.
+  timezone-aware formatting helpers. `forecast` additionally carries the response's
+  top-level `referenceTime` (the SMHI forecast run's issuance time) as `:reference-time`
+  **metadata on the returned seq** — data the point maps don't need but a caller may want
+  to tag a render with. Because plain seq ops (`take`) drop metadata, `core/live-points`
+  re-attaches it when truncating; the server uses it only to stamp the archive filename.
 
   **Important history**: SMHI deprecated the old `pmp3g` API on 2026-03-31 and
   replaced it with `snow1g` (same weather-symbol codes, different JSON shape — flat
@@ -147,7 +151,8 @@ Six namespaces, cleanly separated by concern:
 
   **Rolling image archive**: every *successful* render (i.e. each new cache entry,
   so ~one per 10-min cache miss, not the stale-fallback copies) is also written to
-  disk by `archive-image!` as `forecast-<yyyyMMdd-HHmmss>-<hash8>.png` under `archive/`
+  disk by `archive-image!` as `forecast-<yyyyMMdd-HHmmss>-run<yyyyMMdd-HHmm>-<hash8>.png`
+  under `archive/`
   (relative to the working dir, like `logs/`; override with `$ARCHIVE_DIR`), and
   files older than 24h are pruned by mtime on each write — so the folder self-manages
   a rolling 24h window with no cron. This exists so a problematic screen spotted after
@@ -157,7 +162,12 @@ Six namespaces, cleanly separated by concern:
   pixels on every render and would defeat pixel-level dedupe. The write is **deduped**
   on that data hash: a render whose forecast matches the newest archived file is skipped,
   so the gallery stays a list of *distinct* screens rather than ~100 near-identical ones
-  a day — SMHI only republishes the point forecast ~hourly. (A consequence:
+  a day — SMHI only republishes the point forecast ~hourly. The `run<...>` segment is
+  SMHI's `referenceTime` (issuance time of the forecast run, from the seq metadata above),
+  rendered in local time purely as at-a-glance provenance — it labels which run each screen
+  came from and plays **no** part in dedupe (that's the content hash's job; the trailing-hash
+  match tolerates the segment, and legacy hash-less filenames simply don't match, so they
+  never suppress a write). (A consequence:
   in the degenerate all-identical case the single archived file can outlive the 24h
   window, since pruning only runs when something new is written — which is the desired
   behaviour, keeping the last known screen rather than emptying the archive.) The write

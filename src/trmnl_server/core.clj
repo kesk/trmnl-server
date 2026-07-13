@@ -499,9 +499,12 @@
 
 (defn live-points
   "Fetches a live forecast for `location` ({:lat :lon}), truncated to `hours`
-   many hourly points."
+   many hourly points. Preserves smhi/forecast's `:reference-time` metadata across
+   the truncation (plain `take` would drop it), so callers can tag a render with the
+   SMHI run it came from."
   [hours location]
-  (take hours (smhi/forecast location)))
+  (let [fc (smhi/forecast location)]
+    (with-meta (take hours fc) (meta fc))))
 
 (defn forecast-screen
   ([] (forecast-screen (live-points default-forecast-hours default-forecast-location)

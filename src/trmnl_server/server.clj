@@ -92,21 +92,36 @@
               (< (.lastModified f) cutoff))
         (.delete f)))))
 
-(def ^:private archive-name-pattern
-  ;; forecast-<yyyyMMdd-HHmmss>-<8 hex content-hash chars>.png; the hash is captured for dedupe.
-  #"forecast-\d{8}-\d{6}-([0-9a-f]{8})\.png")
+(def ^:private archive-hash-pattern
+  ;; Captures the trailing <8 hex> content-hash segment of an archive filename, tolerant of
+  ;; the optional `-run<...>` reference-time segment in the middle (see archive-image!).
+  #"-([0-9a-f]{8})\.png\z")
+
+(def ^:private reference-run-format
+  (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd-HHmm"))
+
+(defn- reference-run-token
+  "A compact local-time token identifying the SMHI forecast run (its issuance
+   `referenceTime`) for the archive filename, e.g. \"run20260713-0945\". nil for a nil
+   reference-time (e.g. demo data, which is never archived anyway)."
+  [reference-time]
+  (when reference-time
+    (str "run" (.format (java.time.LocalDateTime/ofInstant
+                          (java.time.Instant/parse reference-time)
+                          (java.time.ZoneId/systemDefault))
+                 reference-run-format))))
 
 (defn- last-archived-hash
   "Short content hash of the most recently written archive file, or nil when the dir is
    empty or its newest file predates the hashed-filename scheme. Lets archive-image! skip
-   re-writing a render byte-identical to the one already on top of the archive."
+   re-writing a render whose forecast matches the one already on top of the archive."
   [^File dir]
   (some->> (.listFiles dir)
     (filter #(.isFile ^File %))
     (sort-by #(- (.lastModified ^File %)))
     first
     (#(.getName ^File %))
-    (re-matches archive-name-pattern)
+    (re-find archive-hash-pattern)
     second))
 
 (defn- archive-image!
@@ -118,15 +133,19 @@
    matches the newest archived one is skipped, so the gallery stays a list of *distinct*
    screens rather than ~100 near-duplicates a day. Best-effort: any IO failure is logged and
    swallowed so it never breaks the serving path. Runs under current-image's regen-lock, so
-   writes are already serialized."
-  [bytes hash]
+   writes are already serialized. `reference-time` (SMHI's run issuance time, or nil) is
+   stamped into the filename as a `run<...>` segment for at-a-glance provenance; it does not
+   affect dedupe."
+  [bytes hash reference-time]
   (try
     (let [dir        (io/file (archive-dir))
           short-hash (subs hash 0 8)]
       (.mkdirs dir)
       (when-not (= short-hash (last-archived-hash dir))
-        (let [stamp (.format (java.time.LocalDateTime/now) archive-timestamp)]
-          (with-open [out (io/output-stream (io/file dir (str "forecast-" stamp "-" short-hash ".png")))]
+        (let [stamp (.format (java.time.LocalDateTime/now) archive-timestamp)
+              run   (reference-run-token reference-time)
+              name  (str "forecast-" stamp (when run (str "-" run)) "-" short-hash ".png")]
+          (with-open [out (io/output-stream (io/file dir name))]
             (.write out ^bytes bytes)))
         (prune-archive! dir)))
     (catch Exception e
@@ -169,7 +188,7 @@
                                :filename     (str "forecast-" (md5-hex bytes) ".png")
                                :generated-at (System/currentTimeMillis)}]
                 (reset! cache new-entry)
-                (archive-image! bytes data-hash)
+                (archive-image! bytes data-hash (:reference-time (meta points)))
                 new-entry)
               (catch Exception e
                 (if entry

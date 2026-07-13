@@ -37,11 +37,16 @@
    :cloud-cover   (:cloud_area_fraction data)})
 
 (defn forecast
-  "Returns a seq of forecast points for the given location, sorted by time (nearest first)."
+  "Returns a seq of forecast points for the given location, sorted by time (nearest first).
+   The seq carries the SMHI forecast run's issuance time as `:reference-time` metadata
+   (the response's top-level `referenceTime`), for callers that want to tag a render with
+   which run it came from — note plain seq ops like `take` drop metadata, so preserve it
+   with `with-meta` when slicing (see core/live-points)."
   [location]
-  (->> (fetch-raw-forecast location)
-    :timeSeries
-    (map ->forecast-point)))
+  (let [raw (fetch-raw-forecast location)]
+    (with-meta
+      (map ->forecast-point (:timeSeries raw))
+      {:reference-time (:referenceTime raw)})))
 
 (def symbol->description
   {1  "Klart väder"                 2  "Mestadels klart"          3  "Växlande molnighet"       4  "Halvklart"
