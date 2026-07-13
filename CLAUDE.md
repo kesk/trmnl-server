@@ -173,8 +173,18 @@ Six namespaces, cleanly separated by concern:
   behaviour, keeping the last known screen rather than emptying the archive.) The write
   is best-effort (any IO error is logged and swallowed, never breaking the serving path)
   and runs under the same `regen-lock` as the render. Browse/download them via the
-  `/archive` gallery (newest first); `archive-file-response` only serves flat
-  `forecast-*.png` basenames, so the route can't be walked out of the archive dir.
+  `/archive` gallery (newest first); `archive-file-response` serves only flat
+  `forecast-*.{png,edn}` basenames, so the route can't be walked out of the archive dir.
+  Alongside each archived PNG, `archive-image!` also `spit`s a sibling `.edn` of the same
+  basename — the `pr-str` of the point seq the screen was rendered from — so a screen
+  spotted after the fact can be **re-rendered or inspected**, since the 1-bit pixels alone
+  can't be reversed into the forecast data. The `.edn` is pruned on the same 24h mtime
+  schedule as the PNG, and is downloadable from the gallery via a `data` link on each card
+  (served as an `application/edn` attachment). The gallery itself lists only PNGs
+  (`archive-entries` restricts to `forecast-*.png`) and shows the data link only when the
+  sidecar exists. Note `last-archived-hash` (the dedupe probe) filters to `.png` before
+  taking the newest by mtime, so the sidecar — written just after the PNG, hence newer —
+  can't shadow the content hash and defeat dedupe.
 
 - **`trmnl-server.main`** — the CLI entry point (`-main`). Kept separate from `core`
   purely so `core` and `server` can each require the other one-way without a cycle

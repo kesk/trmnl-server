@@ -88,7 +88,8 @@
   (let [cutoff (- (System/currentTimeMillis) archive-retention-ms)]
     (doseq [^File f (.listFiles dir)]
       (when (and (.isFile f)
-              (str/ends-with? (.getName f) ".png")
+              (or (str/ends-with? (.getName f) ".png")
+                (str/ends-with? (.getName f) ".edn"))
               (< (.lastModified f) cutoff))
         (.delete f)))))
 
@@ -117,7 +118,8 @@
    re-writing a render whose forecast matches the one already on top of the archive."
   [^File dir]
   (some->> (.listFiles dir)
-    (filter #(.isFile ^File %))
+    (filter #(and (.isFile ^File %)
+               (str/ends-with? (.getName ^File %) ".png")))
     (sort-by #(- (.lastModified ^File %)))
     first
     (#(.getName ^File %))
@@ -135,8 +137,10 @@
    swallowed so it never breaks the serving path. Runs under current-image's regen-lock, so
    writes are already serialized. `reference-time` (SMHI's run issuance time, or nil) is
    stamped into the filename as a `run<...>` segment for at-a-glance provenance; it does not
-   affect dedupe."
-  [bytes hash reference-time]
+   affect dedupe. `points` (the forecast seq the PNG was rendered from) is dumped verbatim
+   to a sibling `.edn` alongside the PNG, so an archived screen can be re-rendered/inspected
+   later — the pixels alone can't be reconstructed into the underlying data."
+  [bytes hash reference-time points]
   (try
     (let [dir        (io/file (archive-dir))
           short-hash (subs hash 0 8)]
@@ -144,9 +148,10 @@
       (when-not (= short-hash (last-archived-hash dir))
         (let [stamp (.format (java.time.LocalDateTime/now) archive-timestamp)
               run   (reference-run-token reference-time)
-              name  (str "forecast-" stamp (when run (str "-" run)) "-" short-hash ".png")]
-          (with-open [out (io/output-stream (io/file dir name))]
-            (.write out ^bytes bytes)))
+              base  (str "forecast-" stamp (when run (str "-" run)) "-" short-hash)]
+          (with-open [out (io/output-stream (io/file dir (str base ".png")))]
+            (.write out ^bytes bytes))
+          (spit (io/file dir (str base ".edn")) (pr-str points)))
         (prune-archive! dir)))
     (catch Exception e
       (log/warn e "Could not archive rendered image"))))
@@ -188,7 +193,7 @@
                                :filename     (str "forecast-" (md5-hex bytes) ".png")
                                :generated-at (System/currentTimeMillis)}]
                 (reset! cache new-entry)
-                (archive-image! bytes data-hash (:reference-time (meta points)))
+                (archive-image! bytes data-hash (:reference-time (meta points)) points)
                 new-entry)
               (catch Exception e
                 (if entry
@@ -282,14 +287,21 @@
    :body    bytes})
 
 (defn- archive-file-response
-  "Serves one archived PNG by name from the archive dir. The name is constrained to a
-   flat `forecast-*.png` basename (no slashes/dots-dots), so it can't escape the dir."
+  "Serves one archived file by name from the archive dir — the PNG screen or its sibling
+   `.edn` forecast dump. The name is constrained to a flat `forecast-*.{png,edn}` basename
+   (no slashes/dots-dots), so it can't escape the dir. The `.edn` is sent as an attachment
+   so the gallery's data link downloads rather than renders it inline."
   [uri]
   (let [requested (subs uri (count "/archive/"))]
-    (if (re-matches #"forecast-[0-9A-Za-z-]+\.png" requested)
+    (if-let [[_ ext] (re-matches #"forecast-[0-9A-Za-z-]+\.(png|edn)" requested)]
       (let [file (io/file (archive-dir) requested)]
         (if (.isFile file)
-          (png-response file)
+          (if (= ext "png")
+            (png-response file)
+            {:status  200
+             :headers {"Content-Type"        "application/edn; charset=utf-8"
+                       "Content-Disposition" (str "attachment; filename=\"" requested "\"")}
+             :body    file})
           {:status 404}))
       {:status 404})))
 
@@ -432,7 +444,8 @@
     ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}"
     ".shot{background:var(--card);border:.5px solid var(--bd);border-radius:10px;overflow:hidden}"
     ".shot a{display:block}.shot img{display:block;width:100%;height:auto;background:#fff}"
-    ".shot .cap{padding:8px 11px;font-size:12px;color:var(--muted)}"))
+    ".shot .cap{padding:8px 11px;font-size:12px;color:var(--muted)}"
+    ".shot .cap a{color:var(--muted)}"))
 
 (defn- archive-response []
   (let [entries (archive-entries)]
@@ -448,11 +461,15 @@
           (str "<div class=\"grid\">"
             (apply str
               (for [^File f entries
-                    :let    [name (.getName f)]]
+                    :let    [name (.getName f)
+                             edn  (str/replace name #"\.png\z" ".edn")]]
                 (str "<div class=\"shot\">"
                   "<a href=\"/archive/" name "\" title=\"" name "\">"
                   "<img loading=\"lazy\" src=\"/archive/" name "\" alt=\"" name "\"></a>"
-                  "<div class=\"cap mono\">" (format-mtime (.lastModified f)) "</div></div>")))
+                  "<div class=\"cap mono\">" (format-mtime (.lastModified f))
+                  (when (.isFile (io/file (archive-dir) edn))
+                    (str " · <a href=\"/archive/" edn "\">data</a>"))
+                  "</div></div>")))
             "</div>")
           "<p class=\"empty\">No archived screens yet.</p>")
         "</div></body></html>"))))
