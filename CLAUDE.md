@@ -151,12 +151,13 @@ Six namespaces, cleanly separated by concern:
   (relative to the working dir, like `logs/`; override with `$ARCHIVE_DIR`), and
   files older than 24h are pruned by mtime on each write — so the folder self-manages
   a rolling 24h window with no cron. This exists so a problematic screen spotted after
-  the fact can still be recovered and saved. `<hash8>` is the first 8 chars of the
-  render's MD5 (the same content hash the cache filename uses), and the write is
-  **deduped**: a render byte-identical to the newest archived file (matching hash) is
-  skipped, so the gallery stays a list of *distinct* screens rather than ~100
-  near-identical ones a day — SMHI only republishes the point forecast ~hourly and the
-  screen has no live clock, so most consecutive renders are identical. (A consequence:
+  the fact can still be recovered and saved. `<hash8>` is the first 8 chars of an MD5
+  over the *forecast data* (`pr-str` of the point seq) — deliberately **not** the
+  rendered pixels, because the header's per-render "Uppdaterad HH:mm" stamp changes the
+  pixels on every render and would defeat pixel-level dedupe. The write is **deduped**
+  on that data hash: a render whose forecast matches the newest archived file is skipped,
+  so the gallery stays a list of *distinct* screens rather than ~100 near-identical ones
+  a day — SMHI only republishes the point forecast ~hourly. (A consequence:
   in the degenerate all-identical case the single archived file can outlive the 24h
   window, since pruning only runs when something new is written — which is the desired
   behaviour, keeping the last known screen rather than emptying the archive.) The write

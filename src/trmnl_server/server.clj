@@ -112,12 +112,13 @@
 (defn- archive-image!
   "Persists a freshly rendered PNG to the rolling archive dir as
    `forecast-<ts>-<hash8>.png` and prunes the 24h window, so a problematic screen spotted
-   after the fact can still be recovered and saved. Dedupes: a render byte-identical to the
-   newest archived one (same content hash) is skipped, so the gallery stays a list of
-   *distinct* screens rather than ~100 near-duplicates a day. `hash` is the render's MD5
-   (already computed for the cache filename), so no extra hashing here. Best-effort: any IO
-   failure is logged and swallowed so it never breaks the serving path. Runs under
-   current-image's regen-lock, so writes are already serialized."
+   after the fact can still be recovered and saved. Dedupes on `hash` — the caller's hash
+   of the *forecast data* (not the rendered pixels, which carry a per-render 'Uppdaterad'
+   timestamp that would otherwise make every render look distinct): a render whose forecast
+   matches the newest archived one is skipped, so the gallery stays a list of *distinct*
+   screens rather than ~100 near-duplicates a day. Best-effort: any IO failure is logged and
+   swallowed so it never breaks the serving path. Runs under current-image's regen-lock, so
+   writes are already serialized."
   [bytes hash]
   (try
     (let [dir        (io/file (archive-dir))
@@ -155,15 +156,20 @@
             entry
             (try
               (let [location  (forecast-location)
-                    image     (img/->1-bit (core/forecast-screen (core/live-points (forecast-hours) location) location))
+                    points    (core/live-points (forecast-hours) location)
+                    image     (img/->1-bit (core/forecast-screen points location))
                     bytes     (png-bytes image)
-                    hash      (md5-hex bytes)
+                    ;; Cache/download key is the pixel hash; the archive dedupe key is the
+                    ;; forecast *data* hash instead, so the per-render "Uppdaterad HH:mm"
+                    ;; stamp (which changes the pixels every render) doesn't defeat dedupe —
+                    ;; two renders of the same forecast collapse to one archived screen.
+                    data-hash (md5-hex (.getBytes (pr-str points) "UTF-8"))
                     new-entry {:image        image
                                :bytes        bytes
-                               :filename     (str "forecast-" hash ".png")
+                               :filename     (str "forecast-" (md5-hex bytes) ".png")
                                :generated-at (System/currentTimeMillis)}]
                 (reset! cache new-entry)
-                (archive-image! bytes hash)
+                (archive-image! bytes data-hash)
                 new-entry)
               (catch Exception e
                 (if entry
