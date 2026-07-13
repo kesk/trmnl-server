@@ -1,0 +1,11 @@
+/* Gallery-only rules, layered over base.css (which supplies the page shell,
+   colour vars and dark-mode handling). Shots sit on white (#fff) so the 1-bit
+   PNGs stay legible in dark mode too. */
+.nav{font-size:13px;margin:0 0 18px}
+.nav a{color:var(--muted);text-decoration:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.shot{background:var(--card);border:.5px solid var(--bd);border-radius:10px;overflow:hidden}
+.shot a{display:block}
+.shot img{display:block;width:100%;height:auto;background:#fff}
+.shot .cap{padding:8px 11px;font-size:12px;color:var(--muted)}
+.shot .cap a{color:var(--muted)}

@@ -136,7 +136,13 @@ Six namespaces, cleanly separated by concern:
   request/response convention and the embedded server (handlers are plain
   `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
   `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
-  dependency given there are only 3 routes. `current-image` renders via
+  dependency given there are only 3 routes. The two human-facing HTML pages are
+  built with **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
+  there's no hand-rolled `escape-html`) via a shared `page` layout helper; their
+  CSS lives in `resources/css/{base,archive}.css` (slurped at load through
+  `io/resource`, so it resolves from the uberjar too) rather than inline string
+  blobs — `base.css` is the shared shell, `archive.css` the gallery-only rules
+  layered on top. `current-image` renders via
   `core/forecast-screen` (fed `core/live-points` of `$FORECAST_HOURS`/
   `$FORECAST_LAT`/`$FORECAST_LON`, or `core/default-forecast-hours`/
   `core/default-forecast-location` if unset) + `image/->1-bit`, encodes to PNG bytes in
@@ -201,8 +207,9 @@ Six namespaces, cleanly separated by concern:
 ### Logging
 
 Server-side logging uses `clojure.tools.logging` routed through SLF4J to **logback**
-(`ch.qos.logback/logback-classic`) — the one place the project departs from its
-otherwise dependency-light stance, because file logging on the Pi wanted a real
+(`ch.qos.logback/logback-classic`) — one of the few places the project departs from its
+otherwise dependency-light stance (the other being `hiccup` for the `/status` and
+`/archive` HTML, see server above), because file logging on the Pi wanted a real
 appender rather than hand-rolled `println` redirection. Config is
 `resources/logback.xml` (bundled into the uberjar via `:paths`): a console appender
 (so stdout/journald keep the old behaviour) plus two `RollingFileAppender`s. Each rolls

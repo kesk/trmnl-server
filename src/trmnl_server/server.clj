@@ -7,6 +7,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [hiccup2.core :as h]
             [org.httpkit.server :as httpkit]
             [trmnl-server.core :as core]
             [trmnl-server.image :as img])
@@ -63,12 +64,6 @@
     (< pct 15) "LOW"
     (< pct 30) "watch"
     :else "ok"))
-
-(defn- escape-html [s]
-  (-> (str s)
-    (str/replace "&" "&amp;")
-    (str/replace "<" "&lt;")
-    (str/replace ">" "&gt;")))
 
 (defn- archive-dir
   "Where --serve stows a rolling copy of every rendered screen, relative to the
@@ -321,53 +316,61 @@
    :headers {"Content-Type" "text/html; charset=utf-8"}
    :body    body})
 
-;; Self-contained styling for the /status page — system fonts, no webfont/CDN, and a
-;; prefers-color-scheme dark variant so it adapts to the viewer. Kept as a def to keep
-;; status-response readable.
-(def ^:private status-style
-  (str "*{box-sizing:border-box}"
-    ":root{--bg:#fff;--fg:#1c1c1a;--muted:#87867e;--card:#f7f7f4;--bd:#e6e5df;--zebra:#faf9f6;"
-    "--err-bg:#fcecea;--err-fg:#9f332d;--warn-bg:#fbf1dd;--warn-fg:#875812;--ok-bg:#e6f2e6;--ok-fg:#2f6b32}"
-    "@media(prefers-color-scheme:dark){:root{--bg:#0f1113;--fg:#e7e7e4;--muted:#8b8a82;--card:#191b1e;"
-    "--bd:#2a2d31;--zebra:#141619;--err-bg:#37201e;--err-fg:#efa6a2;--warn-bg:#33290f;--warn-fg:#e3c079;"
-    "--ok-bg:#1d2e1d;--ok-fg:#8ecb8e}}"
-    "body{margin:0;background:var(--bg);color:var(--fg);padding:28px 22px;"
-    "font:400 14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}"
-    ".wrap{max-width:960px;margin:0 auto}"
-    "h1{font-size:20px;font-weight:500;margin:0 0 18px}"
-    ".cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}"
-    ".card{flex:1;min-width:150px;background:var(--card);border-radius:10px;padding:12px 15px}"
-    ".k{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}"
-    ".v{font-size:24px;font-weight:500;margin:3px 0 7px}"
-    ".mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
-    ".pill{display:inline-block;font-size:11px;font-weight:500;padding:2px 9px;border-radius:20px}"
-    ".pill-ok{background:var(--ok-bg);color:var(--ok-fg)}"
-    ".pill-watch{background:var(--warn-bg);color:var(--warn-fg)}"
-    ".pill-low{background:var(--err-bg);color:var(--err-fg)}"
-    ".pill-unknown{color:var(--muted);border:.5px solid var(--bd)}"
-    ".h{font-size:13px;font-weight:500;margin:0 0 8px}"
-    ".tw{overflow-x:auto;border:.5px solid var(--bd);border-radius:10px}"
-    "table{border-collapse:collapse;width:100%;font-size:12.5px}"
-    "th,td{text-align:left;padding:8px 11px;white-space:nowrap}"
-    "thead th{color:var(--muted);font-weight:500;border-bottom:.5px solid var(--bd)}"
-    "tbody tr:nth-child(even){background:var(--zebra)}"
-    "tbody tr.err{background:var(--err-bg)}tbody tr.err td{color:var(--err-fg)}"
-    "tbody tr.warn{background:var(--warn-bg)}tbody tr.warn td{color:var(--warn-fg)}"
-    "td.num{text-align:right}"
-    ".empty{color:var(--muted)}"))
+;; Self-contained styling, slurped from resources/css/ at load (bundled into the uberjar
+;; via :paths, so io/resource resolves in prod too). base.css is the shared page shell —
+;; system fonts, no webfont/CDN, and a prefers-color-scheme dark variant so it adapts to
+;; the viewer; the /archive gallery layers archive.css on top of it.
+(defn- css [& names]
+  (str/join "\n" (map #(slurp (io/resource (str "css/" %))) names)))
+
+(def ^:private status-css (css "base.css"))
+(def ^:private archive-css (css "base.css" "archive.css"))
+
+(defn- page
+  "Wraps page-specific body hiccup in the shared HTML shell (doctype, head, the given
+   inline CSS, and the centering .wrap div), returning the rendered HTML string."
+  [title css-text body]
+  (str "<!doctype html>"
+    (h/html {:mode :html}
+      [:html {:lang "en"}
+       [:head
+        [:meta {:charset "utf-8"}]
+        [:meta {:name "viewport" :content "width=device-width,initial-scale=1"}]
+        [:title title]
+        [:style (h/raw css-text)]]
+       [:body [:div.wrap body]]])))
 
 (defn- pill-class [label]
   (case label "ok" "pill-ok" "watch" "pill-watch" "LOW" "pill-low" "pill-unknown"))
 
 (defn- row-class
   "Tints a log row by severity so the noisy device errors are glanceable: red for any
-   ERROR message, amber for a WARN, plain otherwise."
+   ERROR message, amber for a WARN, nil (no class) otherwise."
   [message]
   (let [m (str/lower-case (str message))]
     (cond
-      (str/includes? m "error") " class=\"err\""
-      (str/includes? m "warn")  " class=\"warn\""
-      :else "")))
+      (str/includes? m "error") "err"
+      (str/includes? m "warn")  "warn"
+      :else nil)))
+
+(defn- log-row [{:keys [created_at message source_path source_line
+                        battery_voltage wifi_signal wifi_status retry firmware_version]}]
+  [:tr {:class (row-class message)}
+   [:td.mono (some-> created_at (java.time.Instant/ofEpochSecond))]
+   [:td message]
+   [:td.mono source_path ":" source_line]
+   [:td.num.mono battery_voltage]
+   [:td wifi_status " (" wifi_signal ")"]
+   [:td.num.mono retry]
+   [:td.mono firmware_version]])
+
+(defn- log-table [logs]
+  [:div.tw
+   [:table
+    [:thead
+     [:tr [:th "time"] [:th "message"] [:th "source"]
+      [:th.num "battery"] [:th "wifi"] [:th.num "retry"] [:th "firmware"]]]
+    [:tbody (map log-row logs)]]])
 
 (defn- status-response []
   (let [logs            (reverse @device-logs)
@@ -376,44 +379,28 @@
         label           (battery-label pct)
         latest-firmware (some :firmware_version logs)]
     (html-response
-      (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<title>trmnl-server status</title><style>" status-style "</style></head>"
-        "<body><div class=\"wrap\">"
-        "<h1>trmnl-server status</h1>"
-        "<p style=\"font-size:13px;margin:-8px 0 18px\"><a href=\"/archive\" "
-        "style=\"color:var(--muted);text-decoration:none\">Archived screens &rarr;</a></p>"
-        "<div class=\"cards\">"
-        "<div class=\"card\"><div class=\"k\">Battery</div>"
-        "<div class=\"v\">" (if latest-voltage
-                              (String/format java.util.Locale/US "%.3f V" (to-array [latest-voltage]))
-                              "—")
-        "</div><span class=\"pill " (pill-class label) "\">"
-        (if latest-voltage (str "~" pct "% · " label) "no data yet") "</span></div>"
-        "<div class=\"card\"><div class=\"k\">Firmware</div>"
-        "<div class=\"v mono\">" (if latest-firmware (escape-html latest-firmware) "—") "</div>"
-        "<span class=\"pill pill-unknown\">" (count logs) " rows logged</span></div>"
-        "</div>"
-        "<div class=\"h\">Recent device log</div>"
-        (if (seq logs)
-          (str "<div class=\"tw\"><table>"
-            "<thead><tr><th>time</th><th>message</th><th>source</th>"
-            "<th class=\"num\">battery</th><th>wifi</th><th class=\"num\">retry</th><th>firmware</th></tr></thead>"
-            "<tbody>"
-            (apply str
-              (for [{:keys [created_at message source_path source_line
-                            battery_voltage wifi_signal wifi_status retry firmware_version]} logs]
-                (str "<tr" (row-class message) ">"
-                  "<td class=\"mono\">" (some-> created_at (java.time.Instant/ofEpochSecond)) "</td>"
-                  "<td>" (escape-html message) "</td>"
-                  "<td class=\"mono\">" (escape-html source_path) ":" source_line "</td>"
-                  "<td class=\"num mono\">" battery_voltage "</td>"
-                  "<td>" (escape-html wifi_status) " (" wifi_signal ")</td>"
-                  "<td class=\"num mono\">" retry "</td>"
-                  "<td class=\"mono\">" (escape-html firmware_version) "</td></tr>")))
-            "</tbody></table></div>")
-          "<p class=\"empty\">No device logs yet.</p>")
-        "</div></body></html>"))))
+      (page "trmnl-server status" status-css
+        (list
+          [:h1 "trmnl-server status"]
+          [:p {:style "font-size:13px;margin:-8px 0 18px"}
+           [:a {:href "/archive" :style "color:var(--muted);text-decoration:none"}
+            "Archived screens →"]]
+          [:div.cards
+           [:div.card
+            [:div.k "Battery"]
+            [:div.v (if latest-voltage
+                      (String/format java.util.Locale/US "%.3f V" (to-array [latest-voltage]))
+                      "—")]
+            [:span {:class (str "pill " (pill-class label))}
+             (if latest-voltage (str "~" pct "% · " label) "no data yet")]]
+           [:div.card
+            [:div.k "Firmware"]
+            [:div.v.mono (or latest-firmware "—")]
+            [:span.pill.pill-unknown (count logs) " rows logged"]]]
+          [:div.h "Recent device log"]
+          (if (seq logs)
+            (log-table logs)
+            [:p.empty "No device logs yet."]))))))
 
 (defn- archive-entries
   "Archived PNGs, newest first (by mtime), for the gallery. Empty when the dir is absent."
@@ -435,44 +422,29 @@
              (java.time.ZoneId/systemDefault))
     archive-display-format))
 
-;; A grid of the archived screens, appended to status-style so it shares the page shell,
-;; colors and dark-mode handling. Shots sit on white (#fff) so the 1-bit PNGs stay legible
-;; in dark mode too.
-(def ^:private archive-style
-  (str status-style
-    ".nav{font-size:13px;margin:0 0 18px}.nav a{color:var(--muted);text-decoration:none}"
-    ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}"
-    ".shot{background:var(--card);border:.5px solid var(--bd);border-radius:10px;overflow:hidden}"
-    ".shot a{display:block}.shot img{display:block;width:100%;height:auto;background:#fff}"
-    ".shot .cap{padding:8px 11px;font-size:12px;color:var(--muted)}"
-    ".shot .cap a{color:var(--muted)}"))
+(defn- archive-card [^File f]
+  (let [name (.getName f)
+        edn  (str/replace name #"\.png\z" ".edn")]
+    [:div.shot
+     [:a {:href (str "/archive/" name) :title name}
+      [:img {:loading "lazy" :src (str "/archive/" name) :alt name}]]
+     [:div.cap.mono
+      (format-mtime (.lastModified f))
+      (when (.isFile (io/file (archive-dir) edn))
+        (list " · " [:a {:href (str "/archive/" edn)} "data"]))]]))
 
 (defn- archive-response []
   (let [entries (archive-entries)]
     (html-response
-      (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<title>trmnl-server archive</title><style>" archive-style "</style></head>"
-        "<body><div class=\"wrap\">"
-        "<h1>Archived screens</h1>"
-        "<p class=\"nav\"><a href=\"/status\">&larr; status</a> · " (count entries)
-        " screens · rolling 24h</p>"
-        (if (seq entries)
-          (str "<div class=\"grid\">"
-            (apply str
-              (for [^File f entries
-                    :let    [name (.getName f)
-                             edn  (str/replace name #"\.png\z" ".edn")]]
-                (str "<div class=\"shot\">"
-                  "<a href=\"/archive/" name "\" title=\"" name "\">"
-                  "<img loading=\"lazy\" src=\"/archive/" name "\" alt=\"" name "\"></a>"
-                  "<div class=\"cap mono\">" (format-mtime (.lastModified f))
-                  (when (.isFile (io/file (archive-dir) edn))
-                    (str " · <a href=\"/archive/" edn "\">data</a>"))
-                  "</div></div>")))
-            "</div>")
-          "<p class=\"empty\">No archived screens yet.</p>")
-        "</div></body></html>"))))
+      (page "trmnl-server archive" archive-css
+        (list
+          [:h1 "Archived screens"]
+          [:p.nav
+           [:a {:href "/status"} "← status"]
+           " · " (count entries) " screens · rolling 24h"]
+          (if (seq entries)
+            [:div.grid (map archive-card entries)]
+            [:p.empty "No archived screens yet."]))))))
 
 (defn- handler [base-url]
   (fn [{:keys [request-method uri] :as request}]
