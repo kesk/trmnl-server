@@ -6,6 +6,7 @@
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [clojure.java.shell]
             [clojure.tools.logging :as log]
             [hiccup2.core :as h]
             [org.httpkit.server :as httpkit]
@@ -31,6 +32,18 @@
 (defonce ^:private cache (atom nil))
 (defonce ^:private regen-lock (Object.))
 (defonce ^:private device-logs (atom []))
+
+;; Deployed commit, baked into version.edn by build.clj's uber task and bundled into the
+;; jar. Absent when running from source (clojure -M:serve), where there's no build step —
+;; fall back to reading HEAD off the working tree's .git so /status still shows a commit
+;; in dev. Read once at load; nil :commit renders as "unknown".
+(def ^:private deployed-version
+  (or (when-let [r (io/resource "version.edn")]
+        (try (read-string (slurp r)) (catch Exception _ nil)))
+    (try
+      (let [{:keys [exit out]} (clojure.java.shell/sh "git" "rev-parse" "--short" "HEAD")]
+        (when (zero? exit) {:commit (str/trim out)}))
+      (catch Exception _ nil))))
 
 (defn- png-bytes [image]
   (let [out (ByteArrayOutputStream.)]
@@ -396,7 +409,12 @@
            [:div.card
             [:div.k "Firmware"]
             [:div.v.mono (or latest-firmware "—")]
-            [:span.pill.pill-unknown (count logs) " rows logged"]]]
+            [:span.pill.pill-unknown (count logs) " rows logged"]]
+           [:div.card
+            [:div.k "Deployed"]
+            [:div.v.mono (or (:commit deployed-version) "unknown")]
+            (when-let [built (:built-at deployed-version)]
+              [:span.pill.pill-unknown "built " built])]]
           [:div.h "Recent device log"]
           (if (seq logs)
             (log-table logs)

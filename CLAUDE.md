@@ -130,7 +130,7 @@ Six namespaces, cleanly separated by concern:
   JSON with an `image_url`/`filename`/`refresh_rate`), `GET /api/setup` (first-boot
   welcome screen), `POST /api/log` (device telemetry, replied to with `204`), and
   `GET /images/*` (serves the cached PNG bytes). Plus two human-facing pages:
-  `GET /status` (battery/firmware/device-log dashboard) and `GET /archive` (a gallery
+  `GET /status` (battery/firmware/deployed-commit/device-log dashboard) and `GET /archive` (a gallery
   of the rolling 24h image archive, see below), with `GET /archive/*` serving each
   archived PNG off disk. Uses `http-kit` as both the Ring
   request/response convention and the embedded server (handlers are plain
@@ -142,7 +142,12 @@ Six namespaces, cleanly separated by concern:
   CSS lives in `resources/css/{base,archive}.css` (slurped at load through
   `io/resource`, so it resolves from the uberjar too) rather than inline string
   blobs — `base.css` is the shared shell, `archive.css` the gallery-only rules
-  layered on top. `current-image` renders via
+  layered on top. The `/status` page also shows the **deployed commit** via
+  `deployed-version`, read once at load from a bundled `version.edn` that
+  `build.clj`'s uber task bakes in (`git rev-parse --short HEAD`, plus a `-dirty`
+  suffix when the tree isn't clean, and a build timestamp). Running from source
+  (`clojure -M:serve`, no build step) there's no such resource, so it falls back to
+  shelling out to `git` against the working tree — nil renders as "unknown". `current-image` renders via
   `core/forecast-screen` (fed `core/live-points` of `$FORECAST_HOURS`/
   `$FORECAST_LAT`/`$FORECAST_LON`, or `core/default-forecast-hours`/
   `core/default-forecast-location` if unset) + `image/->1-bit`, encodes to PNG bytes in
