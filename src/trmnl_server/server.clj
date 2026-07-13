@@ -4,6 +4,7 @@
    GET /api/display, GET /api/setup, POST /api/log. Uses http-kit as both the Ring
    handler convention and the embedded server, rather than a heavier Ring+Jetty stack."
   (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [org.httpkit.server :as httpkit]
@@ -24,6 +25,7 @@
 (def ^:private refresh-rate-seconds 900)
 (def ^:private cache-ttl-ms (* 10 60 1000))
 (def ^:private max-stored-logs 200)
+(def ^:private archive-retention-ms (* 24 60 60 1000))
 
 (defonce ^:private cache (atom nil))
 (defonce ^:private regen-lock (Object.))
@@ -68,6 +70,44 @@
     (str/replace "<" "&lt;")
     (str/replace ">" "&gt;")))
 
+(defn- archive-dir
+  "Where --serve stows a rolling copy of every rendered screen, relative to the
+   process's working directory (the systemd unit's WorkingDirectory in prod, so
+   /home/seb/trmnl-server/archive/…) unless ARCHIVE_DIR overrides it — mirroring how
+   logs/ is placed. Distinct from out/, which stays reserved for the batch-render modes."
+  []
+  (or (System/getenv "ARCHIVE_DIR") "archive"))
+
+(def ^:private archive-timestamp
+  (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd-HHmmss"))
+
+(defn- prune-archive!
+  "Deletes archived PNGs older than archive-retention-ms so the folder self-manages a
+   rolling 24h window (by file mtime, which is the write time) without any external cron."
+  [^File dir]
+  (let [cutoff (- (System/currentTimeMillis) archive-retention-ms)]
+    (doseq [^File f (.listFiles dir)]
+      (when (and (.isFile f)
+              (str/ends-with? (.getName f) ".png")
+              (< (.lastModified f) cutoff))
+        (.delete f)))))
+
+(defn- archive-image!
+  "Persists freshly rendered PNG bytes to the rolling archive dir and prunes the 24h
+   window, so a problematic screen spotted after the fact can still be recovered and
+   saved. Best-effort: any IO failure is logged and swallowed so it never breaks the
+   serving path. Runs under current-image's regen-lock, so writes are already serialized."
+  [bytes]
+  (try
+    (let [dir (io/file (archive-dir))]
+      (.mkdirs dir)
+      (let [stamp (.format (java.time.LocalDateTime/now) archive-timestamp)]
+        (with-open [out (io/output-stream (io/file dir (str "forecast-" stamp ".png")))]
+          (.write out ^bytes bytes)))
+      (prune-archive! dir))
+    (catch Exception e
+      (log/warn e "Could not archive rendered image"))))
+
 (defn current-image
   "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
    forecast when the cache is empty or older than cache-ttl-ms. If regeneration
@@ -99,6 +139,7 @@
                                :filename     (str "forecast-" (md5-hex bytes) ".png")
                                :generated-at (System/currentTimeMillis)}]
                 (reset! cache new-entry)
+                (archive-image! bytes)
                 new-entry)
               (catch Exception e
                 (if entry
@@ -191,6 +232,18 @@
    :headers {"Content-Type" "image/png"}
    :body    bytes})
 
+(defn- archive-file-response
+  "Serves one archived PNG by name from the archive dir. The name is constrained to a
+   flat `forecast-*.png` basename (no slashes/dots-dots), so it can't escape the dir."
+  [uri]
+  (let [requested (subs uri (count "/archive/"))]
+    (if (re-matches #"forecast-[0-9A-Za-z-]+\.png" requested)
+      (let [file (io/file (archive-dir) requested)]
+        (if (.isFile file)
+          (png-response file)
+          {:status 404}))
+      {:status 404})))
+
 (defn- image-response [uri]
   ;; Serve only the bytes whose content hash matches the requested filename, so a
   ;; cache rollover between the device's /api/display poll and its image fetch
@@ -267,6 +320,8 @@
         "<title>trmnl-server status</title><style>" status-style "</style></head>"
         "<body><div class=\"wrap\">"
         "<h1>trmnl-server status</h1>"
+        "<p style=\"font-size:13px;margin:-8px 0 18px\"><a href=\"/archive\" "
+        "style=\"color:var(--muted);text-decoration:none\">Archived screens &rarr;</a></p>"
         "<div class=\"cards\">"
         "<div class=\"card\"><div class=\"k\">Battery</div>"
         "<div class=\"v\">" (if latest-voltage
@@ -299,6 +354,60 @@
           "<p class=\"empty\">No device logs yet.</p>")
         "</div></body></html>"))))
 
+(defn- archive-entries
+  "Archived PNGs, newest first (by mtime), for the gallery. Empty when the dir is absent."
+  []
+  (let [dir (io/file (archive-dir))]
+    (if (.isDirectory dir)
+      (->> (.listFiles dir)
+        (filter #(and (.isFile ^File %) (str/ends-with? (.getName ^File %) ".png")))
+        (sort-by #(- (.lastModified ^File %)))
+        vec)
+      [])))
+
+(def ^:private archive-display-format
+  (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss"))
+
+(defn- format-mtime [millis]
+  (.format (java.time.LocalDateTime/ofInstant
+             (java.time.Instant/ofEpochMilli millis)
+             (java.time.ZoneId/systemDefault))
+    archive-display-format))
+
+;; A grid of the archived screens, appended to status-style so it shares the page shell,
+;; colors and dark-mode handling. Shots sit on white (#fff) so the 1-bit PNGs stay legible
+;; in dark mode too.
+(def ^:private archive-style
+  (str status-style
+    ".nav{font-size:13px;margin:0 0 18px}.nav a{color:var(--muted);text-decoration:none}"
+    ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}"
+    ".shot{background:var(--card);border:.5px solid var(--bd);border-radius:10px;overflow:hidden}"
+    ".shot a{display:block}.shot img{display:block;width:100%;height:auto;background:#fff}"
+    ".shot .cap{padding:8px 11px;font-size:12px;color:var(--muted)}"))
+
+(defn- archive-response []
+  (let [entries (archive-entries)]
+    (html-response
+      (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>trmnl-server archive</title><style>" archive-style "</style></head>"
+        "<body><div class=\"wrap\">"
+        "<h1>Archived screens</h1>"
+        "<p class=\"nav\"><a href=\"/status\">&larr; status</a> · " (count entries)
+        " screens · rolling 24h</p>"
+        (if (seq entries)
+          (str "<div class=\"grid\">"
+            (apply str
+              (for [^File f entries
+                    :let    [name (.getName f)]]
+                (str "<div class=\"shot\">"
+                  "<a href=\"/archive/" name "\" title=\"" name "\">"
+                  "<img loading=\"lazy\" src=\"/archive/" name "\" alt=\"" name "\"></a>"
+                  "<div class=\"cap mono\">" (format-mtime (.lastModified f)) "</div></div>")))
+            "</div>")
+          "<p class=\"empty\">No archived screens yet.</p>")
+        "</div></body></html>"))))
+
 (defn- handler [base-url]
   (fn [{:keys [request-method uri] :as request}]
     (cond
@@ -306,6 +415,8 @@
       (and (= request-method :get) (= uri "/api/setup")) (setup-response base-url)
       (and (= request-method :post) (= uri "/api/log")) (log-response request)
       (and (= request-method :get) (= uri "/status")) (status-response)
+      (and (= request-method :get) (= uri "/archive")) (archive-response)
+      (and (= request-method :get) (str/starts-with? uri "/archive/")) (archive-file-response uri)
       (and (= request-method :get) (str/starts-with? uri "/images/")) (image-response uri)
       :else {:status 404})))
 

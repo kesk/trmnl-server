@@ -2,6 +2,7 @@
 /target/
 /out/
 /logs/
+/archive/
 /scratch/
 *.jar
 .nrepl-port

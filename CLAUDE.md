@@ -125,7 +125,10 @@ Six namespaces, cleanly separated by concern:
   polls when pointed at a custom server: `GET /api/display` (the main poll, returns
   JSON with an `image_url`/`filename`/`refresh_rate`), `GET /api/setup` (first-boot
   welcome screen), `POST /api/log` (device telemetry, replied to with `204`), and
-  `GET /images/*` (serves the cached PNG bytes). Uses `http-kit` as both the Ring
+  `GET /images/*` (serves the cached PNG bytes). Plus two human-facing pages:
+  `GET /status` (battery/firmware/device-log dashboard) and `GET /archive` (a gallery
+  of the rolling 24h image archive, see below), with `GET /archive/*` serving each
+  archived PNG off disk. Uses `http-kit` as both the Ring
   request/response convention and the embedded server (handlers are plain
   `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
   `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
@@ -133,13 +136,26 @@ Six namespaces, cleanly separated by concern:
   `core/forecast-screen` (fed `core/live-points` of `$FORECAST_HOURS`/
   `$FORECAST_LAT`/`$FORECAST_LON`, or `core/default-forecast-hours`/
   `core/default-forecast-location` if unset) + `image/->1-bit`, encodes to PNG bytes in
-  memory (no disk writes — `out/` stays reserved for the batch-render modes), and
+  memory (the served bytes never touch disk — `out/` stays reserved for the
+  batch-render modes) and
   caches them for 10 minutes keyed by an MD5 content hash, so the `filename`
   embedded in `/api/display`'s response only changes when the rendered image
   actually changes — this lets the device skip re-downloading identical screens
   between polls. Server-side diagnostics (startup banner, device-log receipts,
   stale-cache warnings) go through `clojure.tools.logging`, not `println` — see the
   logging note below.
+
+  **Rolling image archive**: every *successful* render (i.e. each new cache entry,
+  so ~one per 10-min cache miss, not the stale-fallback copies) is also written to
+  disk by `archive-image!` as `forecast-<yyyyMMdd-HHmmss>.png` under `archive/`
+  (relative to the working dir, like `logs/`; override with `$ARCHIVE_DIR`), and
+  files older than 24h are pruned by mtime on each write — so the folder self-manages
+  a rolling 24h window with no cron. This exists so a problematic screen spotted after
+  the fact can still be recovered and saved. The write is best-effort (any IO error is
+  logged and swallowed, never breaking the serving path) and runs under the same
+  `regen-lock` as the render. Browse/download them via the `/archive` gallery
+  (newest first); `archive-file-response` only serves flat `forecast-*.png` basenames,
+  so the route can't be walked out of the archive dir.
 
 - **`trmnl-server.main`** — the CLI entry point (`-main`). Kept separate from `core`
   purely so `core` and `server` can each require the other one-way without a cycle
