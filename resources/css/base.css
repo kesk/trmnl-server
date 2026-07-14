@@ -26,6 +26,10 @@ h1{font-size:20px;font-weight:500;margin:0 0 18px}
 .pill-low{background:var(--err-bg);color:var(--err-fg)}
 .pill-unknown{color:var(--muted);border:.5px solid var(--bd)}
 .h{font-size:13px;font-weight:500;margin:0 0 8px}
+.h-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px}
+.h-row .h{margin:0}
+button.clear{font:inherit;font-size:12px;color:var(--muted);background:var(--card);border:.5px solid var(--bd);border-radius:7px;padding:4px 11px;cursor:pointer}
+button.clear:hover{color:var(--fg);border-color:var(--muted)}
 .tw{overflow-x:auto;border:.5px solid var(--bd);border-radius:10px}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{text-align:left;padding:8px 11px;white-space:nowrap}

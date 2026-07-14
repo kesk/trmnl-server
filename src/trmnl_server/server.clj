@@ -415,10 +415,23 @@
             [:div.v.mono (or (:commit deployed-version) "unknown")]
             (when-let [built (:built-at deployed-version)]
               [:span.pill.pill-unknown "built " built])]]
-          [:div.h "Recent device log"]
+          [:div.h-row
+           [:div.h "Recent device log"]
+           (when (seq logs)
+             [:form {:method "post" :action "/status/clear"}
+              [:button.clear {:type "submit"} "Clear"]])]
           (if (seq logs)
             (log-table logs)
             [:p.empty "No device logs yet."]))))))
+
+(defn- clear-logs-response
+  "Empties the in-memory device-logs atom that backs /status, then 303s back to it.
+   Clears only the display buffer — the persistent device.log on disk is untouched, so a
+   later restart re-seeds /status from its tail (see seed-device-logs!). Handy for wiping
+   stale rows from a since-fixed issue without waiting for them to age out."
+  []
+  (reset! device-logs [])
+  {:status 303 :headers {"Location" "/status"}})
 
 (defn- archive-entries
   "Archived PNGs, newest first (by mtime), for the gallery. Empty when the dir is absent."
@@ -471,6 +484,7 @@
       (and (= request-method :get) (= uri "/api/setup")) (setup-response base-url)
       (and (= request-method :post) (= uri "/api/log")) (log-response request)
       (and (= request-method :get) (= uri "/status")) (status-response)
+      (and (= request-method :post) (= uri "/status/clear")) (clear-logs-response)
       (and (= request-method :get) (= uri "/archive")) (archive-response)
       (and (= request-method :get) (str/starts-with? uri "/archive/")) (archive-file-response uri)
       (and (= request-method :get) (str/starts-with? uri "/images/")) (image-response uri)
