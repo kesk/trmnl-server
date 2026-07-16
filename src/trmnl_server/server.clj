@@ -20,7 +20,7 @@
 (def ^:private refresh-rate-seconds 900)
 (def ^:private cache-ttl-ms (* 10 60 1000))
 (def ^:private archive-retention-ms (* 24 60 60 1000))
-(def ^:private device-log-retention-days 7)
+(def ^:private max-device-log-files 7)
 
 (defonce ^:private cache (atom nil))
 (defonce ^:private regen-lock (Object.))
@@ -281,17 +281,17 @@
   (io/file (device-log-dir) (str "device-" day ".log")))
 
 (defn- prune-device-logs!
-  "Deletes device-<date>.log files whose date is older than device-log-retention-days, so
-   the folder self-manages a rolling window without cron (cf. prune-archive!). Keyed on the
-   date in the filename, not mtime. Best-effort; runs under device-log-lock via the caller."
+  "Keeps only the max-device-log-files newest device-<date>.log files, deleting any older
+   ones — so the folder self-caps at N days *with data* regardless of calendar gaps (a quiet
+   device that skips days still keeps its last N reporting days). Filenames sort
+   chronologically (ISO date), so this is a plain name sort. Best-effort; runs under
+   device-log-lock via the caller."
   [^File dir]
-  (let [cutoff (.minusDays (java.time.LocalDate/now java.time.ZoneOffset/UTC)
-                 device-log-retention-days)]
-    (doseq [^File f (.listFiles dir)]
-      (when-let [[_ d] (re-matches device-log-name-re (.getName f))]
-        (when (try (.isBefore (java.time.LocalDate/parse d) cutoff)
-                (catch Exception _ false))
-          (.delete f))))))
+  (->> (.listFiles dir)
+    (filter #(re-matches device-log-name-re (.getName ^File %)))
+    (sort-by #(.getName ^File %))              ; oldest first (ISO date sorts chronologically)
+    (drop-last max-device-log-files)           ; drop the N newest to keep → leaves the surplus
+    (run! #(.delete ^File %))))
 
 (defn- append-device-log!
   "Appends one received telemetry body as a single line to today's device-<date>.log,

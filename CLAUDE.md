@@ -237,8 +237,9 @@ the file picked by the **UTC** date (`today-utc-date`), so the filename does the
 partitioning a rolling policy used to. The dir is `$DEVICE_LOG_DIR` (default `logs/`), created
 on demand; writes are serialised under `device-log-lock` and are best-effort (an IO error is
 logged via the main logger and swallowed, so the device still gets its `204`). Old days
-self-prune: `prune-device-logs!` (run on each write) deletes `device-<date>.log` files older
-than `device-log-retention-days` (7), keyed on the date in the filename. This replaced a
+self-prune: `prune-device-logs!` (run on each write) keeps only the newest `max-device-log-files`
+(7) `device-<date>.log` files — a count cap, not a calendar window, so a device that skips
+days still retains its last 7 *reporting* days. This replaced a
 logback `DEVICE` appender + dedicated `trmnl-server.device` logger — dropped because once
 `/status` had become "just show one on-disk file" (below), logback's rolling/gzip/retention
 was the only remaining complexity and the hand-written path is simpler. Two consequences of
