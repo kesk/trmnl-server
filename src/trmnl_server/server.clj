@@ -363,6 +363,31 @@
     (when (seq xs)
       (ms->secs (/ (reduce + xs) (count xs))))))
 
+(defn- wake-sparkline
+  "An inline SVG polyline of the wake-time series (ms over time) scaled to a small box,
+   for the /status Awake card. nil when there are fewer than two samples to connect. Pure
+   server-rendered hiccup — no JS, no axis, no dependency; a glanceable trend read next to
+   the numeric averages, not a precise chart. x maps each sample's :t across the width so
+   irregular poll spacing shows; y maps :ms so taller = longer awake (inverted). Colour is
+   left to CSS (currentColor → --muted) to stay legible in light and dark."
+  [samples]
+  (when (> (count samples) 1)
+    (let [w    240,                                                                     h    34,               pad 3
+          ts   (map :t samples),                                                        vs   (map :ms samples)
+          tmin (apply min ts),                                                          tmax (apply max ts)
+          vmin (apply min vs),                                                          vmax (apply max vs)
+          trng (double (max 1 (- tmax tmin)))
+          vrng (double (max 1 (- vmax vmin)))
+          pts  (->> samples
+                 (map (fn [{:keys [t ms]}]
+                        (let [x (+ pad (* (- w (* 2 pad)) (/ (- t tmin) trng)))
+                              y (+ pad (* (- h (* 2 pad)) (- 1 (/ (- ms vmin) vrng))))]
+                          (str (Math/round (double x)) "," (Math/round (double y))))))
+                 (str/join " "))]
+      [:svg {:class               "spark" :viewBox     (str "0 0 " w " " h) :width "100%" :height h
+             :preserveAspectRatio "none"  :aria-hidden "true"}
+       [:polyline {:points pts}]])))
+
 (defn- device-log-file-for
   "The device-log file for one UTC day (a yyyy-MM-dd string)."
   [day]
@@ -590,56 +615,64 @@
         wakes           @wake-history
         now             (System/currentTimeMillis)
         latest-wake     (:ms (last wakes))
-        wake-avgs       (keep (fn [[lbl w]]
-                                (when-let [a (wake-average wakes now w)]
-                                  (str lbl " " a "s")))
-                          wake-windows)]
+        wake-avg-cells  (for [[lbl w] wake-windows]
+                          [lbl (wake-average wakes now w)])]
     (html-response
       (page "trmnl-server status" status-css
         (list
-          [:h1 "trmnl-server status"]
-          [:p {:style "font-size:13px;margin:-8px 0 18px"}
-           [:a {:href "/archive" :style "color:var(--muted);text-decoration:none"}
-            "Archived screens →"]]
-          [:div.cards
-           [:div.card
-            [:div.k "Battery"]
-            [:div.v (if latest-voltage
-                      (String/format java.util.Locale/US "%.3f V" (to-array [latest-voltage]))
-                      "—")]
-            [:span {:class (str "pill " (pill-class label))}
-             (if latest-voltage (str "~" pct "% · " label) "no data yet")]]
-           [:div.card
-            [:div.k "WiFi"]
-            [:div.v.mono (if (:rssi dev) (str (:rssi dev) " dBm") "—")]
-            [:span {:class (str "pill " wifi-pill)} wifi-lbl]]
-           [:div.card
-            [:div.k "Awake"]
-            [:div.v (if latest-wake (str (ms->secs latest-wake) " s") "—")]
-            (if (seq wake-avgs)
-              [:div.sub (str/join " · " wake-avgs)]
-              [:span.pill.pill-unknown "no samples yet"])]
-           [:div.card
-            [:div.k "Firmware"]
-            [:div.v.mono (or latest-firmware "—")]
-            (when-let [model (:model dev)]
-              [:span.pill.pill-unknown model])]
-           [:div.card
-            [:div.k "Deployed"]
-            [:div.v.mono (or (:commit deployed-version) "unknown")]
-            (when-let [built (:built-at deployed-version)]
-              [:span.pill.pill-unknown "built " (format-built-at built)])]
-           [:div.card
-            [:div.k "Last poll"]
-            [:div.v.mono (if dev (format-mtime (:received-at dev)) "—")]
-            [:span {:class (str "pill " (if dev "pill-ok" "pill-unknown"))}
-             (if dev
-               (str (or (:update-source dev) "unknown source")
-                 " · " (case (:image-cached dev)
-                         true  "image cached"
-                         false "image refreshed"
-                         "—"))
-               "no poll yet")]]]
+          [:div.top
+           [:h1 "trmnl-server status"]
+           [:a.top-link {:href "/archive"} "Archived screens →"]]
+          [:section.group
+           [:div.sec "Device health"]
+           [:div.cards.cards-health
+            [:div.card
+             [:div.k "Battery"]
+             [:div.v (if latest-voltage
+                       (String/format java.util.Locale/US "%.3f V" (to-array [latest-voltage]))
+                       "—")]
+             [:span {:class (str "pill " (pill-class label))}
+              (if latest-voltage (str "~" pct "% · " label) "no data yet")]]
+            [:div.card
+             [:div.k "WiFi"]
+             [:div.v.mono (if (:rssi dev) (str (:rssi dev) " dBm") "—")]
+             [:span {:class (str "pill " wifi-pill)} wifi-lbl]]
+            [:div.card.awake
+             [:div.k "Awake · last cycle"]
+             [:div.v (if latest-wake (str (ms->secs latest-wake) " s") "—")]
+             (if (seq wakes)
+               (list
+                 (wake-sparkline wakes)
+                 [:div.avgs
+                  (for [[lbl a] wake-avg-cells]
+                    [:div.avg
+                     [:div.al lbl]
+                     [:div.av (if a (str a "s") "—")]])])
+               [:span.pill.pill-unknown "no samples yet"])]]]
+          [:section.group
+           [:div.sec "Server · build"]
+           [:div.cards.cards-build
+            [:div.card
+             [:div.k "Firmware"]
+             [:div.v.mono (or latest-firmware "—")]
+             (when-let [model (:model dev)]
+               [:span.pill.pill-unknown model])]
+            [:div.card
+             [:div.k "Deployed"]
+             [:div.v.mono (or (:commit deployed-version) "unknown")]
+             (when-let [built (:built-at deployed-version)]
+               [:span.pill.pill-unknown "built " (format-built-at built)])]
+            [:div.card
+             [:div.k "Last poll"]
+             [:div.v.mono (if dev (format-mtime (:received-at dev)) "—")]
+             [:span {:class (str "pill " (if dev "pill-ok" "pill-unknown"))}
+              (if dev
+                (str (or (:update-source dev) "unknown source")
+                  " · " (case (:image-cached dev)
+                          true  "image cached"
+                          false "image refreshed"
+                          "—"))
+                "no poll yet")]]]]
           [:div.h-row
            [:div.h "Device log"
             (when (seq rows)
