@@ -16,16 +16,16 @@
     lon lat))
 
 (defn fetch-raw-forecast [location]
-  (let [client   (-> (HttpClient/newBuilder)
-                   (.connectTimeout (Duration/ofSeconds 10))
-                   (.build))
-        request  (-> (HttpRequest/newBuilder)
-                   (.uri (URI/create (forecast-url location)))
-                   (.timeout (Duration/ofSeconds 10))
-                   (.GET)
-                   (.build))
-        response (.send client request (HttpResponse$BodyHandlers/ofString))]
-    (json/read-str (.body response) :key-fn keyword)))
+  (with-open [client (-> (HttpClient/newBuilder)
+                       (.connectTimeout (Duration/ofSeconds 10))
+                       (.build))]
+    (let [request  (-> (HttpRequest/newBuilder)
+                     (.uri (URI/create (forecast-url location)))
+                     (.timeout (Duration/ofSeconds 10))
+                     (.GET)
+                     (.build))
+          response (.send client request (HttpResponse$BodyHandlers/ofString))]
+      (json/read-str (.body response) :key-fn keyword))))
 
 (defn- ->forecast-point [{:keys [time data]}]
   {:time          time

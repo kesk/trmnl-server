@@ -6,7 +6,6 @@
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.java.shell]
             [clojure.tools.logging :as log]
             [hiccup2.core :as h]
             [org.httpkit.server :as httpkit]
@@ -35,15 +34,11 @@
 
 ;; Deployed commit, baked into version.edn by build.clj's uber task and bundled into the
 ;; jar. Absent when running from source (clojure -M:serve), where there's no build step —
-;; fall back to reading HEAD off the working tree's .git so /status still shows a commit
-;; in dev. Read once at load; nil :commit renders as "unknown".
+;; there's no commit to report there, so /status just shows "dev-local". Read once at load.
 (def ^:private deployed-version
   (or (when-let [r (io/resource "version.edn")]
         (try (read-string (slurp r)) (catch Exception _ nil)))
-    (try
-      (let [{:keys [exit out]} (clojure.java.shell/sh "git" "rev-parse" "--short" "HEAD")]
-        (when (zero? exit) {:commit (str/trim out)}))
-      (catch Exception _ nil))))
+    {:commit "dev-local"}))
 
 (defn- png-bytes [image]
   (let [out (ByteArrayOutputStream.)]
