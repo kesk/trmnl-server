@@ -156,8 +156,8 @@ Six namespaces, cleanly separated by concern:
   caches them for 10 minutes keyed by an MD5 content hash, so the `filename`
   embedded in `/api/display`'s response only changes when the rendered image
   actually changes — this lets the device skip re-downloading identical screens
-  between polls. Server-side diagnostics (startup banner, device-log receipts,
-  stale-cache warnings) go through `clojure.tools.logging`, not `println` — see the
+  between polls. Server-side diagnostics (startup banner, stale-cache warnings, failed
+  device-log writes) go through `clojure.tools.logging`, not `println` — see the
   logging note below.
 
   **Rolling image archive**: every *successful* render (i.e. each new cache entry,
@@ -215,28 +215,48 @@ Server-side logging uses `clojure.tools.logging` routed through SLF4J to **logba
 (`ch.qos.logback/logback-classic`) — one of the few places the project departs from its
 otherwise dependency-light stance (the other being `hiccup` for the `/status` and
 `/archive` HTML, see server above), because file logging on the Pi wanted a real
-appender rather than hand-rolled `println` redirection. Config is
-`resources/logback.xml` (bundled into the uberjar via `:paths`): a console appender
-(so stdout/journald keep the old behaviour) plus two `RollingFileAppender`s. Each rolls
-its file **daily** (`TimeBasedRollingPolicy`) to a gzipped, date-stamped archive
+appender rather than hand-rolled `println` redirection. This covers the server's **own
+diagnostics only** — device telemetry is hand-written to disk without logback (see below).
+Config is `resources/logback.xml` (bundled into the uberjar via `:paths`): a console
+appender (so stdout/journald keep the old behaviour) plus one `RollingFileAppender`
+(`FILE`). It rolls **daily** (`TimeBasedRollingPolicy`) to a gzipped, date-stamped archive
 (e.g. `trmnl-server.log.2026-07-11.gz`), keeps `maxHistory` 30 (~a month) then deletes
-the oldest, with a `totalSizeCap` as a backstop — so the logs self-manage on the Pi's
+the oldest, with a `totalSizeCap` as a backstop — so the log self-manages on the Pi's
 SD card without any external `logrotate`. The main log path defaults to
 `logs/trmnl-server.log` relative to the process's working directory (the systemd unit's
 `WorkingDirectory`, so `/home/seb/trmnl-server/logs/…` in prod); override it with the
-`LOG_FILE` env var. logback creates the parent dir if missing.
+`LOG_FILE` env var. logback creates the parent dir if missing. Neither the systemd unit nor
+the JVM pins a zone, so these timestamps are the Pi's **local** wall-clock (Europe/Stockholm),
+matching journald and the device screen (whose on-screen times are separately hardcoded to
+Europe/Stockholm in `smhi`, so the host zone doesn't affect the display either way).
 
-Device telemetry (`POST /api/log`) is deliberately **split into its own file** so the
-high-volume, JSON-blob device rows don't drown out the server's own diagnostics: it
-logs to the dedicated `trmnl-server.device` logger (see `server/device-logger` and
-`log/log` — tools.logging's explicit-logger-name arity, not the namespace default),
-which logback routes to `logs/device.log` (override with `DEVICE_LOG_FILE`) with
-`additivity="false"` so it stays out of the main log. It's still echoed to the console
-so `journalctl`/live tailing shows everything in one stream. The in-memory
-`device-logs` atom that backs the `/status` page is **seeded from the tail of the
-active `device.log` at startup** (`seed-device-logs!`, which reads the appender's path
-straight from logback rather than duplicating it), so `/status` survives a
-restart/redeploy instead of starting blank. The CLI
+Device telemetry (`POST /api/log`) is **written straight to disk by the server, bypassing
+logback entirely** (`server/append-device-log!`): each received body is collapsed to one
+line and appended as **raw JSON** (no timestamp prefix) to `logs/device-<yyyy-MM-dd>.log`,
+the file picked by the **UTC** date (`today-utc-date`), so the filename does the daily
+partitioning a rolling policy used to. The dir is `$DEVICE_LOG_DIR` (default `logs/`), created
+on demand; writes are serialised under `device-log-lock` and are best-effort (an IO error is
+logged via the main logger and swallowed, so the device still gets its `204`). Old days
+self-prune: `prune-device-logs!` (run on each write) deletes `device-<date>.log` files older
+than `device-log-retention-days` (7), keyed on the date in the filename. This replaced a
+logback `DEVICE` appender + dedicated `trmnl-server.device` logger — dropped because once
+`/status` had become "just show one on-disk file" (below), logback's rolling/gzip/retention
+was the only remaining complexity and the hand-written path is simpler. Two consequences of
+the switch: device rows are **no longer echoed to journald** (they live only in the files +
+`/status`), and the `DEVICE_LOG_FILE` env var is gone (use `DEVICE_LOG_DIR`).
+
+The `/status` **device-log table just shows the contents of one day's file**. `device-log-days`
+lists the `device-<date>.log` files (newest first) as the day-picker strip above the table;
+`?day=<date>` selects one, defaulting to today (`today-utc-date`), which is always shown as a
+tab even before it has a file. `read-device-log` reads the chosen file (plain read — the DIY
+files aren't gzipped) and renders its rows newest first, time column headed "time (UTC)" (it
+renders `created_at` through `Instant`, always UTC — matching the UTC filename dates). `sel` is
+constrained to a day that actually exists on disk (or today), so a bogus/traversal `?day=` just
+falls back to today and can never name an off-list file. There's **no "clear" button, no
+`device-logs` atom, no `seed-device-logs!`**: the files *are* the source of truth, re-read each
+load. The **summary cards** (latest battery/firmware) read the newest row of **today's** file
+directly (falling back further to the `device-status` poll telemetry), so they always reflect
+the *current* day even while you're viewing an older one. The CLI
 batch-render feedback in `main` (`"Wrote out/…"`, `"Rendering …"`) is deliberately
 still `println` — that's interactive terminal output for a human running the command,
 not server diagnostics.

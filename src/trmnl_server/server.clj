@@ -12,26 +12,20 @@
             [org.httpkit.server :as httpkit]
             [trmnl-server.core :as core]
             [trmnl-server.image :as img])
-  (:import [ch.qos.logback.classic Logger]
-           [ch.qos.logback.core FileAppender]
-           [java.io ByteArrayOutputStream File]
+  (:import [java.io ByteArrayOutputStream File]
            [java.net NetworkInterface]
            [java.security MessageDigest]
-           [javax.imageio ImageIO]
-           [org.slf4j LoggerFactory]))
-
-;; Dedicated logger name for device telemetry (POST /api/log); logback (resources/logback.xml)
-;; routes it to its own device.log rather than the main server log.
-(def ^:private device-logger "trmnl-server.device")
+           [javax.imageio ImageIO]))
 
 (def ^:private refresh-rate-seconds 900)
 (def ^:private cache-ttl-ms (* 10 60 1000))
-(def ^:private max-stored-logs 200)
 (def ^:private archive-retention-ms (* 24 60 60 1000))
+(def ^:private device-log-retention-days 7)
 
 (defonce ^:private cache (atom nil))
 (defonce ^:private regen-lock (Object.))
-(defonce ^:private device-logs (atom []))
+(defonce ^:private device-log-lock (Object.))
+(defonce ^:private device-status (atom nil))
 
 ;; Deployed commit, baked into version.edn by build.clj's uber task and bundled into the
 ;; jar. Absent when running from source (clojure -M:serve), where there's no build step —
@@ -224,7 +218,30 @@
    :headers {"Content-Type" "application/json"}
    :body    (json/write-str body)})
 
-(defn- display-response [base-url]
+(defn- parse-display-headers
+  "Pulls the telemetry the TRMNL firmware sends on every /api/display poll out of the
+   request headers (see trmnl-firmware buildDisplayHeaders). http-kit lowercases header
+   names; every value is a string, so coerce the numeric ones and let parse-*/nil swallow
+   anything malformed (e.g. the OG's -1 or a FAKE_BATTERY_VOLTAGE 4.2). Returns nil when
+   no device headers are present, so a browser hitting /api/display doesn't clobber the
+   last real snapshot."
+  [headers]
+  (letfn [(s [k] (get headers k))]
+    (when (or (s "id") (s "fw-version") (s "battery-voltage"))
+      {:battery-voltage (some-> (s "battery-voltage") parse-double)
+       :rssi            (some-> (s "rssi") parse-long)
+       :wake-time       (some-> (s "wake-time") parse-long)
+       :update-source   (s "update-source")
+       :image-cached    (some-> (s "image-cached") (= "true"))   ; tri-state: true/false/nil
+       :refresh-rate    (some-> (s "refresh-rate") parse-long)
+       :fw-version      (s "fw-version")
+       :fw-commit       (s "fw-commit")
+       :model           (s "model")
+       :received-at     (System/currentTimeMillis)})))
+
+(defn- display-response [base-url request]
+  (when-let [status (parse-display-headers (:headers request))]
+    (reset! device-status status))
   (let [entry    (current-image)
         filename (serve-filename entry)]
     (json-response {:filename          filename
@@ -240,54 +257,96 @@
     (json-response {:image_url (image-url base-url (serve-filename entry))
                     :message   "Welcome to trmnl-server"})))
 
+;; Device telemetry (POST /api/log) is written to disk directly — no logback — one raw
+;; JSON line per POST into logs/device-<yyyy-MM-dd>.log, the file chosen by the UTC date
+;; so the filename does the daily partitioning. /status reads these back. The main server
+;; log still goes through logback (tools.logging); only device telemetry is hand-written.
+(def ^:private device-log-name-re #"device-(\d{4}-\d{2}-\d{2})\.log")
+
+(defn- device-log-dir
+  "Directory device-<date>.log files live in — $DEVICE_LOG_DIR, else logs/ relative to the
+   process's working dir (the systemd unit's WorkingDirectory in prod)."
+  []
+  (io/file (or (System/getenv "DEVICE_LOG_DIR") "logs")))
+
+(defn- today-utc-date
+  "Today's UTC calendar date as a yyyy-MM-dd string — the day a just-received row files
+   under, and the /status default view."
+  []
+  (str (java.time.LocalDate/now java.time.ZoneOffset/UTC)))
+
+(defn- device-log-file-for
+  "The device-log file for one UTC day (a yyyy-MM-dd string)."
+  [day]
+  (io/file (device-log-dir) (str "device-" day ".log")))
+
+(defn- prune-device-logs!
+  "Deletes device-<date>.log files whose date is older than device-log-retention-days, so
+   the folder self-manages a rolling window without cron (cf. prune-archive!). Keyed on the
+   date in the filename, not mtime. Best-effort; runs under device-log-lock via the caller."
+  [^File dir]
+  (let [cutoff (.minusDays (java.time.LocalDate/now java.time.ZoneOffset/UTC)
+                 device-log-retention-days)]
+    (doseq [^File f (.listFiles dir)]
+      (when-let [[_ d] (re-matches device-log-name-re (.getName f))]
+        (when (try (.isBefore (java.time.LocalDate/parse d) cutoff)
+                (catch Exception _ false))
+          (.delete f))))))
+
+(defn- append-device-log!
+  "Appends one received telemetry body as a single line to today's device-<date>.log,
+   creating the dir as needed, then prunes old days. Line breaks in the body are collapsed
+   so each POST stays one physical line (line-based reading in read-device-log depends on
+   it). Best-effort: any IO error is logged and swallowed so the POST still gets its 204."
+  [body]
+  (try
+    (let [line (str/replace (str/trim body) #"\R+" " ")
+          dir  (device-log-dir)]
+      (locking device-log-lock
+        (.mkdirs dir)
+        (spit (device-log-file-for (today-utc-date)) (str line "\n") :append true)
+        (prune-device-logs! dir)))
+    (catch Exception e
+      (log/warn e "Could not write device log"))))
+
 (defn- log-response [request]
-  (let [body    (slurp (:body request))
-        entries (:logs (try (json/read-str body :key-fn keyword) (catch Exception _ nil)))]
-    (log/log device-logger :info nil body)
-    (when (seq entries)
-      (swap! device-logs #(->> (concat % entries) (take-last max-stored-logs) vec))))
+  (append-device-log! (slurp (:body request)))
   {:status 204})
 
-(defn- device-log-file
-  "The active device.log path, read straight from logback's DEVICE appender so it stays
-   in sync with resources/logback.xml (including any DEVICE_LOG_FILE override) rather
-   than being duplicated here. nil when logback isn't the backend or the appender is
-   absent (e.g. a REPL under a different config), so seeding just no-ops."
-  []
-  (let [logger   (LoggerFactory/getLogger device-logger)
-        appender (when (instance? Logger logger)
-                   (Logger/.getAppender logger "DEVICE"))]
-    (when (instance? FileAppender appender)
-      (FileAppender/.getFile appender))))
-
 (defn- parse-device-log-line
-  "Pulls the entry maps out of one device.log line: a timestamp prefix followed by the
-   raw POST body (`{\"logs\":[…]}`). Returns that :logs seq, or nil for a blank/malformed
-   line."
+  "Pulls the entry maps out of one device-log line — the raw POST body (`{\"logs\":[…]}`).
+   Returns that :logs seq, or nil for a blank/malformed line. Tolerates a leading prefix by
+   scanning to the first `{`."
   [line]
   (when-let [i (str/index-of line "{")]
     (:logs (try (json/read-str (subs line i) :key-fn keyword)
              (catch Exception _ nil)))))
 
-(defn- seed-device-logs!
-  "Warms the device-logs atom from the tail of the active device.log at startup, so
-   /status isn't blank after a restart/redeploy — the atom is otherwise only filled by
-   live POSTs and lost on exit. Reads just the active file (the current daily-rolled
-   window, normally already ≥ the max-stored-logs cap), not the gzipped archives.
-   Best-effort: any read/parse problem just leaves the atom as it was."
-  []
+(defn- read-device-log
+  "Parsed entries from one device-<date>.log file, in file (chronological) order. nil on any
+   read error (rendered as an empty log)."
+  [^File file]
   (try
-    (when-let [path (device-log-file)]
-      (let [file (File. ^String path)]
-        (when (.isFile file)
-          (let [entries (->> (str/split-lines (slurp file))
-                          (mapcat parse-device-log-line)
-                          (take-last max-stored-logs)
-                          vec)]
-            (when (seq entries)
-              (swap! device-logs #(->> (concat entries %) (take-last max-stored-logs) vec)))))))
+    (with-open [r (io/reader file)]
+      (->> (line-seq r) (mapcat parse-device-log-line) vec))
     (catch Exception e
-      (log/warn e "Could not seed device-logs from device.log"))))
+      (log/warn e (str "Could not read device log " (.getName file)))
+      nil)))
+
+(defn- device-log-days
+  "The days with a device-<date>.log on disk, newest first — each `{:day <date> :file
+   <File>}` for the /status day picker. Ignores names that don't match (any legacy
+   device.log/.gz). Empty when the dir is absent."
+  []
+  (let [dir (device-log-dir)]
+    (when (.isDirectory dir)
+      (->> (.listFiles dir)
+        (keep (fn [^File f]
+                (when-let [[_ d] (re-matches device-log-name-re (.getName f))]
+                  (when (try (java.time.LocalDate/parse d) (catch Exception _ nil))
+                    {:day d :file f}))))
+        (sort-by :day #(compare %2 %1))
+        vec))))
 
 (defn- png-response [bytes]
   {:status  200
@@ -381,16 +440,47 @@
   [:div.tw
    [:table
     [:thead
-     [:tr [:th "time"] [:th "message"] [:th "source"]
+     [:tr [:th "time (UTC)"] [:th "message"] [:th "source"]
       [:th.num "battery"] [:th "wifi"] [:th.num "retry"] [:th "firmware"]]]
     [:tbody (map log-row logs)]]])
 
-(defn- status-response []
-  (let [logs            (reverse @device-logs)
-        latest-voltage  (some :battery_voltage logs)
+(def ^:private archive-display-format
+  (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss"))
+
+(defn- format-mtime [millis]
+  (.format (java.time.LocalDateTime/ofInstant
+             (java.time.Instant/ofEpochMilli millis)
+             (java.time.ZoneId/systemDefault))
+    archive-display-format))
+
+(defn- query-param
+  "The value of query-string key `k`, or nil. Raw — a caller that turns it into a filename
+   must validate it (here, against the available days) before trusting it."
+  [request k]
+  (some->> (some-> (:query-string request) (str/split #"&"))
+    (some #(when (str/starts-with? % (str k "=")) (subs % (inc (count k)))))))
+
+(defn- status-response [request]
+  (let [today           (today-utc-date)
+        files           (device-log-days)
+        day-set         (into #{} (map :day) files)
+        ;; ?day selects a day to view; anything not on disk (a bogus/traversal value) falls
+        ;; back to today, so ?day can only ever name a real device-<date>.log file.
+        sel             (if (contains? day-set (query-param request "day"))
+                          (query-param request "day")
+                          today)
+        days            (->> (cons today (map :day files)) distinct (sort #(compare %2 %1)) vec)
+        sel-file        (device-log-file-for sel)
+        rows            (reverse (when (.isFile sel-file) (read-device-log sel-file)))
+        today-file      (device-log-file-for today)
+        latest          (if (= sel today) ; cards always reflect the current (today's) log
+                          rows
+                          (reverse (when (.isFile today-file) (read-device-log today-file))))
+        dev             @device-status
+        latest-voltage  (or (:battery-voltage dev) (some :battery_voltage latest))
         pct             (battery-percent latest-voltage)
         label           (battery-label pct)
-        latest-firmware (some :firmware_version logs)]
+        latest-firmware (or (:fw-version dev) (some :firmware_version latest))]
     (html-response
       (page "trmnl-server status" status-css
         (list
@@ -409,29 +499,32 @@
            [:div.card
             [:div.k "Firmware"]
             [:div.v.mono (or latest-firmware "—")]
-            [:span.pill.pill-unknown (count logs) " rows logged"]]
+            [:span.pill.pill-unknown (count rows) " rows logged"]]
            [:div.card
             [:div.k "Deployed"]
             [:div.v.mono (or (:commit deployed-version) "unknown")]
             (when-let [built (:built-at deployed-version)]
-              [:span.pill.pill-unknown "built " built])]]
+              [:span.pill.pill-unknown "built " built])]
+           [:div.card
+            [:div.k "Last poll"]
+            [:div.v.mono (if dev (format-mtime (:received-at dev)) "—")]
+            [:span {:class (str "pill " (if dev "pill-ok" "pill-unknown"))}
+             (if dev
+               (str (or (:update-source dev) "?")
+                 " · cache " (case (:image-cached dev) true "hit" false "miss" "—")
+                 (when-let [w (:wake-time dev)] (str " · woke " w))
+                 (when-let [r (:rssi dev)] (str " · " r " dBm")))
+               "no poll yet")]]]
           [:div.h-row
-           [:div.h "Recent device log"]
-           (when (seq logs)
-             [:form {:method "post" :action "/status/clear"}
-              [:button.clear {:type "submit"} "Clear"]])]
-          (if (seq logs)
-            (log-table logs)
-            [:p.empty "No device logs yet."]))))))
-
-(defn- clear-logs-response
-  "Empties the in-memory device-logs atom that backs /status, then 303s back to it.
-   Clears only the display buffer — the persistent device.log on disk is untouched, so a
-   later restart re-seeds /status from its tail (see seed-device-logs!). Handy for wiping
-   stale rows from a since-fixed issue without waiting for them to age out."
-  []
-  (reset! device-logs [])
-  {:status 303 :headers {"Location" "/status"}})
+           [:div.h "Device log"]
+           [:div.days
+            (for [d days]
+              (if (= d sel)
+                [:span.day.sel d]
+                [:a.day {:href (str "/status?day=" d)} d]))]]
+          (if (seq rows)
+            (log-table rows)
+            [:p.empty (str "No device logs for " sel ".")]))))))
 
 (defn- archive-entries
   "Archived PNGs, newest first (by mtime), for the gallery. Empty when the dir is absent."
@@ -443,15 +536,6 @@
         (sort-by #(- (.lastModified ^File %)))
         vec)
       [])))
-
-(def ^:private archive-display-format
-  (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss"))
-
-(defn- format-mtime [millis]
-  (.format (java.time.LocalDateTime/ofInstant
-             (java.time.Instant/ofEpochMilli millis)
-             (java.time.ZoneId/systemDefault))
-    archive-display-format))
 
 (defn- archive-card [^File f]
   (let [name (.getName f)
@@ -480,11 +564,10 @@
 (defn- handler [base-url]
   (fn [{:keys [request-method uri] :as request}]
     (cond
-      (and (= request-method :get) (= uri "/api/display")) (display-response base-url)
+      (and (= request-method :get) (= uri "/api/display")) (display-response base-url request)
       (and (= request-method :get) (= uri "/api/setup")) (setup-response base-url)
       (and (= request-method :post) (= uri "/api/log")) (log-response request)
-      (and (= request-method :get) (= uri "/status")) (status-response)
-      (and (= request-method :post) (= uri "/status/clear")) (clear-logs-response)
+      (and (= request-method :get) (= uri "/status")) (status-response request)
       (and (= request-method :get) (= uri "/archive")) (archive-response)
       (and (= request-method :get) (str/starts-with? uri "/archive/")) (archive-file-response uri)
       (and (= request-method :get) (str/starts-with? uri "/images/")) (image-response uri)
@@ -507,7 +590,6 @@
   []
   (let [port     (or (some-> (System/getenv "PORT") Integer/parseInt) 8080)
         base-url (str "http://" (lan-ip) ":" port)]
-    (seed-device-logs!)
     (httpkit/run-server (handler base-url) {:port port})
     (log/info (str "TRMNL server listening on " base-url))
     (log/info "Point your TRMNL OG's custom server URL to the above.")))
