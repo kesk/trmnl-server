@@ -25,6 +25,7 @@ h1{font-size:20px;font-weight:500;margin:0 0 18px}
 .pill-watch{background:var(--warn-bg);color:var(--warn-fg)}
 .pill-low{background:var(--err-bg);color:var(--err-fg)}
 .pill-unknown{color:var(--muted);border:.5px solid var(--bd)}
+.sub{font-size:11px;color:var(--muted);line-height:1.4}
 .h{font-size:13px;font-weight:500;margin:0 0 8px}
 .h-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px}
 .h-row .h{margin:0}

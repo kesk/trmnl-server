@@ -257,8 +257,21 @@ falls back to today and can never name an off-list file. There's **no "clear" bu
 `device-logs` atom, no `seed-device-logs!`**: the files *are* the source of truth, re-read each
 load. The **summary cards** (latest battery/firmware) read the newest row of **today's** file
 directly (falling back further to the `device-status` poll telemetry), so they always reflect
-the *current* day even while you're viewing an older one. The CLI
-batch-render feedback in `main` (`"Wrote out/…"`, `"Rendering …"`) is deliberately
+the *current* day even while you're viewing an older one.
+
+The **Awake card** surfaces the firmware's `Wake-Time` header (how long the device was
+awake during its previous cycle, ms — a health signal, since fighting weak WiFi keeps it
+awake longer and drains the battery): the latest value in seconds plus moving averages over
+1h/6h/24h/7d windows. Every device `/api/display` poll feeds one sample into `record-wake-time!`,
+which keeps a rolling `wake-history` series of `{:t :ms}` maps **persisted to disk** as
+`wake-times.edn` (in `$DEVICE_LOG_DIR`, alongside the device logs) so the trend survives
+restarts/redeploys — `load-wake-history!` reloads it in `start!`. Samples are pruned to a 7-day
+window (`wake-history-retention-ms`, which also sets the longest average window) and non-positive
+values are dropped (the firmware sends `0` on a fresh boot with no previous cycle). Writes are
+best-effort under `wake-history-lock` and never break the serving path. Unlike the other cards
+this one is history-based, not a single snapshot — an empty series shows "no samples yet".
+
+The CLI batch-render feedback in `main` (`"Wrote out/…"`, `"Rendering …"`) is deliberately
 still `println` — that's interactive terminal output for a human running the command,
 not server diagnostics.
 

@@ -21,11 +21,17 @@
 (def ^:private cache-ttl-ms (* 10 60 1000))
 (def ^:private archive-retention-ms (* 24 60 60 1000))
 (def ^:private max-device-log-files 7)
+;; How far back wake-time samples are kept — sets the longest trend window (7d) below.
+(def ^:private wake-history-retention-ms (* 7 24 60 60 1000))
 
 (defonce ^:private cache (atom nil))
 (defonce ^:private regen-lock (Object.))
 (defonce ^:private device-log-lock (Object.))
+(defonce ^:private wake-history-lock (Object.))
 (defonce ^:private device-status (atom nil))
+;; Rolling series of {:t <epoch-ms> :ms <awake-ms>} device wake durations, oldest→newest,
+;; persisted to disk so the /status trend survives restarts. See record-wake-time! below.
+(defonce ^:private wake-history (atom []))
 
 ;; Deployed commit, baked into version.edn by build.clj's uber task and bundled into the
 ;; jar. Absent when running from source (clojure -M:serve), where there's no build step —
@@ -71,6 +77,16 @@
     (< pct 15) "LOW"
     (< pct 30) "watch"
     :else "ok"))
+
+(defn- wifi-quality
+  "Maps a raw RSSI (dBm — negative, closer to zero is stronger) to a human label and
+   the pill class to tint it with. nil → unknown."
+  [rssi]
+  (cond
+    (nil? rssi)   ["unknown" "pill-unknown"]
+    (>= rssi -67) ["good" "pill-ok"]
+    (>= rssi -78) ["fair" "pill-watch"]
+    :else         ["weak" "pill-low"]))
 
 (defn- archive-dir
   "Where --serve stows a rolling copy of every rendered screen, relative to the
@@ -239,9 +255,13 @@
        :model           (s "model")
        :received-at     (System/currentTimeMillis)})))
 
+;; Defined below, after its device-log-dir dependency; forward-declared for display-response.
+(declare record-wake-time!)
+
 (defn- display-response [base-url request]
   (when-let [status (parse-display-headers (:headers request))]
-    (reset! device-status status))
+    (reset! device-status status)
+    (record-wake-time! (:wake-time status)))
   (let [entry    (current-image)
         filename (serve-filename entry)]
     (json-response {:filename          filename
@@ -274,6 +294,74 @@
    under, and the /status default view."
   []
   (str (java.time.LocalDate/now java.time.ZoneOffset/UTC)))
+
+;; --- Device wake-time trend -------------------------------------------------------------
+;; The firmware's Wake-Time header reports how long the device was awake during its previous
+;; cycle (ms) — a health signal, since a device fighting weak WiFi stays awake longer and
+;; drains the battery. We keep a rolling series of these samples (persisted so it survives
+;; restarts) and surface the latest value plus moving averages on /status.
+
+(defn- wake-history-file
+  "Where the wake-time series is persisted — a single EDN file alongside the device logs."
+  []
+  (io/file (device-log-dir) "wake-times.edn"))
+
+(defn- prune-wake-history
+  "Drops samples older than the retention window (by their :t timestamp)."
+  [samples now]
+  (let [cutoff (- now wake-history-retention-ms)]
+    (filterv #(>= (:t %) cutoff) samples)))
+
+(defn- load-wake-history!
+  "Reads the persisted wake-time series into the atom at startup, pruning stale samples.
+   Best-effort: a missing or corrupt file just leaves the history empty."
+  []
+  (let [f (wake-history-file)]
+    (when (.isFile f)
+      (try
+        (reset! wake-history
+          (prune-wake-history (vec (read-string (slurp f))) (System/currentTimeMillis)))
+        (catch Exception e
+          (log/warn e "Could not read wake-time history"))))))
+
+(defn- record-wake-time!
+  "Appends one wake-duration sample (ms), prunes to the retention window, and persists.
+   Ignores nil/non-positive values — the firmware sends 0 on a fresh boot with no previous
+   cycle, which would otherwise drag the averages down. Persistence is best-effort: an IO
+   error is logged and swallowed so the device poll still succeeds."
+  [wake-ms]
+  (when (and wake-ms (pos? wake-ms))
+    (locking wake-history-lock
+      (let [now     (System/currentTimeMillis)
+            samples (prune-wake-history (conj @wake-history {:t now :ms wake-ms}) now)]
+        (reset! wake-history samples)
+        (try
+          (let [dir (device-log-dir)]
+            (.mkdirs dir)
+            (spit (wake-history-file) (pr-str samples)))
+          (catch Exception e
+            (log/warn e "Could not write wake-time history")))))))
+
+(defn- ms->secs
+  "Milliseconds to seconds, rounded to one decimal."
+  [ms]
+  (/ (Math/round (/ (double ms) 100.0)) 10.0))
+
+(def ^:private wake-windows
+  "Trend windows shown on /status, label + span in ms — short, day, and week."
+  [["1h" (* 60 60 1000)]
+   ["6h" (* 6 60 60 1000)]
+   ["24h" (* 24 60 60 1000)]
+   ["7d" (* 7 24 60 60 1000)]])
+
+(defn- wake-average
+  "Mean awake-time in seconds (one decimal) over samples within the last window-ms, or nil
+   when the window holds no samples."
+  [samples now window-ms]
+  (let [cutoff (- now window-ms)
+        xs     (keep (fn [{:keys [t ms]}] (when (>= t cutoff) ms)) samples)]
+    (when (seq xs)
+      (ms->secs (/ (reduce + xs) (count xs))))))
 
 (defn- device-log-file-for
   "The device-log file for one UTC day (a yyyy-MM-dd string)."
@@ -453,6 +541,22 @@
              (java.time.ZoneId/systemDefault))
     archive-display-format))
 
+(def ^:private built-display-format
+  (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm"))
+
+(defn- format-built-at
+  "build.clj bakes :built-at into version.edn as a raw ISO-8601 instant string
+   (e.g. 2026-07-16T10:41:12.123456Z). Render it as a compact local wall-clock time
+   for the /status 'Deployed' pill; pass the original through unchanged if it isn't
+   parseable as an instant, so a hand-edited version.edn can't blow up the page."
+  [built]
+  (try
+    (.format (java.time.LocalDateTime/ofInstant
+               (java.time.Instant/parse built)
+               (java.time.ZoneId/systemDefault))
+      built-display-format)
+    (catch Exception _ built)))
+
 (defn- query-param
   "The value of query-string key `k`, or nil. Raw — a caller that turns it into a filename
    must validate it (here, against the available days) before trusting it."
@@ -480,7 +584,16 @@
         latest-voltage  (or (:battery-voltage dev) (some :battery_voltage latest))
         pct             (battery-percent latest-voltage)
         label           (battery-label pct)
-        latest-firmware (or (:fw-version dev) (some :firmware_version latest))]
+        latest-firmware (or (:fw-version dev) (some :firmware_version latest))
+        [wifi-lbl
+         wifi-pill]     (wifi-quality (:rssi dev))
+        wakes           @wake-history
+        now             (System/currentTimeMillis)
+        latest-wake     (:ms (last wakes))
+        wake-avgs       (keep (fn [[lbl w]]
+                                (when-let [a (wake-average wakes now w)]
+                                  (str lbl " " a "s")))
+                          wake-windows)]
     (html-response
       (page "trmnl-server status" status-css
         (list
@@ -497,26 +610,41 @@
             [:span {:class (str "pill " (pill-class label))}
              (if latest-voltage (str "~" pct "% · " label) "no data yet")]]
            [:div.card
+            [:div.k "WiFi"]
+            [:div.v.mono (if (:rssi dev) (str (:rssi dev) " dBm") "—")]
+            [:span {:class (str "pill " wifi-pill)} wifi-lbl]]
+           [:div.card
+            [:div.k "Awake"]
+            [:div.v (if latest-wake (str (ms->secs latest-wake) " s") "—")]
+            (if (seq wake-avgs)
+              [:div.sub (str/join " · " wake-avgs)]
+              [:span.pill.pill-unknown "no samples yet"])]
+           [:div.card
             [:div.k "Firmware"]
             [:div.v.mono (or latest-firmware "—")]
-            [:span.pill.pill-unknown (count rows) " rows logged"]]
+            (when-let [model (:model dev)]
+              [:span.pill.pill-unknown model])]
            [:div.card
             [:div.k "Deployed"]
             [:div.v.mono (or (:commit deployed-version) "unknown")]
             (when-let [built (:built-at deployed-version)]
-              [:span.pill.pill-unknown "built " built])]
+              [:span.pill.pill-unknown "built " (format-built-at built)])]
            [:div.card
             [:div.k "Last poll"]
             [:div.v.mono (if dev (format-mtime (:received-at dev)) "—")]
             [:span {:class (str "pill " (if dev "pill-ok" "pill-unknown"))}
              (if dev
-               (str (or (:update-source dev) "?")
-                 " · cache " (case (:image-cached dev) true "hit" false "miss" "—")
-                 (when-let [w (:wake-time dev)] (str " · woke " w))
-                 (when-let [r (:rssi dev)] (str " · " r " dBm")))
+               (str (or (:update-source dev) "unknown source")
+                 " · " (case (:image-cached dev)
+                         true  "image cached"
+                         false "image refreshed"
+                         "—"))
                "no poll yet")]]]
           [:div.h-row
-           [:div.h "Device log"]
+           [:div.h "Device log"
+            (when (seq rows)
+              [:span {:style "color:var(--muted);font-weight:400"}
+               (str "  ·  " (count rows) " rows")])]
            [:div.days
             (for [d days]
               (if (= d sel)
@@ -590,6 +718,7 @@
   []
   (let [port     (or (some-> (System/getenv "PORT") Integer/parseInt) 8080)
         base-url (str "http://" (lan-ip) ":" port)]
+    (load-wake-history!)
     (httpkit/run-server (handler base-url) {:port port})
     (log/info (str "TRMNL server listening on " base-url))
     (log/info "Point your TRMNL OG's custom server URL to the above.")))
