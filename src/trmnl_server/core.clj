@@ -202,6 +202,19 @@
   (let [image (img/load-image (weather-icon-path (:symbol point) (smhi/night? location (:time point))))]
     (img/draw-image canvas image x y size size)))
 
+;; SMHI's wordmark, pre-thresholded to 1-bit black/white and pre-scaled to its
+;; native draw size (resources/smhi-logo.png, 95x38) so it blits 1:1 — no runtime
+;; scaling, which draw-image would do nearest-neighbour and mangle — and survives
+;; ->1-bit crisp. Wide 2.5:1 aspect; height chosen to clear the header's
+;; "Uppdaterad" line below it.
+(def ^:private logo-w 95)
+(def ^:private logo-h 38)
+
+(defn draw-logo
+  "Draws the SMHI wordmark with its top-left at x,y (native size logo-w x logo-h)."
+  [canvas x y]
+  (img/draw-image canvas (img/load-image "smhi-logo.png") x y logo-w logo-h))
+
 (defn draw-stale-badge
   "Draws a filled warning-triangle-with-exclamation-mark badge in an x,y size
    box. Stamped onto a served image when it's a stale last-known-good render
@@ -521,6 +534,9 @@
          now       (first points)
          condition (smhi/symbol->description (:symbol now))]
      (draw-weather-icon canvas now location 40 14 56)
+     ;; Wordmark top-right, right edge flush with the 760 content margin (same
+     ;; as the divider/Uppdaterad below it); its 38px height clears that line.
+     (draw-logo canvas (- 760 logo-w) 14)
      (img/draw-text canvas (str (int (:temp now)) "°") 110 44 :font (pixel-font :bold 32))
      (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 110 68
        :font (pixel-font :regular 16))
