@@ -367,10 +367,15 @@
    left to CSS (currentColor → --muted) to stay legible in light and dark."
   [samples]
   (when (> (count samples) 1)
-    (let [w    240,                                                                     h    34,               pad 3
-          ts   (map :t samples),                                                        vs   (map :ms samples)
-          tmin (apply min ts),                                                          tmax (apply max ts)
-          vmin (apply min vs),                                                          vmax (apply max vs)
+    (let [w    240
+          h    34
+          pad  3
+          ts   (map :t samples)
+          vs   (map :ms samples)
+          tmin (apply min ts)
+          tmax (apply max ts)
+          vmin (apply min vs)
+          vmax (apply max vs)
           trng (double (max 1 (- tmax tmin)))
           vrng (double (max 1 (- vmax vmin)))
           pts  (->> samples
