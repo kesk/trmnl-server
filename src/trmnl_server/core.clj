@@ -533,12 +533,12 @@
          ;; current conditions instead of city/date.
          now       (first points)
          condition (smhi/symbol->description (:symbol now))]
-     (draw-weather-icon canvas now location 40 14 56)
+     (draw-weather-icon canvas now location 38 8 72)
      ;; Wordmark top-right, right edge flush with the 760 content margin (same
      ;; as the divider/Uppdaterad below it); its 38px height clears that line.
      (draw-logo canvas (- 760 logo-w) 14)
-     (img/draw-text canvas (str (int (:temp now)) "°") 110 44 :font (pixel-font :bold 32))
-     (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 110 68
+     (img/draw-text canvas (str (int (:temp now)) "°") 122 44 :font (pixel-font :bold 32))
+     (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 122 68
        :font (pixel-font :regular 16))
      (let [label (str "Uppdaterad " (smhi/local-now-str))
            font  (pixel-font :regular 16)

@@ -291,11 +291,31 @@ not server diagnostics.
   read as a `Long`); use the signed equivalents (`-16777216` for opaque black, `-1`
   for opaque white) when working with packed ARGB ints via `.setRGB`.
 - **`resources/icons/{day,night}-N.png`** (N = SMHI symbol code 1–27) are official SMHI
-  weather-symbol SVGs, pre-rasterized to 56x56 PNGs (flattened onto white, 8-bit) —
+  weather-symbol SVGs, pre-rasterized to **72x72** 1-bit PNGs (8-bit RGB storage) —
   see `core/draw-weather-icon`, which picks the variant via `smhi/night?` and draws it
-  in the header. Their colored fills (sun yellow, cloud grays) land above `->1-bit`'s
-  128 threshold and wash to white, leaving just the dark outline strokes — this is by
-  design, not an accident, so don't "fix" it by recoloring the source PNGs. Regenerate
-  from the original SVGs (source archive was `symbols.tgz`) with e.g. `magick day-N.svg
-  -background white -flatten -resize 56x56 -depth 8 -define png:color-type=2
-  day-N.png` if a different size or the night set needs redoing.
+  in the header. Unlike the old approach (which let the colored fills wash to white under
+  `->1-bit`, leaving bare outlines), the fills now carry **identity by texture**: the SVG
+  set uses only four flat colors, mapped to distinct 1-bit treatments — outline `#2c404b`
+  → solid black, sun/moon `#ffea00` → ~50% ordered-dither checkerboard, precip marks
+  `#cfd6dc` → a denser dither, cloud body `#f5f6f7` → white. The dithered black/white
+  pixels are baked into the PNG, so `->1-bit`'s 128 threshold is a no-op on them (the
+  render path is unchanged). Two hard-won gotchas when regenerating:
+    - Render **`+antialias`** (flat exact colors) so `-opaque` recolors match cleanly, and
+      keep the color `-fuzz` low (~4%) — `#cfd6dc` is within ~19% of white, so a high fuzz
+      swallows the background into the precip texture.
+    - Write with the **`PNG24:`** prefix. A plain threshold output is a 1-bit-depth /
+      alpha PNG that Java2D's `drawImage` silently refuses to blit (the icon renders blank);
+      `PNG24:` forces the 8-bit RGB, no-alpha storage the old set had.
+
+  The SVG source is SMHI's "stroke/centered" set, fetched per icon from e.g.
+  `https://www.smhi.se/weather-page/weathersymbols/centered/stroke/day/1.svg` (the
+  `?proxy=wpt-a-<uuid>` query token is a required cache key; it's transient, so re-fetch
+  rather than baking it into a script). Full regeneration recipe (per `{day,night}` × N):
+
+  ```
+  magick -background white +antialias day-N.svg -flatten -filter point -resize 72x72 \
+    -fuzz 4% \
+    -fill '#000000' -opaque '#2c404b'  -fill 'gray50' -opaque '#ffea00' \
+    -fill 'gray35'  -opaque '#cfd6dc'  -fill 'white'  -opaque '#f5f6f7' \
+    -colorspace Gray -ordered-dither o4x4 PNG24:day-N.png
+  ```
