@@ -1,0 +1,12 @@
+/* Landing-page-only rules, layered over base.css. Centers a single hero shot
+   of the current forecast screen — the image sits on white so the 1-bit PNG
+   stays legible in dark mode too. */
+.hero{text-align:center;padding:32px 0 8px}
+.hero h1{font-size:26px;font-weight:500;margin:0 0 6px}
+.hero .tag{color:var(--muted);font-size:14px;margin:0 0 26px}
+.shot-link{display:inline-block;background:var(--card);border:.5px solid var(--bd);border-radius:14px;padding:14px;max-width:100%}
+.shot-link img{display:block;max-width:100%;height:auto;border-radius:6px;background:#fff}
+.hero .caption{margin:14px 0 0;font-size:12px;color:var(--muted)}
+.hero .cta{margin:26px 0 0}
+.hero .cta a{color:var(--fg);text-decoration:none;font-size:14px;border:.5px solid var(--bd);border-radius:20px;padding:7px 18px}
+.hero .cta a:hover{border-color:var(--muted)}

@@ -510,6 +510,7 @@
 
 (def ^:private status-css (css "base.css"))
 (def ^:private archive-css (css "base.css" "archive.css"))
+(def ^:private home-css (css "base.css" "home.css"))
 
 (defn- page
   "Wraps page-specific body hiccup in the shared HTML shell (doctype, head, the given
@@ -722,9 +723,23 @@
             [:div.grid (map archive-card entries)]
             [:p.empty "No archived screens yet."]))))))
 
+(defn- home-response []
+  (let [entry    (current-image)
+        filename (serve-filename entry)]
+    (html-response
+      (page "trmnl-server" home-css
+        [:div.hero
+         [:h1 "trmnl-server"]
+         [:p.tag "Weather forecast screen for a TRMNL e-ink display"]
+         [:a.shot-link {:href (str "/images/" filename)}
+          [:img {:src (str "/images/" filename) :alt "Latest rendered forecast screen"}]]
+         [:p.caption (str "Uppdaterad " (format-mtime (:generated-at entry)))]
+         [:p.cta [:a {:href "/status"} "Status →"]]]))))
+
 (defn- handler [base-url]
   (fn [{:keys [request-method uri] :as request}]
     (cond
+      (and (= request-method :get) (= uri "/")) (home-response)
       (and (= request-method :get) (= uri "/api/display")) (display-response base-url request)
       (and (= request-method :get) (= uri "/api/setup")) (setup-response base-url)
       (and (= request-method :post) (= uri "/api/log")) (log-response request)
