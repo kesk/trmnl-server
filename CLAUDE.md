@@ -299,13 +299,27 @@ not server diagnostics.
   → solid black, sun/moon `#ffea00` → ~50% ordered-dither checkerboard, precip marks
   `#cfd6dc` → a denser dither, cloud body `#f5f6f7` → white. The dithered black/white
   pixels are baked into the PNG, so `->1-bit`'s 128 threshold is a no-op on them (the
-  render path is unchanged). Two hard-won gotchas when regenerating:
-    - Render **`+antialias`** (flat exact colors) so `-opaque` recolors match cleanly, and
-      keep the color `-fuzz` low (~4%) — `#cfd6dc` is within ~19% of white, so a high fuzz
-      swallows the background into the precip texture.
-    - Write with the **`PNG24:`** prefix. A plain threshold output is a 1-bit-depth /
-      alpha PNG that Java2D's `drawImage` silently refuses to blit (the icon renders blank);
-      `PNG24:` forces the 8-bit RGB, no-alpha storage the old set had.
+  render path is unchanged).
+
+  **Rasterize with `rsvg-convert` (librsvg), not ImageMagick's SVG delegate.** The SVGs
+  are `34pt` intrinsic, so `magick file.svg -resize 72x72` renders them at ~45px and
+  upscales — lumpy, octagonal shapes. `rsvg-convert -w -h` rasterizes the vector directly
+  at the target size. The recipe supersamples to 288 (4×) then builds the icon in **two
+  layers** so outlines stay crisp while fills get texture:
+    - **Palette-remap, don't fuzz-recolor.** `rsvg-convert` antialiases its edges, so
+      snapping the four flat colors back needs a nearest-color `-remap` against a 5-swatch
+      palette (the four SMHI colors + white background) with `+dither`. A high `-fuzz`
+      instead would swallow the near-white background into the `#cfd6dc` precip texture
+      (`#cfd6dc` is within ~19% of white).
+    - **Outline layer:** `#2c404b` → solid black, everything else white, downscaled and
+      hard-thresholded → crisp solid strokes (no dither softening on the outline).
+    - **Fill layer:** sun/moon `#ffea00` → `gray50`, precip `#cfd6dc` → `gray35`, outline +
+      cloud + background → white; box-downscaled to 72 then `-ordered-dither o4x4` → texture
+      only inside the fills.
+    - Composite fill under outline with `-compose Darken`, and write with the **`PNG24:`**
+      prefix — a plain threshold output is a 1-bit-depth / alpha PNG that Java2D's
+      `drawImage` silently refuses to blit (the icon renders blank); `PNG24:` forces the
+      8-bit RGB, no-alpha storage.
 
   The SVG source is SMHI's "stroke/centered" set, checked in under
   **`assets/icons-svg/{day,night}-N.svg`** (a top-level dir, deliberately *not* under
@@ -314,12 +328,17 @@ not server diagnostics.
   `https://www.smhi.se/weather-page/weathersymbols/centered/stroke/day/1.svg` (the
   `?proxy=wpt-a-<uuid>` query token there is a required but transient cache key), but the
   local copies are the source of truth now — regenerate from them, no network needed.
-  Full regeneration recipe (per `{day,night}` × N):
+  Full regeneration recipe (per `{day,night}` × N; `pal.png` is the 5-swatch palette):
 
   ```
-  magick -background white +antialias assets/icons-svg/day-N.svg -flatten -filter point -resize 72x72 \
-    -fuzz 4% \
-    -fill '#000000' -opaque '#2c404b'  -fill 'gray50' -opaque '#ffea00' \
-    -fill 'gray35'  -opaque '#cfd6dc'  -fill 'white'  -opaque '#f5f6f7' \
-    -colorspace Gray -ordered-dither o4x4 PNG24:day-N.png
+  magick -size 1x1 xc:'#ffffff' xc:'#f5f6f7' xc:'#cfd6dc' xc:'#ffea00' xc:'#2c404b' +append pal.png
+
+  rsvg-convert -w 288 -h 288 assets/icons-svg/day-N.svg -o b.png
+  magick b.png -background white -flatten +dither -remap pal.png flat.png
+  magick flat.png -fuzz 2% -fill black -opaque '#2c404b' -fill white +opaque black \
+    -colorspace Gray -resize 72x72 -threshold 55% outline.png
+  magick flat.png -fuzz 2% -fill white -opaque '#2c404b' -fill white -opaque '#f5f6f7' \
+    -fill 'gray50' -opaque '#ffea00' -fill 'gray35' -opaque '#cfd6dc' \
+    -colorspace Gray -filter Box -resize 72x72 -ordered-dither o4x4 fill.png
+  magick fill.png outline.png -compose Darken -composite PNG24:day-N.png
   ```
