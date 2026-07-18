@@ -307,13 +307,17 @@ not server diagnostics.
       alpha PNG that Java2D's `drawImage` silently refuses to blit (the icon renders blank);
       `PNG24:` forces the 8-bit RGB, no-alpha storage the old set had.
 
-  The SVG source is SMHI's "stroke/centered" set, fetched per icon from e.g.
+  The SVG source is SMHI's "stroke/centered" set, checked in under
+  **`assets/icons-svg/{day,night}-N.svg`** (a top-level dir, deliberately *not* under
+  `resources/`, so the SVGs don't get bundled into the uberjar — only the rasterized PNGs
+  do). They were originally fetched per icon from e.g.
   `https://www.smhi.se/weather-page/weathersymbols/centered/stroke/day/1.svg` (the
-  `?proxy=wpt-a-<uuid>` query token is a required cache key; it's transient, so re-fetch
-  rather than baking it into a script). Full regeneration recipe (per `{day,night}` × N):
+  `?proxy=wpt-a-<uuid>` query token there is a required but transient cache key), but the
+  local copies are the source of truth now — regenerate from them, no network needed.
+  Full regeneration recipe (per `{day,night}` × N):
 
   ```
-  magick -background white +antialias day-N.svg -flatten -filter point -resize 72x72 \
+  magick -background white +antialias assets/icons-svg/day-N.svg -flatten -filter point -resize 72x72 \
     -fuzz 4% \
     -fill '#000000' -opaque '#2c404b'  -fill 'gray50' -opaque '#ffea00' \
     -fill 'gray35'  -opaque '#cfd6dc'  -fill 'white'  -opaque '#f5f6f7' \
