@@ -276,6 +276,40 @@
         widths      (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 8.0)))))) points)]
     (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
 
+(defn- draw-thunder-flash
+  "A solid lightning bolt in a w×h box centered on (cx, cy). Backed by a white
+   halo — the same bolt scaled up ~2px on each side — so it stays legible where
+   it overlaps the cloud strip's checkerboard or the rain stipple behind it."
+  [canvas cx cy w h]
+  (let [;; normalized ⚡ outline (0..1 box), traced clockwise: a wide top "head"
+        ;; narrowing to a mid step, then a left-offset lower stroke down to the
+        ;; tip — the offset between the two strokes is what reads as a bolt.
+        norm  [[0.42 0.00] [0.78 0.00] [0.50 0.42] [0.72 0.42]
+               [0.20 1.00] [0.38 0.52] [0.16 0.52]]
+        verts (fn [bw bh]
+                (map (fn [[nx ny]]
+                       [(+ cx (* (- nx 0.5) bw)) (+ cy (* (- ny 0.5) bh))])
+                  norm))]
+    (img/draw-polygon canvas (verts (+ w 4) (+ h 4)) :fill? true :color Color/WHITE)
+    (img/draw-polygon canvas (verts w h) :fill? true)))
+
+(defn thunder-flashes
+  "Marks each thundery hour with a lightning bolt, centered vertically on cy.
+   The point forecast has no lightning parameter, so thunder is read off the
+   symbol code alone (see smhi/thunder?). Bolts are x-centered on that hour's
+   slot — the same slot-per-point geometry (w/n wide) the rain-background column
+   and the precip bar use, NOT the (n-1)-divisor plotting-point spacing of the
+   cloud strip / temp-wind chart — so the flash sits centered over the rainy
+   column it belongs to rather than drifting off its bar. It overlaps the cloud
+   strip's lower edge (its halo carves it out of the checkerboard) and hangs
+   into the gap above the temp/wind chart."
+  [canvas points x cy w]
+  (let [n           (count points)
+        slot-center (fn [i] (+ x (* w (/ (+ i 0.5) n))))]
+    (doseq [[i point] (map-indexed vector points)]
+      (when (smhi/thunder? (:symbol point))
+        (draw-thunder-flash canvas (slot-center i) cy 17.0 23.0)))))
+
 (defn- rain-background
   "Shades a light stippled column behind every hour that has any
    precipitation, spanning from the cloud strip all the way down to the
@@ -558,6 +592,10 @@
            precip-h 85]
        (rain-background canvas points 40 136 (+ precip-y precip-h) 720)
        (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
+       ;; Bolts are centered at y 158: they overlap the cloud strip's lower
+       ;; edge (max extent y 136 + max-width/2 = 156) and hang into the gap
+       ;; above the chart box top (172), the halo carving them out cleanly.
+       (thunder-flashes canvas points 40 158 720)
        (combined-chart canvas points 40 172 720 155 :below-max-y (- precip-y 20))
        ;; Three z-layers in the precip strip: bars, then the (XOR) probability
        ;; line over them, then the mm labels on top -- so the line stays visible

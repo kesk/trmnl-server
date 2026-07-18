@@ -56,6 +56,17 @@
    18 "Lätt regn"                   19 "Måttligt regn"            20 "Kraftigt regn"            21 "Åska"                        22 "Lätt snöblandat regn"
    23 "Måttligt snöblandat regn"    24 "Kraftigt snöblandat regn" 25 "Lätt snöfall"             26 "Måttligt snöfall"            27 "Kraftigt snöfall"})
 
+(def thunder-symbol-codes
+  "Wsymb2 codes that denote thunder: 11 (Åskväder — thunderstorm showers) and
+   21 (Åska — thunder). The point forecast has no dedicated lightning/thunder
+   parameter, so the symbol code is the only thunder signal available."
+  #{11 21})
+
+(defn thunder?
+  "Whether an SMHI symbol code denotes thunder (see thunder-symbol-codes)."
+  [symbol-code]
+  (contains? thunder-symbol-codes symbol-code))
+
 (defn local-time-str [iso-time]
   (-> (Instant/parse iso-time)
     (.atZone (ZoneId/of "Europe/Stockholm"))
