@@ -3,6 +3,12 @@
 The original vector sources for the header weather icons: SMHI's "stroke/centered"
 set, `{day,night}-N.svg` for symbol codes N = 1–27 (54 files).
 
+Alongside each SVG is a `{day,night}-N.png` — a faithful **full-color** 72×72 raster of
+the original (transparent background), kept purely as a browsable reference/preview of
+what the source looks like. These are **not** used at runtime and are **not** the
+dithered 1-bit icons the display uses (those live in `resources/icons/`); regenerate
+them from the SVGs with `magick -background none <name>.svg -resize 72x72 PNG32:<name>.png`.
+
 These are the **source of truth** for `resources/icons/{day,night}-N.png`, which are
 rasterized from them to 72×72 1-bit PNGs with textured (dithered) fills. This folder
 lives outside `resources/` on purpose, so the SVGs are not bundled into the uberjar —
