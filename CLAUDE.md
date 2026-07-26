@@ -54,9 +54,17 @@ bb deploy.clj
 # Reformat source per .cljfmt.edn (dev.weavejester/cljfmt) — run on any
 # Clojure files touched before committing
 clojure -M:fmt
+
+# Assert the temp/wind chart never draws a label onto a dot or another label,
+# across the demo seasons, dev/fixtures/, any local archive/ forecasts, and N
+# generated days (default 3000). Exits non-zero with a reproducer on failure.
+clojure -M:check-labels
+clojure -M:check-labels 500
 ```
 
-There is no test suite or linter configured, beyond `clojure -M:fmt` (cljfmt) for formatting.
+There is no test suite or linter configured, beyond `clojure -M:fmt` (cljfmt) for formatting
+and `clojure -M:check-labels` (see `dev/`) for the one rendering property that can be checked
+without eyes.
 The only build step is the uberjar target in `build.clj` (via `tools.build`), used solely to
 produce a self-contained jar for deployment. Deployment itself (`deploy.clj`) is a babashka
 script that shells out to `clojure -T:build uber` rather than requiring `build.clj` in-process,
@@ -119,7 +127,8 @@ Six namespaces, cleanly separated by concern:
   `default-forecast-hours` [23] points for `default-forecast-location` [Gothenburg]),
   and is where domain-specific
   layout/chart logic lives (e.g. `line-chart`/`combined-chart`, `nice-bounds` for
-  rounding axis extents). `default-forecast-hours`/`default-forecast-location` are
+  rounding axis extents, and the label placement described under design constraints
+  below). `default-forecast-hours`/`default-forecast-location` are
   the single source of truth for "prognosis length" and "where" — callers override
   them via `--hours`/`--lat`/`--lon` (main) or `$FORECAST_HOURS`/`$FORECAST_LAT`/
   `$FORECAST_LON` (server) rather than hardcoding a point count or coordinates
@@ -287,6 +296,37 @@ not server diagnostics.
   pixel box and leans on direct min/max labels (with units) to keep it honest. If
   adding a third series or a shared axis, preserve this — a dual-axis chart that
   implies comparability between unrelated units is worse than two separate charts.
+- **Chart labels are positioned in one pass, against real boxes.** `core/chart-labels`
+  → `place-labels` walks every label the chart wants in importance order (each series'
+  global high/low, which are always drawn, then up to two prominence-ranked extras per
+  series) and scores `label-candidates`' ~14 positions for each: above/below its dot,
+  the same shifted sideways, the opposite side, level beside it, then displaced with a
+  leader. One hard rule and two soft ones pick the winner:
+  - **hard** — must clear **every dot including its own**, every label already placed,
+    the `:keep-out` rects `forecast-screen` passes for what's drawn around the box, and
+    the panel. An extra with no such position is dropped, dot and all; a global falls
+    back to its least-overlapping candidate rather than go unlabelled.
+  - **soft** — prefer inside `:leash` (near enough the plot box not to read as a stray
+    number in the margin), then not lying across a series line (`line-ink`, with
+    `line-ink-tolerance` columns of grace so a corner graze doesn't count).
+  - **ties** — earliest in preference order, `sort-by` being stable. This is what keeps
+    a label from hopping sides when the forecast shifts by a tenth of a degree.
+
+  There is deliberately **no rule about which side of a line looks better** — no peak/
+  trough special-casing, no "when the series run close together". A label ends up on
+  the open side because that's the side with no ink in it, and it usually ends up
+  outside the curve's bend because that's where the space is.
+
+  Do not add a new "nudge it a bit when X" special case here. That's what this replaced:
+  three separate guards (a 60x30 `close-points?` test between *dots*, an unconditional
+  temp-left/wind-right back-away, and a `:max-y` clamp) that all used dot positions as a
+  proxy for label positions. Because nothing compared a label's box to a dot, two
+  collisions got through — a low label clamped up onto its own dot, and a displaced
+  label landing on the other series' dot. **On a 1-bit surface a collision doesn't look
+  like a collision**: white halos (`draw-text`'s 5px stroke, `draw-dot`'s 3px ring) mean
+  whichever is drawn second silently erases the other, so the symptom is a number lying
+  on the line with no dot, or a label with its digits sliced off. Nothing warns you.
+  `clojure -M:check-labels` is what catches it; extend that when extending this.
 - Hex color literals like `0xFF000000` overflow Java's signed `int` in Clojure (they
   read as a `Long`); use the signed equivalents (`-16777216` for opaque black, `-1`
   for opaque white) when working with packed ARGB ints via `.setRGB`.

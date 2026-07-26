@@ -11,4 +11,10 @@
                                                          :git/sha "1176afd"}}
                    :ns-default build}
            :fmt {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.16.4"}}
-                 :main-opts ["-m" "cljfmt.main" "fix"]}}}
+                 :main-opts ["-m" "cljfmt.main" "fix"]}
+           ;; Asserts the temp/wind chart never draws a label onto a dot or
+           ;; another label -- the one part of "does the screen look right" that
+           ;; can be checked without eyes. Takes an optional count of generated
+           ;; days: clojure -M:check-labels 500
+           :check-labels {:extra-paths ["dev"]
+                          :main-opts ["-m" "trmnl-server.dev.label-collisions"]}}}

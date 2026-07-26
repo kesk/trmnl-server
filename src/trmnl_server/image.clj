@@ -1,8 +1,9 @@
 (ns trmnl-server.image
   (:require [clojure.java.io :as io]
             [clojure.string :as str])
-  (:import [java.awt BasicStroke Color RenderingHints TexturePaint]
-           [java.awt.geom Area Rectangle2D$Double]
+  (:import [java.awt BasicStroke Color Font RenderingHints TexturePaint]
+           [java.awt.font GlyphVector]
+           [java.awt.geom Area Rectangle2D Rectangle2D$Double]
            [java.awt.image BufferedImage]
            [java.io File]
            [javax.imageio ImageIO]))
@@ -59,6 +60,21 @@
   [{:keys [graphics]} text & {:keys [font]}]
   (when font (.setFont graphics font))
   (.stringWidth (.getFontMetrics graphics) text))
+
+(defn text-box
+  "Ink bounds [x1 y1 x2 y2] of text drawn at baseline x,y — the filled glyph
+   outline draw-text actually puts on the pixels, not the font's line box, so a
+   caller can collision-test a label against what really lands there. The
+   vertical companion to text-width; truncates the anchor to ints exactly like
+   draw-text does, so the box lines up with the drawn glyphs."
+  [{:keys [graphics]} ^String text x y & {:keys [font]}]
+  (when font (.setFont graphics font))
+  (let [gv (Font/.createGlyphVector (.getFont graphics) (.getFontRenderContext graphics) text)
+        b  (GlyphVector/.getVisualBounds gv)
+        x  (int x)
+        y  (int y)]
+    [(+ x (Rectangle2D/.getMinX b)) (+ y (Rectangle2D/.getMinY b))
+     (+ x (Rectangle2D/.getMaxX b)) (+ y (Rectangle2D/.getMaxY b))]))
 
 (defn draw-wrapped-text
   "Draws text wrapped to fit within max-width, one line per line-height."

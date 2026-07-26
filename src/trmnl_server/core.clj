@@ -88,7 +88,7 @@
    values only ever appear via its own direct labels. `:candidates` holds the
    series' turning points, prominence-ranked (see peaks) as {:maxima :minima};
    the first of each is the global high/low (always labeled), the rest feed
-   combined-chart's greedy pick of a couple of extra local labels."
+   chart-labels' pick of a couple of extra local labels."
   [points value-key x y w h round-step floor]
   (let [values      (mapv value-key points)
         [lo hi]     (nice-bounds values round-step :floor floor)
@@ -119,74 +119,225 @@
   [canvas layout & {:keys [dash]}]
   (img/draw-polyline canvas (:plot-points layout) :width 2.0 :dash dash))
 
-(defn- draw-extremum-label
-  "Draws one extremum's dot and (nudged) label. placement is a
-   {:dx :dy :leader? :max-y} map decided up front by combined-chart: :dx/:dy
-   nudge the label off its dot to dodge the other series' colliding label,
-   :leader? draws a recessive dashed hairline from the dot to a displaced label
-   (before the label, so the label's white halo clears the leader too) so it's
-   still clear which point it belongs to, and :max-y (optional) caps how far
-   down the label can be pushed, so a min value near the bottom of the chart
-   box can't shove its label into whatever's drawn below the chart (e.g.
-   precip-bar-chart's own bars and labels)."
-  [canvas dot-x dot-y text {:keys [dx dy leader? max-y]}]
-  (img/draw-dot canvas dot-x dot-y :radius 4 :halo? true)
-  (let [label-x (+ (- dot-x 16) dx)
-        label-y (cond-> (+ dot-y dy) max-y (min max-y))]
+(def ^:private label-font (pixel-font :bold 16))
+
+(def ^:private label-dot-radius
+  "Radius of the dot marking a labelled point."
+  4)
+
+(def ^:private dot-clearance
+  "How far a dot's ink reaches from its centre: label-dot-radius plus the 3px
+   white halo draw-dot rings it with. Anything drawn inside this either gets
+   erased by that halo or erases the dot itself, depending which is drawn
+   second — so it's the exclusion zone label placement has to respect."
+  (+ label-dot-radius 3))
+
+(def ^:private label-clearance
+  "How far a label's white halo reaches past its glyph ink — half of
+   draw-text's 5px halo stroke, which is centred on the outline."
+  2.5)
+
+(defn- overlap-area
+  "Area shared by two [x1 y1 x2 y2] rects; 0 when they're disjoint."
+  [[ax1 ay1 ax2 ay2] [bx1 by1 bx2 by2]]
+  (* (max 0.0 (- (min ax2 bx2) (max ax1 bx1)))
+    (max 0.0 (- (min ay2 by2) (max ay1 by1)))))
+
+(defn- overlaps? [a b] (pos? (overlap-area a b)))
+
+(defn- inside? [[ax1 ay1 ax2 ay2] [bx1 by1 bx2 by2]]
+  (and (>= ax1 bx1) (>= ay1 by1) (<= ax2 bx2) (<= ay2 by2)))
+
+(defn- dot-rect
+  "A labelled point's drawn footprint. Square rather than round: at this radius
+   the corner error is a couple of pixels and it errs toward keeping labels
+   clear, which is the safe direction."
+  [[x y]]
+  [(- x dot-clearance) (- y dot-clearance) (+ x dot-clearance) (+ y dot-clearance)])
+
+(defn- label-rect
+  "The footprint `text` will occupy when drawn at baseline anchor: its glyph ink
+   (via image/text-box — the real outline, not the font's line box) grown by the
+   halo it whites out around itself."
+  [canvas text [x y]]
+  (let [[x1 y1 x2 y2] (img/text-box canvas text x y :font label-font)]
+    [(- x1 label-clearance) (- y1 label-clearance)
+     (+ x2 label-clearance) (+ y2 label-clearance)]))
+
+(def ^:private line-clearance
+  "Half the width a plotted series occupies: draw-series-line's 2px stroke under
+   draw-series-halo's 6px white underlay. A label that comes this close to a
+   line is sitting on it, not merely near it."
+  3)
+
+(defn- line-profile
+  "A series' y at every integer x it spans, as a vector indexed by x (nil outside
+   its range) — so asking whether a label box sits on the line is a lookup per
+   column rather than a walk over segments, for each of ~14 candidates per
+   label."
+  [plot-points]
+  (reduce (fn [profile [[ax ay] [bx by]]]
+            (reduce (fn [p x]
+                      (assoc p x (+ ay (* (- by ay) (/ (- x ax) (double (- bx ax)))))))
+              profile
+              (range (int (Math/ceil ax)) (inc (int (Math/floor bx))))))
+    (vec (repeat img/og-width nil))
+    (partition 2 1 plot-points)))
+
+(def ^:private line-ink-tolerance
+  "Columns of line a label may cover before the placer looks for somewhere else.
+   Not zero: a line clipping a box corner for a few columns is invisible, while
+   insisting on a pristine position pushes labels out into the margin or onto a
+   leader to buy nothing. Tuned by sweeping it over the archived forecasts —
+   this is the knee, where the labels that really sit across a line move and the
+   ones that merely grazed stay put."
+  8)
+
+(defn- line-ink
+  "How many pixel columns of the chart's own lines a label box would white out.
+   A label stays legible over a line — that is what its halo is for — but it
+   only manages that by cutting a notch out of the line, so a position covering
+   a line is worse than an equally reachable one that doesn't.
+
+   This is the whole of the chart's sense of \"which side looks better\": no rule
+   about peaks or troughs or how close the two series run, just a preference for
+   the side of the dot that happens to be empty. It falls out that a label
+   usually ends up outside the curve's bend, because that's where the space is."
+  [[x1 y1 x2 y2] profiles]
+  (count
+    (for [profile profiles
+          x       (range (max 0 (int x1)) (min img/og-width (inc (int x2))))
+          :let    [y (nth profile x)]
+          :when   (and y (<= (- y1 line-clearance) y (+ y2 line-clearance)))]
+      x)))
+
+(defn- label-candidates
+  "Baseline anchors to try for one label, best first: hugging its dot on the
+   side its kind points (up for a max, down for a min), then that same height
+   shifted clear to either side, then the opposite side the same three ways,
+   then level with the dot beside it, then far enough out to need a leader.
+   Every candidate sits clear of the dot's own footprint, which is what stops a
+   label ever being drawn through the dot it belongs to.
+
+   The opposite side comes before beside deliberately: both are a last resort
+   for a crowded dot, but a sideways label at a first or last point has nowhere
+   to go except out into the margin, where it reads as a stray number."
+  [canvas text kind [dot-x dot-y]]
+  (let [[x1 y1 x2 y2] (img/text-box canvas text 0 0 :font label-font)
+        at            (fn [x y leader?] {:anchor [x y] :leader? leader?})
+        centred       (fn [cx] (- cx (/ (+ x1 x2) 2.0)))    ; anchor putting the ink's centre on cx
+        step          (+ (/ (- x2 x1) 2.0) dot-clearance 4)
+        mid-y         (- dot-y (/ (+ y1 y2) 2.0))
+        near          {:max (- dot-y 12) :min (+ dot-y 26)} ; the offsets this chart has always used
+        far           {:max (- dot-y 34) :min (+ dot-y 44)}
+        other         ({:max :min :min :max} kind)
+        row           (fn [y leader?]
+                        [(at (centred dot-x) y leader?)
+                         (at (centred (+ dot-x step)) y leader?)
+                         (at (centred (- dot-x step)) y leader?)])
+        beside        [(at (- (+ dot-x dot-clearance 4) x1) mid-y false)
+                       (at (- (- dot-x dot-clearance 4) x2) mid-y false)]]
+    (concat (row (near kind) false)
+      (row (near other) false)
+      beside
+      (row (far kind) true)
+      (row (far other) true))))
+
+(defn- place-labels
+  "Positions every label the chart wants in one pass, in importance order: each
+   series' global high/low first (always drawn — with no shared numeric axis,
+   those labels are the only place the real values appear), then the
+   prominence-ranked extras.
+
+   One hard rule, then two soft ones. A candidate is *allowed* only when it
+   clears everything already committed: every dot including the label's own,
+   every label box already placed, the `:keep-out` rects for whatever is drawn
+   around the chart, and `:bounds` (the panel). That much is hard, because a
+   halo silently erases whatever it lands on. Among the allowed ones it prefers,
+   in order:
+
+     1. inside `:leash` — near enough the plot box to still read as one of its
+        labels rather than a number adrift in the margin;
+     2. not sitting across either series' line (see line-ink), least-covered
+        first once every position covers one;
+     3. earliest in label-candidates' preference order — sort-by is stable, so
+        this is what breaks every tie.
+
+   Rank first and the soft rules only as tiebreaks is what keeps placement
+   steady between renders: a label doesn't hop sides when the forecast shifts by
+   a tenth of a degree, it moves only when the position it wants stops being
+   clear. An extra with no allowed position at all is dropped, dot and all; a
+   global falls back to its least-overlapping candidate rather than go
+   unlabelled — the one case that can still put ink on ink.
+
+   This replaced three separate ad-hoc guards that all used dot positions as a
+   proxy for label positions — and so could neither see a label clamped onto
+   its own dot, nor a displaced label landing on the other series' dot."
+  [canvas specs {:keys [bounds leash keep-out profiles]}]
+  (:placed
+   (reduce
+     (fn [{:keys [placed dots] :as acc} {:keys [dot text kind required?]}]
+       (let [boxes     (map :box placed)
+             obstacles (concat (map dot-rect (cons dot dots)) boxes keep-out)
+             cost      (fn [box]
+                         (+ (reduce + (map #(overlap-area box %) obstacles))
+                           (if (inside? box bounds) 0.0 1e6)))
+             ranked    (mapv (fn [c]
+                               (let [box (label-rect canvas text (:anchor c))]
+                                 (assoc c :box box :cost (cost box) :ink (line-ink box profiles))))
+                         (label-candidates canvas text kind dot))
+             allowed   (filter (comp zero? :cost) ranked)
+             clean     (first (sort-by (juxt #(if (inside? (:box %) leash) 0 1)
+                                        ;; everything within tolerance ties, so a
+                                        ;; graze never outranks the preferred spot
+                                         #(if (<= (:ink %) line-ink-tolerance) 0 (:ink %)))
+                                allowed))
+              ;; The label's own dot has to clear the labels already placed too:
+              ;; a dot dropped onto an existing label erases it just as surely as
+              ;; a label dropped onto a dot. (Can only bite an extra — every
+              ;; global's dot is committed before anything is placed.)
+             dot-free? (not-any? #(overlaps? (dot-rect dot) %) boxes)
+             chosen    (cond
+                         (and clean dot-free?) clean
+                         required?             (first (sort-by :cost ranked))
+                         :else                 nil)]
+         (if chosen
+           {:placed (conj placed (-> chosen
+                                   (dissoc :cost :ink)   ; scoring scratch, not part of the result
+                                   (assoc :dot dot :text text)))
+            :dots   (if required? dots (conj dots dot))}
+           acc)))
+     {:placed [] :dots (mapv :dot (filter :required? specs))}
+     specs)))
+
+(defn- draw-placed-label
+  "Draws one label where place-labels put it: the dot, then — when the label had
+   to be displaced far enough that which dot it belongs to would otherwise be a
+   guess — a recessive dashed leader to the nearest corner of the label box
+   (before the label, so its white halo clears the leader too), then the text."
+  [canvas {:keys [dot text anchor leader? box]}]
+  (let [[dot-x dot-y] dot
+        [x1 y1 x2 y2] box]
+    (img/draw-dot canvas dot-x dot-y :radius label-dot-radius :halo? true)
     (when leader?
-      (img/draw-dashed-line canvas dot-x dot-y label-x (- label-y 6)))
-    (img/draw-text canvas text label-x label-y :font (pixel-font :bold 16) :halo? true)))
-
-(defn- close-points?
-  "True when two plotted points are near enough that same-offset labels
-   anchored to them would overlap."
-  [[ax ay] [bx by]]
-  (and (< (Math/abs (- ax bx)) 60) (< (Math/abs (- ay by)) 30)))
-
-(defn- series-label-specs
-  "Builds the {:dot :text :place} label specs for one series: its two global
-   extrema (placement decided up front by combined-chart as {:above … :below …}
-   -- see draw-extremum-label for the fields) plus any greedily-picked extra
-   local turning points. Extras are chosen only when clear of every other label
-   (see pick-extras), so they need no collision nudging: a plain offset up for a
-   max, down for a min (capped by :max-y, like the globals, so a low near the
-   chart floor can't shove its label into whatever's drawn below)."
-  [points value-key layout label-fmt {:keys [above below]} global-max-i global-min-i extras below-max-y]
-  (let [pp   (:plot-points layout)
-        spec (fn [i place] {:dot (nth pp i) :text (label-fmt (value-key (nth points i))) :place place})]
-    (concat
-      [(spec global-max-i above)
-       (spec global-min-i below)]
-      (for [{:keys [i kind]} extras]
-        (spec i (if (= kind :max)
-                  {:dx 0 :dy -12}
-                  {:dx 0 :dy 26 :max-y below-max-y}))))))
+      (img/draw-dashed-line canvas dot-x dot-y
+        (min (max dot-x x1) x2) (min (max dot-y y1) y2)))
+    (img/draw-text canvas text (first anchor) (second anchor) :font label-font :halo? true)))
 
 (defn- pick-extras
-  "Greedily picks up to `cap` extra turning-point labels for one series, in
-   prominence order across its maxima and minima, skipping the two global
-   extrema (already labeled) and any candidate whose dot lands close to a label
-   already placed -- the four globals, the other series' extras, and extras
-   chosen earlier here, all threaded in via `placed-dots`. Returns
-   {:accepted [{:i :kind}…] :dots <placed-dots grown by the accepted ones>}, so
-   the next series can seed its own pick with everything placed so far and no
-   two extras ever crowd each other."
-  [layout global-idxs placed-dots cap]
-  (let [{:keys [candidates plot-points]} layout
-        pool                             (->> (concat (map #(assoc % :kind :max) (:maxima candidates))
-                                                (map #(assoc % :kind :min) (:minima candidates)))
-                                           (remove #(contains? global-idxs (:i %)))
-                                           (filter #(pos? (:prom %)))  ; skip flat shoulders/plateaus -- not real turning points
-                                           (sort-by :prom >))]
-    (reduce (fn [{:keys [accepted dots] :as acc} cand]
-              (if (>= (count accepted) cap)
-                (reduced acc)
-                (let [dot (nth plot-points (:i cand))]
-                  (if (some #(close-points? dot %) dots)
-                    acc
-                    {:accepted (conj accepted cand) :dots (conj dots dot)}))))
-      {:accepted [] :dots (vec placed-dots)}
-      pool)))
+  "Up to `cap` extra turning points to label for one series, in prominence order
+   across its maxima and minima, skipping the two global extrema (labelled
+   anyway) and flat shoulders. Whether each one survives is place-labels' call:
+   an extra with nowhere clean to put its label is dropped there. That's looser
+   than the old rule, which rejected a candidate whenever its dot merely sat
+   near another label's dot — even when its label would have fitted fine."
+  [layout global-idxs cap]
+  (->> (concat (map #(assoc % :kind :max) (:maxima (:candidates layout)))
+         (map #(assoc % :kind :min) (:minima (:candidates layout))))
+    (remove #(contains? global-idxs (:i %)))
+    (filter #(pos? (:prom %)))  ; skip flat shoulders/plateaus -- not real turning points
+    (sort-by :prom >)
+    (take cap)))
 
 (defn- weather-icon-path [symbol-code night?]
   (str "icons/" (if night? "night" "day") "-" symbol-code ".png"))
@@ -335,64 +486,80 @@
           (img/draw-rect canvas left cloud-y (- right left) (- bottom-y cloud-y)
             :fill? true :paint (img/stipple-paint)))))))
 
+(defn chart-labels
+  "What combined-chart will draw, resolved but not yet drawn: {:temp-layout
+   :wind-layout :labels}, where each label is {:dot :text :anchor :leader? :box}
+   as positioned by place-labels. Each series contributes its global high and
+   low (always labelled) plus up to two prominence-ranked local extrema (see
+   pick-extras), so the ~1-day curve shows a secondary peak or valley wherever
+   there's room for one.
+
+   Split out of the drawing so the resulting geometry can be checked without
+   rendering — see dev/label_collisions.clj, which asserts no label box ever
+   lands on a dot or another label."
+  [canvas points x y w h & {:keys [keep-out]}]
+  (let [temp-layout (series-layout points :temp x y w h 5 nil)
+        wind-layout (series-layout points :wind x y w h 5 0)
+        series      [{:layout temp-layout                :value-key :temp
+                      :fmt    (fn [t] (str (int t) "°"))}
+                     {:layout wind-layout                                         :value-key :wind
+                      :fmt    (fn [v] (str (int (Math/round (double v))) " m/s"))}]
+        global-i    (fn [layout kind]
+                      (:i (first ((if (= kind :max) :maxima :minima) (:candidates layout)))))
+        spec        (fn [{:keys [layout value-key fmt]} i kind required?]
+                      {:dot       (nth (:plot-points layout) i)
+                       :text      (fmt (value-key (nth points i)))
+                       :kind      kind
+                       :required? required?})
+        globals     (for [s series kind [:max :min]]
+                      (spec s (global-i (:layout s) kind) kind true))
+        extras      (for [s                series
+                          :let             [layout (:layout s)
+                                            globals #{(global-i layout :max) (global-i layout :min)}]
+                          {:keys [i kind]} (pick-extras layout globals 2)]
+                      (spec s i kind false))]
+    {:temp-layout temp-layout
+     :wind-layout wind-layout
+     :labels      (place-labels canvas (concat globals extras)
+                    {;; Hard: stay on the panel, above whatever keep-out covers.
+                     :bounds   [4 (- y 12) (- img/og-width 4) (+ y h 26)]
+                     ;; Soft: a first- or last-point label is centred on the box
+                     ;; edge, so half of it is always outside — but only this far.
+                     ;; Without the leash a label dodging a line will happily set
+                     ;; off into the margin, where it reads as a stray number
+                     ;; rather than as one of the chart's labels.
+                     :leash    [(- x 24) (- y 12) (+ x w 24) (+ y h 26)]
+                     :keep-out keep-out
+                     :profiles (map (comp line-profile :plot-points) [temp-layout wind-layout])})}))
+
 (defn combined-chart
   "Overlays temperature (solid) and wind speed (dashed) on one 24h-per-day
    chart, each scaled to its own range so the two units never share a numeric
-   axis. Since the series are scaled independently, the temp and wind high (or
-   low) can land right on top of each other in pixel space even though the
-   underlying values are unrelated — when that happens both labels back away
-   from each other (temp left, wind right) rather than just one of them moving,
-   with a thin leader line from each displaced label back to its own dot so
-   it's still clear which point it belongs to. Each line gets a white halo (see
-   draw-series-halo) so it stays legible where it crosses the rain-background
-   stipple. Both lines are drawn before either
-   series' labels/dots, so a label's white halo (see image/draw-text) always
-   sits on top of both lines rather than getting drawn over by whichever
-   line is plotted second. Beyond each series' global high/low it adds up to two
-   extra prominence-ranked local extrema that stay clear of the other labels
-   (see pick-extras). :below-max-y (see series-label-specs) keeps a
-   collision-pushed min-label from dropping into whatever's drawn below this
-   chart's box -- forecast-screen passes the y where precip-bar-chart starts."
-  [canvas points x y w h & {:keys [below-max-y]}]
-  (let [temp-layout (series-layout points :temp x y w h 5 nil)
-        wind-layout (series-layout points :wind x y w h 5 0)
-        temp-max-i  (:i (first (:maxima (:candidates temp-layout))))
-        temp-min-i  (:i (first (:minima (:candidates temp-layout))))
-        wind-max-i  (:i (first (:maxima (:candidates wind-layout))))
-        wind-min-i  (:i (first (:minima (:candidates wind-layout))))
-        tp          (:plot-points temp-layout)
-        wp          (:plot-points wind-layout)
-        max-collide (close-points? (nth tp temp-max-i) (nth wp wind-max-i))
-        min-collide (close-points? (nth tp temp-min-i) (nth wp wind-min-i))
-        ;; On a temp/wind collision the two overlapping labels back away from each
-        ;; other -- temp left (-dx), wind right (+dx) -- and the wind label also
-        ;; drops/rises further (its dy grows) so a leadered pair doesn't restack.
-        temp-place  {:above {:dx (if max-collide -24 0) :dy -12 :leader? max-collide}
-                     :below {:dx (if min-collide -24 0) :dy 26 :leader? min-collide :max-y below-max-y}}
-        wind-place  {:above {:dx (if max-collide 24 0) :dy (if max-collide -30 -12) :leader? max-collide}
-                     :below {:dx (if min-collide 24 0) :dy (if min-collide 44 26) :leader? min-collide :max-y below-max-y}}
-        ;; Beyond the four global extrema, add up to two extra local turning
-        ;; points per series, prominence-ranked, each kept clear of every label
-        ;; already placed (the globals, then the other series' extras) -- so the
-        ;; ~1-day curve shows a secondary peak/valley where there's room without
-        ;; the labels bunching up.
-        global-dots [(nth tp temp-max-i) (nth tp temp-min-i) (nth wp wind-max-i) (nth wp wind-min-i)]
-        temp-extras (pick-extras temp-layout #{temp-max-i temp-min-i} global-dots 2)
-        wind-extras (pick-extras wind-layout #{wind-max-i wind-min-i} (:dots temp-extras) 2)]
-    ;; Both series' white halos first, then both black lines (like the labels
-    ;; below), so neither halo notches the other line where they cross.
+   axis. Each line gets a white halo (see draw-series-halo) so it stays legible
+   where it crosses the rain-background stipple.
+
+   Draw order carries the layering: both halos, then both black lines, then the
+   labels — so a label's own white halo (see image/draw-text) always sits on top
+   of both lines rather than getting drawn over by whichever line is plotted
+   second, and neither halo notches the other line where they cross.
+
+   Since the series are scaled independently, the temp and wind extrema can land
+   on top of each other in pixel space even though the underlying values are
+   unrelated. Resolving that is chart-labels/place-labels' job, not this fn's:
+   every label is positioned against the real boxes of every dot and every other
+   label first, and only then drawn. :keep-out takes [x1 y1 x2 y2] rects for
+   whatever else the screen draws around this box — forecast-screen passes the
+   band holding precip-bar-chart's titles and bars — so a label can't be pushed
+   out of the chart and onto them."
+  [canvas points x y w h & {:keys [keep-out]}]
+  (let [{:keys [temp-layout wind-layout labels]}
+        (chart-labels canvas points x y w h :keep-out keep-out)]
     (draw-series-halo canvas temp-layout)
     (draw-series-halo canvas wind-layout :dash [6.0 5.0])
     (draw-series-line canvas temp-layout)
     (draw-series-line canvas wind-layout :dash [6.0 5.0])
-    (doseq [{:keys [dot text place]}
-            (concat
-              (series-label-specs points :temp temp-layout (fn [t] (str (int t) "°"))
-                temp-place temp-max-i temp-min-i (:accepted temp-extras) below-max-y)
-              (series-label-specs points :wind wind-layout
-                (fn [w] (str (int (Math/round (double w))) " m/s"))
-                wind-place wind-max-i wind-min-i (:accepted wind-extras) below-max-y))]
-      (draw-extremum-label canvas (first dot) (second dot) text place))))
+    (doseq [label labels]
+      (draw-placed-label canvas label))))
 
 (def ^:private axis-label-count
   "How many hour-of-day labels hour-axis-labels always draws, evenly spaced
@@ -585,18 +752,20 @@
         ["Vind (m/s)" {:dash [6.0 5.0]}]
         ["Moln (%)" {:width 14.0 :paint (img/checkerboard-paint)}]])
 
-     ;; precip-bar-chart's "Regn (0-Xmm)" title sits at (- precip-y 6); cap
-     ;; combined-chart's below-labels a bit above that so a collision-pushed
-     ;; min-label can never land on top of it (or the bars/labels beneath).
-     (let [precip-y 355
-           precip-h 85]
+     (let [precip-y    355
+           precip-h    85
+           ;; precip-bar-chart's "Regn (0-Xmm)" title sits at (- precip-y 6), so
+           ;; its ink starts a little above that: fence off everything from there
+           ;; down, across the full panel width, and combined-chart will place a
+           ;; low label beside its dot rather than on top of the titles or bars.
+           precip-band [0 (- precip-y 20) img/og-width (+ precip-y precip-h)]]
        (rain-background canvas points 40 136 (+ precip-y precip-h) 720)
        (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
        ;; Bolts are centered at y 158: they overlap the cloud strip's lower
        ;; edge (max extent y 136 + max-width/2 = 156) and hang into the gap
        ;; above the chart box top (172), the halo carving them out cleanly.
        (thunder-flashes canvas points 40 158 720)
-       (combined-chart canvas points 40 172 720 155 :below-max-y (- precip-y 20))
+       (combined-chart canvas points 40 172 720 155 :keep-out [precip-band])
        ;; Three z-layers in the precip strip: bars, then the (XOR) probability
        ;; line over them, then the mm labels on top -- so the line stays visible
        ;; through a tall bar while each label's halo still masks the line where

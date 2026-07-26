@@ -74,4 +74,6 @@ See [CLAUDE.md](CLAUDE.md) for a more detailed guide to the codebase and its des
 constraints (this is a 1-bit monochrome display — no color, no gray).
 
 There is no test suite or linter configured; this is a `deps.edn`-only exploratory
-project (no Leiningen).
+project (no Leiningen). `clojure -M:check-labels` (source in `dev/`) is the one
+automated check: it asserts the temp/wind chart never draws a label on top of a
+dot or another label, across the demo seasons, saved fixtures, and generated days.

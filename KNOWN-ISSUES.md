@@ -25,6 +25,9 @@ document the constraint where the flags are documented.
   `NumberFormatException` on bad input. Fine at this scale.
 - No test suite; for output that is fundamentally "does the screen look
   right," the `--demo` season renders are the de-facto regression tool.
+  `clojure -M:check-labels` (added 2026-07-25) covers the one part that can be
+  checked mechanically: that no temp/wind chart label is drawn onto a dot or
+  another label. Everything else is still eyes-on-a-PNG.
 
 ## Resolved (2026-07-09)
 
