@@ -12,6 +12,19 @@
 (def og-width 800)
 (def og-height 480)
 
+(def ^:private regular-font
+  (Font/createFont Font/TRUETYPE_FONT (io/input-stream (io/resource "fonts/PixelOperator.ttf"))))
+
+(def ^:private bold-font
+  (Font/createFont Font/TRUETYPE_FONT (io/input-stream (io/resource "fonts/PixelOperator-Bold.ttf"))))
+
+(defn pixel-font
+  "Derives a PixelOperator font at the given size. PixelOperator is a bitmap-style
+   font designed on a 16px grid — sizes that are multiples of 16 render as clean
+   blocky pixels; other sizes still render but interpolate between grid steps."
+  [style size]
+  (.deriveFont (if (= style :bold) bold-font regular-font) (float size)))
+
 (defn blank-canvas
   "Returns a white RGB canvas map: {:image BufferedImage, :graphics Graphics2D}.
    Draw on it with the other fns, then convert with ->1-bit or floyd-steinberg."

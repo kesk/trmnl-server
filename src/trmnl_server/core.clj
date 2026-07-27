@@ -1,22 +1,9 @@
 (ns trmnl-server.core
-  (:require [clojure.java.io :as io]
-            [trmnl-server.image :as img]
+  (:require [trmnl-server.image :as img]
+            [trmnl-server.labels :as labels]
             [trmnl-server.smhi :as smhi])
-  (:import [java.awt Color Font]
+  (:import [java.awt Color]
            [java.awt.image BufferedImage]))
-
-(def ^:private regular-font
-  (Font/createFont Font/TRUETYPE_FONT (io/input-stream (io/resource "fonts/PixelOperator.ttf"))))
-
-(def ^:private bold-font
-  (Font/createFont Font/TRUETYPE_FONT (io/input-stream (io/resource "fonts/PixelOperator-Bold.ttf"))))
-
-(defn- pixel-font
-  "Derives a PixelOperator font at the given size. PixelOperator is a bitmap-style
-   font designed on a 16px grid — sizes that are multiples of 16 render as clean
-   blocky pixels; other sizes still render but interpolate between grid steps."
-  [style size]
-  (.deriveFont (if (= style :bold) bold-font regular-font) (float size)))
 
 (defn- nice-bounds
   "Rounds [min max] outward to a multiple of step, with a little padding.
@@ -40,55 +27,15 @@
     (map #(map first %))
     (filter #(> (count %) 1))))
 
-(defn- local-max?
-  "True when vs[i] is a turning point at or above its neighbours (the left edge
-   of a plateau, so a run of equal values yields one candidate). Array endpoints
-   count, so a still-rising/-falling forecast edge — where the visible high/low
-   actually sits — is a candidate too."
-  [vs i]
-  (let [n (count vs) v (nth vs i)]
-    (and (or (zero? i)       (> v (nth vs (dec i))))
-      (or (= i (dec n)) (>= v (nth vs (inc i)))))))
-
-(defn- saddle-toward
-  "Walking from peak i in step direction (+1/-1), the lowest value passed before
-   reaching a point strictly higher than vs[i]. If the edge is reached first (no
-   higher ground that way) the descent bottoms out at series-min — so the global
-   maximum, hemmed in by nothing on either side, sees series-min both ways."
-  [vs i step series-min]
-  (let [n (count vs) vi (nth vs i)]
-    (loop [j (+ i step) col Double/POSITIVE_INFINITY]
-      (cond
-        (or (neg? j) (>= j n)) (min col series-min)
-        (> (nth vs j) vi)      col
-        :else                  (recur (+ j step) (min col (double (nth vs j))))))))
-
-(defn- peaks
-  "Local maxima of value-seq vs, each tagged with its topographic prominence —
-   height above the higher of the two saddles separating it from taller ground
-   (the global max gets the full range, since both saddles bottom out at the
-   series minimum). Prominence-descending, so the first is the global maximum.
-   Run on the negated series to get minima the same way."
-  [vs]
-  (let [series-min (double (apply min vs))]
-    (->> (range (count vs))
-      (filter #(local-max? vs %))
-      (map (fn [i]
-             {:i    i
-              :prom (- (double (nth vs i))
-                      (max (saddle-toward vs i -1 series-min)
-                        (saddle-toward vs i 1 series-min)))}))
-      (sort-by :prom >))))
-
 (defn- series-layout
   "Maps a value-key's series onto the chart box, scaled to its own min/max.
    Independent per-series scaling (rather than one shared numeric axis) is what
    makes it honest to overlay two different units on one chart: there's no
    single y-axis pretending °C and m/s are comparable, so each line's actual
    values only ever appear via its own direct labels. `:candidates` holds the
-   series' turning points, prominence-ranked (see peaks) as {:maxima :minima};
-   the first of each is the global high/low (always labeled), the rest feed
-   chart-labels' pick of a couple of extra local labels."
+   series' turning points, prominence-ranked (see labels/peaks) as
+   {:maxima :minima}; the first of each is the global high/low (always labeled),
+   the rest feed chart-labels' pick of a couple of extra local labels."
   [points value-key x y w h round-step floor]
   (let [values      (mapv value-key points)
         [lo hi]     (nice-bounds values round-step :floor floor)
@@ -98,7 +45,7 @@
         plot-points (map-indexed (fn [i point] [(idx->x i) (value->y (value-key point))]) points)]
     {:plot-points plot-points
      :idx->x      idx->x
-     :candidates  {:maxima (peaks values) :minima (peaks (mapv - values))}}))
+     :candidates  {:maxima (labels/peaks values) :minima (labels/peaks (mapv - values))}}))
 
 (defn- draw-series-halo
   "A white underlay stroked wider than the data line, laid down before the
@@ -118,226 +65,6 @@
    line comes second."
   [canvas layout & {:keys [dash]}]
   (img/draw-polyline canvas (:plot-points layout) :width 2.0 :dash dash))
-
-(def ^:private label-font (pixel-font :bold 16))
-
-(def ^:private label-dot-radius
-  "Radius of the dot marking a labelled point."
-  4)
-
-(def ^:private dot-clearance
-  "How far a dot's ink reaches from its centre: label-dot-radius plus the 3px
-   white halo draw-dot rings it with. Anything drawn inside this either gets
-   erased by that halo or erases the dot itself, depending which is drawn
-   second — so it's the exclusion zone label placement has to respect."
-  (+ label-dot-radius 3))
-
-(def ^:private label-clearance
-  "How far a label's white halo reaches past its glyph ink — half of
-   draw-text's 5px halo stroke, which is centred on the outline."
-  2.5)
-
-(defn- overlap-area
-  "Area shared by two [x1 y1 x2 y2] rects; 0 when they're disjoint."
-  [[ax1 ay1 ax2 ay2] [bx1 by1 bx2 by2]]
-  (* (max 0.0 (- (min ax2 bx2) (max ax1 bx1)))
-    (max 0.0 (- (min ay2 by2) (max ay1 by1)))))
-
-(defn- overlaps? [a b] (pos? (overlap-area a b)))
-
-(defn- inside? [[ax1 ay1 ax2 ay2] [bx1 by1 bx2 by2]]
-  (and (>= ax1 bx1) (>= ay1 by1) (<= ax2 bx2) (<= ay2 by2)))
-
-(defn- dot-rect
-  "A labelled point's drawn footprint. Square rather than round: at this radius
-   the corner error is a couple of pixels and it errs toward keeping labels
-   clear, which is the safe direction."
-  [[x y]]
-  [(- x dot-clearance) (- y dot-clearance) (+ x dot-clearance) (+ y dot-clearance)])
-
-(defn- label-rect
-  "The footprint `text` will occupy when drawn at baseline anchor: its glyph ink
-   (via image/text-box — the real outline, not the font's line box) grown by the
-   halo it whites out around itself."
-  [canvas text [x y]]
-  (let [[x1 y1 x2 y2] (img/text-box canvas text x y :font label-font)]
-    [(- x1 label-clearance) (- y1 label-clearance)
-     (+ x2 label-clearance) (+ y2 label-clearance)]))
-
-(def ^:private line-clearance
-  "Half the width a plotted series occupies: draw-series-line's 2px stroke under
-   draw-series-halo's 6px white underlay. A label that comes this close to a
-   line is sitting on it, not merely near it."
-  3)
-
-(defn- line-profile
-  "A series' y at every integer x it spans, as a vector indexed by x (nil outside
-   its range) — so asking whether a label box sits on the line is a lookup per
-   column rather than a walk over segments, for each of ~14 candidates per
-   label."
-  [plot-points]
-  (reduce (fn [profile [[ax ay] [bx by]]]
-            (reduce (fn [p x]
-                      (assoc p x (+ ay (* (- by ay) (/ (- x ax) (double (- bx ax)))))))
-              profile
-              (range (int (Math/ceil ax)) (inc (int (Math/floor bx))))))
-    (vec (repeat img/og-width nil))
-    (partition 2 1 plot-points)))
-
-(def ^:private line-ink-tolerance
-  "Columns of line a label may cover before the placer looks for somewhere else.
-   Not zero: a line clipping a box corner for a few columns is invisible, while
-   insisting on a pristine position pushes labels out into the margin or onto a
-   leader to buy nothing. Tuned by sweeping it over the archived forecasts —
-   this is the knee, where the labels that really sit across a line move and the
-   ones that merely grazed stay put."
-  8)
-
-(defn- line-ink
-  "How many pixel columns of the chart's own lines a label box would white out.
-   A label stays legible over a line — that is what its halo is for — but it
-   only manages that by cutting a notch out of the line, so a position covering
-   a line is worse than an equally reachable one that doesn't.
-
-   This is the whole of the chart's sense of \"which side looks better\": no rule
-   about peaks or troughs or how close the two series run, just a preference for
-   the side of the dot that happens to be empty. It falls out that a label
-   usually ends up outside the curve's bend, because that's where the space is."
-  [[x1 y1 x2 y2] profiles]
-  (count
-    (for [profile profiles
-          x       (range (max 0 (int x1)) (min img/og-width (inc (int x2))))
-          :let    [y (nth profile x)]
-          :when   (and y (<= (- y1 line-clearance) y (+ y2 line-clearance)))]
-      x)))
-
-(defn- label-candidates
-  "Baseline anchors to try for one label, best first: hugging its dot on the
-   side its kind points (up for a max, down for a min), then that same height
-   shifted clear to either side, then the opposite side the same three ways,
-   then level with the dot beside it, then far enough out to need a leader.
-   Every candidate sits clear of the dot's own footprint, which is what stops a
-   label ever being drawn through the dot it belongs to.
-
-   The opposite side comes before beside deliberately: both are a last resort
-   for a crowded dot, but a sideways label at a first or last point has nowhere
-   to go except out into the margin, where it reads as a stray number."
-  [canvas text kind [dot-x dot-y]]
-  (let [[x1 y1 x2 y2] (img/text-box canvas text 0 0 :font label-font)
-        at            (fn [x y leader?] {:anchor [x y] :leader? leader?})
-        centred       (fn [cx] (- cx (/ (+ x1 x2) 2.0)))    ; anchor putting the ink's centre on cx
-        step          (+ (/ (- x2 x1) 2.0) dot-clearance 4)
-        mid-y         (- dot-y (/ (+ y1 y2) 2.0))
-        near          {:max (- dot-y 12) :min (+ dot-y 26)} ; the offsets this chart has always used
-        far           {:max (- dot-y 34) :min (+ dot-y 44)}
-        other         ({:max :min :min :max} kind)
-        row           (fn [y leader?]
-                        [(at (centred dot-x) y leader?)
-                         (at (centred (+ dot-x step)) y leader?)
-                         (at (centred (- dot-x step)) y leader?)])
-        beside        [(at (- (+ dot-x dot-clearance 4) x1) mid-y false)
-                       (at (- (- dot-x dot-clearance 4) x2) mid-y false)]]
-    (concat (row (near kind) false)
-      (row (near other) false)
-      beside
-      (row (far kind) true)
-      (row (far other) true))))
-
-(defn- place-labels
-  "Positions every label the chart wants in one pass, in importance order: each
-   series' global high/low first (always drawn — with no shared numeric axis,
-   those labels are the only place the real values appear), then the
-   prominence-ranked extras.
-
-   One hard rule, then two soft ones. A candidate is *allowed* only when it
-   clears everything already committed: every dot including the label's own,
-   every label box already placed, the `:keep-out` rects for whatever is drawn
-   around the chart, and `:bounds` (the panel). That much is hard, because a
-   halo silently erases whatever it lands on. Among the allowed ones it prefers,
-   in order:
-
-     1. inside `:leash` — near enough the plot box to still read as one of its
-        labels rather than a number adrift in the margin;
-     2. not sitting across either series' line (see line-ink), least-covered
-        first once every position covers one;
-     3. earliest in label-candidates' preference order — sort-by is stable, so
-        this is what breaks every tie.
-
-   Rank first and the soft rules only as tiebreaks is what keeps placement
-   steady between renders: a label doesn't hop sides when the forecast shifts by
-   a tenth of a degree, it moves only when the position it wants stops being
-   clear. An extra with no allowed position at all is dropped, dot and all; a
-   global falls back to its least-overlapping candidate rather than go
-   unlabelled — the one case that can still put ink on ink.
-
-   This replaced three separate ad-hoc guards that all used dot positions as a
-   proxy for label positions — and so could neither see a label clamped onto
-   its own dot, nor a displaced label landing on the other series' dot."
-  [canvas specs {:keys [bounds leash keep-out profiles]}]
-  (:placed
-   (reduce
-     (fn [{:keys [placed dots] :as acc} {:keys [dot text kind required?]}]
-       (let [boxes     (map :box placed)
-             obstacles (concat (map dot-rect (cons dot dots)) boxes keep-out)
-             cost      (fn [box]
-                         (+ (reduce + (map #(overlap-area box %) obstacles))
-                           (if (inside? box bounds) 0.0 1e6)))
-             ranked    (mapv (fn [c]
-                               (let [box (label-rect canvas text (:anchor c))]
-                                 (assoc c :box box :cost (cost box) :ink (line-ink box profiles))))
-                         (label-candidates canvas text kind dot))
-             allowed   (filter (comp zero? :cost) ranked)
-             clean     (first (sort-by (juxt #(if (inside? (:box %) leash) 0 1)
-                                        ;; everything within tolerance ties, so a
-                                        ;; graze never outranks the preferred spot
-                                         #(if (<= (:ink %) line-ink-tolerance) 0 (:ink %)))
-                                allowed))
-              ;; The label's own dot has to clear the labels already placed too:
-              ;; a dot dropped onto an existing label erases it just as surely as
-              ;; a label dropped onto a dot. (Can only bite an extra — every
-              ;; global's dot is committed before anything is placed.)
-             dot-free? (not-any? #(overlaps? (dot-rect dot) %) boxes)
-             chosen    (cond
-                         (and clean dot-free?) clean
-                         required?             (first (sort-by :cost ranked))
-                         :else                 nil)]
-         (if chosen
-           {:placed (conj placed (-> chosen
-                                   (dissoc :cost :ink)   ; scoring scratch, not part of the result
-                                   (assoc :dot dot :text text)))
-            :dots   (if required? dots (conj dots dot))}
-           acc)))
-     {:placed [] :dots (mapv :dot (filter :required? specs))}
-     specs)))
-
-(defn- draw-placed-label
-  "Draws one label where place-labels put it: the dot, then — when the label had
-   to be displaced far enough that which dot it belongs to would otherwise be a
-   guess — a recessive dashed leader to the nearest corner of the label box
-   (before the label, so its white halo clears the leader too), then the text."
-  [canvas {:keys [dot text anchor leader? box]}]
-  (let [[dot-x dot-y] dot
-        [x1 y1 x2 y2] box]
-    (img/draw-dot canvas dot-x dot-y :radius label-dot-radius :halo? true)
-    (when leader?
-      (img/draw-dashed-line canvas dot-x dot-y
-        (min (max dot-x x1) x2) (min (max dot-y y1) y2)))
-    (img/draw-text canvas text (first anchor) (second anchor) :font label-font :halo? true)))
-
-(defn- pick-extras
-  "Up to `cap` extra turning points to label for one series, in prominence order
-   across its maxima and minima, skipping the two global extrema (labelled
-   anyway) and flat shoulders. Whether each one survives is place-labels' call:
-   an extra with nowhere clean to put its label is dropped there. That's looser
-   than the old rule, which rejected a candidate whenever its dot merely sat
-   near another label's dot — even when its label would have fitted fine."
-  [layout global-idxs cap]
-  (->> (concat (map #(assoc % :kind :max) (:maxima (:candidates layout)))
-         (map #(assoc % :kind :min) (:minima (:candidates layout))))
-    (remove #(contains? global-idxs (:i %)))
-    (filter #(pos? (:prom %)))  ; skip flat shoulders/plateaus -- not real turning points
-    (sort-by :prom >)
-    (take cap)))
 
 (defn- weather-icon-path [symbol-code night?]
   (str "icons/" (if night? "night" "day") "-" symbol-code ".png"))
@@ -392,7 +119,7 @@
     (draw-stale-badge (img/canvas-from copy) 766 4 20)
     copy))
 
-(def ^:private legend-font (pixel-font :regular 16))
+(def ^:private legend-font (img/pixel-font :regular 16))
 
 (defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
   (apply img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]]
@@ -489,14 +216,17 @@
 (defn chart-labels
   "What combined-chart will draw, resolved but not yet drawn: {:temp-layout
    :wind-layout :labels}, where each label is {:dot :text :anchor :leader? :box}
-   as positioned by place-labels. Each series contributes its global high and
+   as positioned by labels/place. Each series contributes its global high and
    low (always labelled) plus up to two prominence-ranked local extrema (see
-   pick-extras), so the ~1-day curve shows a secondary peak or valley wherever
-   there's room for one.
+   labels/pick-extras), so the ~1-day curve shows a secondary peak or valley
+   wherever there's room for one.
 
-   Split out of the drawing so the resulting geometry can be checked without
-   rendering — see dev/label_collisions.clj, which asserts no label box ever
-   lands on a dot or another label."
+   This is the domain half of the labelling — which values get labelled, how they
+   read, and what they have to stay off; the geometry that turns that into
+   positions lives in trmnl-server.labels. Split out of the drawing so the
+   resulting geometry can be checked without rendering — see
+   dev/label_collisions.clj, which asserts no label box ever lands on a dot or
+   another label."
   [canvas points x y w h & {:keys [keep-out]}]
   (let [temp-layout (series-layout points :temp x y w h 5 nil)
         wind-layout (series-layout points :wind x y w h 5 0)
@@ -516,11 +246,11 @@
         extras      (for [s                series
                           :let             [layout (:layout s)
                                             globals #{(global-i layout :max) (global-i layout :min)}]
-                          {:keys [i kind]} (pick-extras layout globals 2)]
+                          {:keys [i kind]} (labels/pick-extras (:candidates layout) globals 2)]
                       (spec s i kind false))]
     {:temp-layout temp-layout
      :wind-layout wind-layout
-     :labels      (place-labels canvas (concat globals extras)
+     :labels      (labels/place canvas (concat globals extras)
                     {;; Hard: stay on the panel, above whatever keep-out covers.
                      :bounds   [4 (- y 12) (- img/og-width 4) (+ y h 26)]
                      ;; Soft: a first- or last-point label is centred on the box
@@ -530,7 +260,7 @@
                      ;; rather than as one of the chart's labels.
                      :leash    [(- x 24) (- y 12) (+ x w 24) (+ y h 26)]
                      :keep-out keep-out
-                     :profiles (map (comp line-profile :plot-points) [temp-layout wind-layout])})}))
+                     :profiles (map (comp labels/line-profile :plot-points) [temp-layout wind-layout])})}))
 
 (defn combined-chart
   "Overlays temperature (solid) and wind speed (dashed) on one 24h-per-day
@@ -545,21 +275,21 @@
 
    Since the series are scaled independently, the temp and wind extrema can land
    on top of each other in pixel space even though the underlying values are
-   unrelated. Resolving that is chart-labels/place-labels' job, not this fn's:
+   unrelated. Resolving that is chart-labels/labels-place's job, not this fn's:
    every label is positioned against the real boxes of every dot and every other
    label first, and only then drawn. :keep-out takes [x1 y1 x2 y2] rects for
    whatever else the screen draws around this box — forecast-screen passes the
    band holding precip-bar-chart's titles and bars — so a label can't be pushed
    out of the chart and onto them."
   [canvas points x y w h & {:keys [keep-out]}]
-  (let [{:keys [temp-layout wind-layout labels]}
+  (let [{:keys [temp-layout wind-layout] placed :labels}
         (chart-labels canvas points x y w h :keep-out keep-out)]
     (draw-series-halo canvas temp-layout)
     (draw-series-halo canvas wind-layout :dash [6.0 5.0])
     (draw-series-line canvas temp-layout)
     (draw-series-line canvas wind-layout :dash [6.0 5.0])
-    (doseq [label labels]
-      (draw-placed-label canvas label))))
+    (doseq [label placed]
+      (labels/draw-placed canvas label))))
 
 (def ^:private axis-label-count
   "How many hour-of-day labels hour-axis-labels always draws, evenly spaced
@@ -574,7 +304,7 @@
    than duplicated under each chart."
   [canvas points x w y]
   (let [n       (count points)
-        font    (pixel-font :regular 16)
+        font    (img/pixel-font :regular 16)
         idx->x  (fn [i] (+ x (* w (/ i (double (dec n))))))
         indices (distinct (for [k (range axis-label-count)]
                             (Math/round (* k (/ (dec n) (double (dec axis-label-count)))))))]
@@ -616,7 +346,7 @@
                               :bar-h (mm->bar-h mm)
                               :mm    mm}))
                          points))]
-    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x (- y 6) :font (pixel-font :regular 16) :halo? true)
+    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x (- y 6) :font (img/pixel-font :regular 16) :halo? true)
     (doseq [{:keys [x bar-h]} bars]
       (when (pos? bar-h)
         (img/draw-rect canvas x (- bottom bar-h) bar-w bar-h :fill? true)))
@@ -637,7 +367,7 @@
   [canvas specs]
   (doseq [{:keys [x top mm]} specs]
     (img/draw-text canvas (format "%.1fmm" (double mm)) (- x 4) (- top 6)
-      :font (pixel-font :bold 16) :halo? true)))
+      :font (img/pixel-font :bold 16) :halo? true)))
 
 (defn precip-probability-line
   "Overlays probability-of-precipitation as a recessive dashed line across
@@ -673,7 +403,7 @@
     ;; dot doesn't read anyway (the peak sits on a plateau corner and/or atop the
     ;; black bars), so the line's shape carries "when" instead.
     (let [tag  (str "Regnrisk (max " (int peak) "%)")
-          font (pixel-font :regular 16)
+          font (img/pixel-font :regular 16)
           tw   (img/text-width canvas tag :font font)]
       (img/draw-text canvas tag (- (+ x w) tw) (- y 6) :font font :halo? true))
     (img/draw-polyline canvas plot :dash [5.0 4.0] :width 2.0)
@@ -693,7 +423,7 @@
     (doseq [group groups]
       (let [center-x (/ (+ (idx->x (first group)) (idx->x (last group))) 2)]
         (img/draw-text canvas (smhi/local-day-label (:time (nth points (first group)))) (- center-x 12) label-y
-          :font (pixel-font :bold 16))))
+          :font (img/pixel-font :bold 16))))
     (doseq [[_a b] (partition 2 1 groups)]
       (let [boundary-x (idx->x (first b))]
         (img/draw-dashed-line canvas boundary-x top boundary-x bottom)))))
@@ -738,11 +468,11 @@
      ;; Wordmark top-right, right edge flush with the 760 content margin (same
      ;; as the divider/Uppdaterad below it); its 38px height clears that line.
      (draw-logo canvas (- 760 logo-w) 14)
-     (img/draw-text canvas (str (int (:temp now)) "°") 122 44 :font (pixel-font :bold 32))
+     (img/draw-text canvas (str (int (:temp now)) "°") 122 44 :font (img/pixel-font :bold 32))
      (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 122 68
-       :font (pixel-font :regular 16))
+       :font (img/pixel-font :regular 16))
      (let [label (str "Uppdaterad " (smhi/local-now-str))
-           font  (pixel-font :regular 16)
+           font  (img/pixel-font :regular 16)
            w     (img/text-width canvas label :font font)]
        (img/draw-text canvas label (- 760 w) 68 :font font))
      (img/draw-line canvas 40 84 760 84)

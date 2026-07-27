@@ -73,14 +73,16 @@ this is otherwise a `deps.edn`-only exploratory project (no Leiningen).
 
 ## Architecture
 
-Ten namespaces, cleanly separated by concern. Five are the domain (`image`, `smhi`,
-`demo`, `core`, `main`); `server` and the four `server.*` ones under it are the serving
-path, which only `--serve` exercises.
+Eleven namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
+`demo`, `labels`, `core`, `main`); `server` and the four `server.*` ones under it are
+the serving path, which only `--serve` exercises.
 
 - **`trmnl-server.image`** — generic Java2D drawing primitives, independent of any
   weather/domain concepts. A "canvas" is a plain map `{:image BufferedImage, :graphics
   Graphics2D}` threaded through every draw fn (`draw-text`, `draw-wrapped-text`,
-  `draw-line`, `draw-dashed-line`, `draw-polyline`, `draw-dot`, `draw-rect`). Two
+  `draw-line`, `draw-dashed-line`, `draw-polyline`, `draw-dot`, `draw-rect`). Also owns
+  `pixel-font`, which derives the bundled PixelOperator bitmap font at a given size —
+  every namespace that draws text goes through it, rather than loading fonts itself. Two
   conversions turn the RGB working canvas into what the e-ink panel actually needs:
   `->1-bit` (hard threshold — good for text/UI) and `floyd-steinberg` (error-diffusion
   dithering — good for photos/gradients). `save-image` infers the output format from
@@ -121,6 +123,15 @@ path, which only `--serve` exercises.
   case the precip chart renders (notably the low-chance/high-mm line crossing tall
   bars), which the season datasets can't show since they tie chance and mm together.
 
+- **`trmnl-server.labels`** — direct labelling of a plotted series, as pure geometry:
+  which turning points are worth a label (`peaks`, ranked by topographic prominence,
+  and `pick-extras`) and where each label's box can go without landing on anything
+  already drawn (`place`, plus `line-profile` and `draw-placed`). Nothing here knows
+  about temperature, wind or forecasts — the caller hands it dots, texts and the rects
+  to stay off. Split out of `core` because it's the subtlest code in the project and the
+  only part with a mechanical test (`clojure -M:check-labels`); see the label-placement
+  entry under design constraints below before touching it.
+
 - **`trmnl-server.core`** — composes the above into the actual screen
   (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-2
   additionally takes the `{:lat :lon}` location that seq is for [used only to place
@@ -128,9 +139,10 @@ path, which only `--serve` exercises.
   Gothenburg, which is also what `--demo` renders], arity-0 fetches `live-points` of
   `default-forecast-hours` [23] points for `default-forecast-location` [Gothenburg]),
   and is where domain-specific
-  layout/chart logic lives (e.g. `line-chart`/`combined-chart`, `nice-bounds` for
-  rounding axis extents, and the label placement described under design constraints
-  below). `default-forecast-hours`/`default-forecast-location` are
+  layout/chart logic lives (e.g. `combined-chart`, `nice-bounds` for
+  rounding axis extents, and `chart-labels`, the domain half of the labelling: which
+  values get labelled, how they read, and what they have to stay off — the geometry that
+  turns that into positions is `labels` above). `default-forecast-hours`/`default-forecast-location` are
   the single source of truth for "prognosis length" and "where" — callers override
   them via `--hours`/`--lat`/`--lon` (main) or `$FORECAST_HOURS`/`$FORECAST_LAT`/
   `$FORECAST_LON` (server) rather than hardcoding a point count or coordinates
@@ -323,9 +335,9 @@ not server diagnostics.
   adding a third series or a shared axis, preserve this — a dual-axis chart that
   implies comparability between unrelated units is worse than two separate charts.
 - **Chart labels are positioned in one pass, against real boxes.** `core/chart-labels`
-  → `place-labels` walks every label the chart wants in importance order (each series'
+  → `labels/place` walks every label the chart wants in importance order (each series'
   global high/low, which are always drawn, then up to two prominence-ranked extras per
-  series) and scores `label-candidates`' ~14 positions for each: above/below its dot,
+  series) and scores `labels/candidates`' ~14 positions for each: above/below its dot,
   the same shifted sideways, the opposite side, level beside it, then displaced with a
   leader. One hard rule and two soft ones pick the winner:
   - **hard** — must clear **every dot including its own**, every label already placed,
@@ -335,6 +347,10 @@ not server diagnostics.
   - **soft** — prefer inside `:leash` (near enough the plot box not to read as a stray
     number in the margin), then not lying across a series line (`line-ink`, with
     `line-ink-tolerance` columns of grace so a corner graze doesn't count).
+
+  The geometry all lives in `trmnl-server.labels`, which knows nothing about weather;
+  `core/chart-labels` is the domain half that decides which values get labelled and
+  what they must stay off.
   - **ties** — earliest in preference order, `sort-by` being stable. This is what keeps
     a label from hopping sides when the forecast shifts by a tenth of a degree.
 
