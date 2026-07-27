@@ -176,7 +176,17 @@
 
    The opposite side comes before beside deliberately: both are a last resort
    for a crowded dot, but a sideways label at a first or last point has nowhere
-   to go except out into the margin, where it reads as a stray number."
+   to go except out into the margin, where it reads as a stray number.
+
+   The last four reach a second step sideways, and only on the rows that already
+   draw a leader. They exist for a dot cornered against the panel edge, where one
+   step isn't enough to clear what's in the way and there is no room on the other
+   side: a series minimum at the last point has the keep-out band below it, the
+   panel edge to its right, and the other series' bottom label and dot to its
+   left, which is exactly the 14-blocked-candidates case `place` used to resolve
+   by dropping its box onto that dot. Reaching further is what a leader is for,
+   so these get one; being last, they can only ever be picked when every
+   ordinary position is worse."
   [canvas text kind [dot-x dot-y]]
   (let [[x1 y1 x2 y2] (img/text-box canvas text 0 0 :font label-font)
         at            (fn [x y leader?] {:anchor [x y] :leader? leader?})
@@ -186,17 +196,18 @@
         near          {:max (- dot-y 12) :min (+ dot-y 26)} ; the offsets this chart has always used
         far           {:max (- dot-y 34) :min (+ dot-y 44)}
         other         ({:max :min :min :max} kind)
-        row           (fn [y leader?]
-                        [(at (centred dot-x) y leader?)
-                         (at (centred (+ dot-x step)) y leader?)
-                         (at (centred (- dot-x step)) y leader?)])
+        row           (fn [y leader? steps]
+                        (for [k steps]
+                          (at (centred (+ dot-x (* k step))) y leader?)))
         beside        [(at (- (+ dot-x dot-clearance 4) x1) mid-y false)
                        (at (- (- dot-x dot-clearance 4) x2) mid-y false)]]
-    (concat (row (near kind) false)
-      (row (near other) false)
+    (concat (row (near kind) false [0 1 -1])
+      (row (near other) false [0 1 -1])
       beside
-      (row (far kind) true)
-      (row (far other) true))))
+      (row (far kind) true [0 1 -1])
+      (row (far other) true [0 1 -1])
+      (row (far kind) true [2 -2])
+      (row (far other) true [2 -2]))))
 
 (defn place
   "Positions every label the caller wants in one pass, in importance order: the

@@ -345,13 +345,23 @@ not server diagnostics.
 - **Chart labels are positioned in one pass, against real boxes.** `core/chart-labels`
   → `labels/place` walks every label the chart wants in importance order (each series'
   global high/low, which are always drawn, then up to two prominence-ranked extras per
-  series) and scores `labels/candidates`' ~14 positions for each: above/below its dot,
+  series) and scores `labels/candidates`' 18 positions for each: above/below its dot,
   the same shifted sideways, the opposite side, level beside it, then displaced with a
-  leader. One hard rule and two soft ones pick the winner:
+  leader — the last four of those reaching a *second* step sideways, which is what a dot
+  cornered against the panel edge needs (see the hard rule below). One hard rule and two
+  soft ones pick the winner:
   - **hard** — must clear **every dot including its own**, every label already placed,
     the `:keep-out` rects `forecast-screen` passes for what's drawn around the box, and
     the panel. An extra with no such position is dropped, dot and all; a global falls
-    back to its least-overlapping candidate rather than go unlabelled.
+    back to its least-overlapping candidate rather than go unlabelled — the one path
+    that can still put ink on ink. That fallback used to fire for real, roughly once in
+    6000 generated days, always the same shape: a wind minimum at the *last* point has
+    the keep-out band below it, the panel edge to its right, and the temperature
+    minimum's label and dot to its left, so every position was blocked and its box
+    landed on that dot. The two double-width leader positions are what resolved it —
+    the sweep that found 10 such collisions in 60000 days now finds none, and
+    `dev/fixtures/cornered-min.edn` pins the case. Prefer widening the candidate set
+    like that over special-casing the fallback.
   - **soft** — prefer inside `:leash` (near enough the plot box not to read as a stray
     number in the margin), then not lying across a series line (`line-ink`, with
     `line-ink-tolerance` columns of grace so a corner graze doesn't count).
