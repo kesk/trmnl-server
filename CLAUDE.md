@@ -65,6 +65,13 @@ clojure -M:check-labels 500
 There is no test suite or linter configured, beyond `clojure -M:fmt` (cljfmt) for formatting
 and `clojure -M:check-labels` (see `dev/`) for the one rendering property that can be checked
 without eyes.
+
+Two docs sit alongside this one: **`KNOWN-ISSUES.md`** is the backlog of weaknesses in this
+repo's own code (duplication, dead code, stale docstrings — each with file/line and a
+suggested fix), plus a log of what's been resolved and why; **`ISSUES.md`** covers
+device/firmware and upstream-API problems seen in production, which are not this codebase's
+bugs. Check the former before starting a cleanup — the thing you noticed is probably already
+written up there.
 The only build step is the uberjar target in `build.clj` (via `tools.build`), used solely to
 produce a self-contained jar for deployment. Deployment itself (`deploy.clj`) is a babashka
 script that shells out to `clojure -T:build uber` rather than requiring `build.clj` in-process,
