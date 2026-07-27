@@ -77,6 +77,14 @@ Eleven namespaces, cleanly separated by concern. Six are the domain (`image`, `s
 `demo`, `labels`, `core`, `main`); `server` and the four `server.*` ones under it are
 the serving path, which only `--serve` exercises.
 
+**The whole codebase is reflection-free** — `(set! *warn-on-reflection* true)` plus a
+`require :reload` of any namespace must stay silent. On the Java2D-heavy fns that means
+a `^Graphics2D`/`^BufferedImage` hint on the destructured canvas binding; for one-off
+calls on an untyped value, the Clojure 1.12 qualified-method form (`Font/.deriveFont`,
+`BufferedImage/.createGraphics`). It isn't just tidiness: `->1-bit` runs two Java2D calls
+per pixel over 384k pixels, and reflection there cost ~160ms per render (12x the hinted
+version, and 3.6x the entire screen composition).
+
 - **`trmnl-server.image`** — generic Java2D drawing primitives, independent of any
   weather/domain concepts. A "canvas" is a plain map `{:image BufferedImage, :graphics
   Graphics2D}` threaded through every draw fn (`draw-text`, `draw-wrapped-text`,

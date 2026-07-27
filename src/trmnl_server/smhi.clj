@@ -3,7 +3,7 @@
   (:require [clojure.data.json :as json])
   (:import [java.net URI]
            [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]
-           [java.time Duration Instant ZoneId]
+           [java.time Duration Instant LocalDate ZoneId]
            [java.time.format DateTimeFormatter]
            [java.util Locale]))
 
@@ -94,7 +94,7 @@
   (let [;; J2000 (2451545.0) is 2000-01-01 12:00 UTC, whose epoch day is 10957,
         ;; so (epoch-day + 2440588.0) is the Julian date at noon UTC and n the
         ;; whole days since J2000 — the mean-solar-noon base the equation wants.
-        n       (- (+ (.toEpochDay (local-date iso-time)) 2440588.0) 2451545.0)
+        n       (- (+ (LocalDate/.toEpochDay (local-date iso-time)) 2440588.0) 2451545.0)
         j*      (- n (/ lon 360.0))                       ; mean solar noon (lon east-positive → noon comes earlier in UTC)
         m       (mod (+ 357.5291 (* 0.98560028 j*)) 360.0) ; solar mean anomaly (deg)
         mr      (Math/toRadians m)

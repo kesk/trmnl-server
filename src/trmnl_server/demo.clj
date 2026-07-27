@@ -53,9 +53,9 @@
             raining?    (contains? precip-window hour-of-day)]
         {:time          (str (.plusSeconds start (* h 3600)))
          :temp          (Math/round temp)
-         :wind          (/ (Math/round (* wind 10)) 10.0)
+         :wind          (/ (Math/round (* (double wind) 10)) 10.0)
          :symbol        (if raining? precip-symbol clear-symbol)
-         :cloud-cover   (Math/round cloud)
+         :cloud-cover   (Math/round (double cloud))
          :precip-mm     (if raining? precip-mm 0.0)
          :precip-chance (if raining? 80 5)}))))
 

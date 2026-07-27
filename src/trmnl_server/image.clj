@@ -1,7 +1,7 @@
 (ns trmnl-server.image
   (:require [clojure.java.io :as io]
             [clojure.string :as str])
-  (:import [java.awt BasicStroke Color Font RenderingHints TexturePaint]
+  (:import [java.awt BasicStroke Color Font Graphics2D RenderingHints TexturePaint]
            [java.awt.font GlyphVector]
            [java.awt.geom Area Rectangle2D Rectangle2D$Double]
            [java.awt.image BufferedImage]
@@ -23,7 +23,7 @@
    font designed on a 16px grid — sizes that are multiples of 16 render as clean
    blocky pixels; other sizes still render but interpolate between grid steps."
   [style size]
-  (.deriveFont (if (= style :bold) bold-font regular-font) (float size)))
+  (Font/.deriveFont (if (= style :bold) bold-font regular-font) (float size)))
 
 (defn blank-canvas
   "Returns a white RGB canvas map: {:image BufferedImage, :graphics Graphics2D}.
@@ -48,7 +48,7 @@
    :halo-color, if given, is stroked around the glyph outlines before the fill --
    a cheap way to keep text legible where a chart line passes behind it, since a
    1-bit surface has no gray/opacity to fall back on for that."
-  [graphics ^String text x y & {:keys [halo-color halo-width] :or {halo-width 5.0}}]
+  [^Graphics2D graphics ^String text x y & {:keys [halo-color halo-width] :or {halo-width 5.0}}]
   (let [frc     (.getFontRenderContext graphics)
         gv      (.createGlyphVector (.getFont graphics) frc text)
         outline (.getOutline gv (float x) (float y))]
@@ -63,14 +63,14 @@
 (defn draw-text
   ":halo? true surrounds the glyphs with a white outline before filling them
    black, so the label stays readable if a chart line is drawn underneath it."
-  [{:keys [graphics]} text x y & {:keys [font color halo?] :or {color Color/BLACK}}]
+  [{:keys [^Graphics2D graphics]} text x y & {:keys [font color halo?] :or {color Color/BLACK}}]
   (when font (.setFont graphics font))
   (.setColor graphics color)
   (fill-string graphics text (int x) (int y) :halo-color (when halo? Color/WHITE)))
 
 (defn text-width
   "Pixel width text would render at, for right/center-aligning against a fixed edge."
-  [{:keys [graphics]} text & {:keys [font]}]
+  [{:keys [^Graphics2D graphics]} text & {:keys [font]}]
   (when font (.setFont graphics font))
   (.stringWidth (.getFontMetrics graphics) text))
 
@@ -80,7 +80,7 @@
    caller can collision-test a label against what really lands there. The
    vertical companion to text-width; truncates the anchor to ints exactly like
    draw-text does, so the box lines up with the drawn glyphs."
-  [{:keys [graphics]} ^String text x y & {:keys [font]}]
+  [{:keys [^Graphics2D graphics]} ^String text x y & {:keys [font]}]
   (when font (.setFont graphics font))
   (let [gv (Font/.createGlyphVector (.getFont graphics) (.getFontRenderContext graphics) text)
         b  (GlyphVector/.getVisualBounds gv)
@@ -91,7 +91,7 @@
 
 (defn draw-wrapped-text
   "Draws text wrapped to fit within max-width, one line per line-height."
-  [{:keys [graphics]} text x y max-width line-height & {:keys [font color] :or {color Color/BLACK}}]
+  [{:keys [^Graphics2D graphics]} text x y max-width line-height & {:keys [font color] :or {color Color/BLACK}}]
   (when font (.setFont graphics font))
   (.setColor graphics color)
   (let [fm    (.getFontMetrics graphics)
@@ -110,7 +110,7 @@
   ":paint accepts any java.awt.Paint (a Color for solid fill, or e.g.
    checkerboard-paint/stipple-paint for a dithered fill) and takes priority
    over :color when both are given."
-  [{:keys [graphics]} x y w h & {:keys [fill? color paint] :or {color Color/BLACK}}]
+  [{:keys [^Graphics2D graphics]} x y w h & {:keys [fill? color paint] :or {color Color/BLACK}}]
   (.setPaint graphics (or paint color))
   (if fill?
     (.fillRect graphics x y w h)
@@ -124,10 +124,10 @@
 
 (defn draw-image
   "Draws a raster image scaled into the w x h box at x,y."
-  [{:keys [graphics]} image x y w h]
+  [{:keys [^Graphics2D graphics]} image x y w h]
   (.drawImage graphics image (int x) (int y) (int w) (int h) nil))
 
-(defn draw-line [{:keys [graphics]} x1 y1 x2 y2 & {:keys [color] :or {color Color/BLACK}}]
+(defn draw-line [{:keys [^Graphics2D graphics]} x1 y1 x2 y2 & {:keys [color] :or {color Color/BLACK}}]
   (.setColor graphics color)
   (.setStroke graphics (BasicStroke. 1.0))
   (.drawLine graphics (int x1) (int y1) (int x2) (int y2)))
@@ -135,7 +135,7 @@
 (defn draw-dashed-line
   "A recessive hairline for gridlines/axes — dashed since a 1-bit surface can't
    fall back to a lighter gray the way a color surface would."
-  [{:keys [graphics]} x1 y1 x2 y2 & {:keys [color] :or {color Color/BLACK}}]
+  [{:keys [^Graphics2D graphics]} x1 y1 x2 y2 & {:keys [color] :or {color Color/BLACK}}]
   (.setColor graphics color)
   (.setStroke graphics (BasicStroke. 1.0 BasicStroke/CAP_BUTT BasicStroke/JOIN_MITER
                          1.0 (float-array [2.0 3.0]) 0.0))
@@ -153,7 +153,7 @@
    so the line reads white-on-black there while a plain black pass covers the
    rest — visible over the bars without XOR-inverting the rain-background stipple
    the line also crosses."
-  [{:keys [graphics]} points & {:keys [width paint dash clip] :or {width 2.0 paint Color/BLACK}}]
+  [{:keys [^Graphics2D graphics]} points & {:keys [width paint dash clip] :or {width 2.0 paint Color/BLACK}}]
   (.setPaint graphics paint)
   (.setStroke graphics (if dash
                          (BasicStroke. width BasicStroke/CAP_BUTT BasicStroke/JOIN_ROUND
@@ -205,7 +205,7 @@
    in line thickness on a 1-bit surface where color/gray isn't available.
    :paint accepts any java.awt.Paint (a Color for solid fill, or e.g.
    checkerboard-paint for a dithered fill)."
-  [{:keys [graphics]} points widths & {:keys [paint] :or {paint Color/BLACK}}]
+  [{:keys [^Graphics2D graphics]} points widths & {:keys [paint] :or {paint Color/BLACK}}]
   (.setPaint graphics paint)
   (doseq [[[x1 y1 w1] [x2 y2 w2]] (partition 2 1 (map (fn [[x y] w] [x y w]) points widths))]
     (.setStroke graphics (BasicStroke. (float (/ (+ w1 w2) 2.0)) BasicStroke/CAP_ROUND BasicStroke/JOIN_ROUND))
@@ -216,7 +216,7 @@
   ":halo? true rings the dot in white first, same idea as draw-text's halo --
    keeps it visually distinct when a line passes close by, or when two dots
    (e.g. two series' extrema) land right next to each other."
-  [{:keys [graphics]} x y & {:keys [radius color halo?] :or {radius 4 color Color/BLACK}}]
+  [{:keys [^Graphics2D graphics]} x y & {:keys [radius color halo?] :or {radius 4 color Color/BLACK}}]
   (when halo?
     (.setColor graphics Color/WHITE)
     (let [halo-radius (+ radius 3)]
@@ -226,7 +226,7 @@
 
 (defn draw-polygon
   "Fills (or outlines) a closed polygon given a seq of [x y] vertices."
-  [{:keys [graphics]} points & {:keys [fill? color] :or {color Color/BLACK}}]
+  [{:keys [^Graphics2D graphics]} points & {:keys [fill? color] :or {color Color/BLACK}}]
   (.setColor graphics color)
   (let [xs (int-array (map (comp int first) points))
         ys (int-array (map (comp int second) points))
@@ -240,7 +240,7 @@
    drawn onto it (e.g. overlaying a marker on a cached image) instead of
    starting fresh via blank-canvas."
   [image]
-  (let [g (.createGraphics image)]
+  (let [g (BufferedImage/.createGraphics image)]
     (.setRenderingHint g RenderingHints/KEY_ANTIALIASING RenderingHints/VALUE_ANTIALIAS_OFF)
     (.setRenderingHint g RenderingHints/KEY_TEXT_ANTIALIASING RenderingHints/VALUE_TEXT_ANTIALIAS_OFF)
     (.setColor g Color/BLACK)
@@ -248,7 +248,7 @@
 
 (defn ->1-bit
   "Hard-threshold an RGB canvas down to 1-bit black/white. Good for text/UI screens."
-  [{:keys [image]} & {:keys [threshold] :or {threshold 128}}]
+  [{:keys [^BufferedImage image]} & {:keys [threshold] :or {threshold 128}}]
   (let [w  (.getWidth image)                                   h (.getHeight image)
         bw (BufferedImage. w h BufferedImage/TYPE_BYTE_BINARY)]
     (dotimes [y h]
@@ -261,7 +261,7 @@
 (defn floyd-steinberg
   "Dither an RGB canvas down to 1-bit using Floyd-Steinberg error diffusion.
    Better than ->1-bit for photos/gradients since it preserves perceived shading."
-  [{:keys [image]}]
+  [{:keys [^BufferedImage image]}]
   (let [w    (.getWidth image)      h (.getHeight image)
         gray (double-array (* w h))]
     (dotimes [y h]
@@ -290,4 +290,4 @@
   (let [file (File. ^String path)
         fmt  (-> path (subs (inc (.lastIndexOf ^String path "."))))]
     (.mkdirs (.getParentFile file))
-    (ImageIO/write image fmt file)))
+    (ImageIO/write ^BufferedImage image fmt file)))
