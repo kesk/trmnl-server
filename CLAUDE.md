@@ -73,7 +73,9 @@ this is otherwise a `deps.edn`-only exploratory project (no Leiningen).
 
 ## Architecture
 
-Six namespaces, cleanly separated by concern:
+Ten namespaces, cleanly separated by concern. Five are the domain (`image`, `smhi`,
+`demo`, `core`, `main`); `server` and the four `server.*` ones under it are the serving
+path, which only `--serve` exercises.
 
 - **`trmnl-server.image`** — generic Java2D drawing primitives, independent of any
   weather/domain concepts. A "canvas" is a plain map `{:image BufferedImage, :graphics
@@ -134,29 +136,29 @@ Six namespaces, cleanly separated by concern:
   `$FORECAST_LON` (server) rather than hardcoding a point count or coordinates
   themselves.
 
-- **`trmnl-server.server`** — implements the small HTTP API a real TRMNL OG device
+- **`trmnl-server.server`** — the HTTP surface only: routing, response helpers, the
+  device API, and `start!`. It implements the small API a real TRMNL OG device
   polls when pointed at a custom server: `GET /api/display` (the main poll, returns
   JSON with an `image_url`/`filename`/`refresh_rate`), `GET /api/setup` (first-boot
   welcome screen), `POST /api/log` (device telemetry, replied to with `204`), and
-  `GET /images/*` (serves the cached PNG bytes). Plus two human-facing pages:
-  `GET /status` (battery/firmware/deployed-commit/device-log dashboard) and `GET /archive` (a gallery
-  of the rolling 24h image archive, see below), with `GET /archive/*` serving each
-  archived PNG off disk. Uses `http-kit` as both the Ring
+  `GET /images/*` (serves the cached PNG bytes). Plus three human-facing pages:
+  `GET /` (landing page — title, the screen being served right now, link to status),
+  `GET /status` (battery/firmware/awake-trend/deployed-commit/device-log dashboard) and
+  `GET /archive` (a gallery of the rolling 24h image archive), with `GET /archive/*`
+  serving each archived PNG (or its `.edn` sidecar) off disk. Uses `http-kit` as both the Ring
   request/response convention and the embedded server (handlers are plain
   `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
   `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
-  dependency given there are only 3 routes. The two human-facing HTML pages are
-  built with **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
-  there's no hand-rolled `escape-html`) via a shared `page` layout helper; their
-  CSS lives in `resources/css/{base,archive}.css` (slurped at load through
-  `io/resource`, so it resolves from the uberjar too) rather than inline string
-  blobs — `base.css` is the shared shell, `archive.css` the gallery-only rules
-  layered on top. The `/status` page also shows the **deployed commit** via
-  `deployed-version`, read once at load from a bundled `version.edn` that
-  `build.clj`'s uber task bakes in (`git rev-parse --short HEAD`, plus a `-dirty`
-  suffix when the tree isn't clean, and a build timestamp). Running from source
-  (`clojure -M:serve`, no build step) there's no such resource, so it falls back to
-  shelling out to `git` against the working tree — nil renders as "unknown". `current-image` renders via
+  dependency given how few routes there are. The traversal guards live here, in the
+  namespace the untrusted URI arrives in: `archive-file-response` constrains the name to a
+  flat `forecast-*.{png,edn}` basename, and `?day` is validated in `pages/status` against
+  the days actually on disk, so neither route can be walked out of its directory.
+
+  The work behind the routes is four namespaces under `trmnl-server.server.*`, none of
+  which know about HTTP:
+
+- **`trmnl-server.server.render`** — the served screen and its cache. `current-image`
+  renders via
   `core/forecast-screen` (fed `core/live-points` of `$FORECAST_HOURS`/
   `$FORECAST_LAT`/`$FORECAST_LON`, or `core/default-forecast-hours`/
   `core/default-forecast-location` if unset) + `image/->1-bit`, encodes to PNG bytes in
@@ -165,13 +167,37 @@ Six namespaces, cleanly separated by concern:
   caches them for 10 minutes keyed by an MD5 content hash, so the `filename`
   embedded in `/api/display`'s response only changes when the rendered image
   actually changes — this lets the device skip re-downloading identical screens
-  between polls. Server-side diagnostics (startup banner, stale-cache warnings, failed
-  device-log writes) go through `clojure.tools.logging`, not `println` — see the
-  logging note below.
+  between polls. `bytes-for` is what enforces that contract on the way back out: it
+  serves only the bytes whose hash matches the requested filename, so a cache rollover
+  mid-fetch 404s (prompting a re-poll) instead of serving mismatched bytes. On a failed
+  regeneration it falls back to the last good image with a stale badge stamped on it
+  (see `core/stamp-stale-badge`), and only rethrows when there's nothing to fall back on.
 
-  **Rolling image archive**: every *successful* render (i.e. each new cache entry,
+- **`trmnl-server.server.pages`** — the three human-facing HTML pages, built with
+  **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
+  there's no hand-rolled `escape-html`) via a shared `page` layout helper. Each page fn
+  returns an HTML *string*, not a Ring response — HTTP is `server`'s business, so
+  `(pages/status nil)` can be called straight from the REPL. Their
+  CSS lives in `resources/css/{base,archive,home}.css` (slurped at load through
+  `io/resource`, so it resolves from the uberjar too) rather than inline string
+  blobs — `base.css` is the shared shell, with `archive.css` and `home.css`
+  layered on top for those two pages. The `/status` page also shows the **deployed commit** via
+  `deployed-version`, read once at load from a bundled `version.edn` that
+  `build.clj`'s uber task bakes in (`git rev-parse --short HEAD`, plus a `-dirty`
+  suffix when the tree isn't clean, and a build timestamp). Running from source
+  (`clojure -M:serve`, no build step) there's no such resource and no commit to report,
+  so it shows `dev-local` — there is deliberately **no** git fallback here, since
+  shelling out to `git` at load time cost the CLI a ~60s exit hang.
+
+- **`trmnl-server.server.telemetry`** — everything the device reports about itself and
+  where it's kept: the latest `/api/display` header snapshot (`record-poll!`/`poll-status`),
+  the rolling wake-time series, and the raw `/api/log` bodies on disk. See the logging
+  note below.
+
+- **`trmnl-server.server.archive`** — the rolling 24h on-disk archive, as pure storage
+  (`dir`, `write!`, `entries`). Every *successful* render (i.e. each new cache entry,
   so ~one per 10-min cache miss, not the stale-fallback copies) is also written to
-  disk by `archive-image!` as `forecast-<yyyyMMdd-HHmmss>-run<yyyyMMdd-HHmm>-<hash8>.png`
+  disk by `write!` as `forecast-<yyyyMMdd-HHmmss>-run<yyyyMMdd-HHmm>-<hash8>.png`
   under `archive/`
   (relative to the working dir, like `logs/`; override with `$ARCHIVE_DIR`), and
   files older than 24h are pruned by mtime on each write — so the folder self-manages
@@ -192,23 +218,23 @@ Six namespaces, cleanly separated by concern:
   window, since pruning only runs when something new is written — which is the desired
   behaviour, keeping the last known screen rather than emptying the archive.) The write
   is best-effort (any IO error is logged and swallowed, never breaking the serving path)
-  and runs under the same `regen-lock` as the render. Browse/download them via the
-  `/archive` gallery (newest first); `archive-file-response` serves only flat
-  `forecast-*.{png,edn}` basenames, so the route can't be walked out of the archive dir.
-  Alongside each archived PNG, `archive-image!` also `spit`s a sibling `.edn` of the same
+  and runs under `render`'s `regen-lock`, so writes are already serialized. Browse/download
+  them via the `/archive` gallery (newest first).
+  Alongside each archived PNG, `write!` also `spit`s a sibling `.edn` of the same
   basename — the `pr-str` of the point seq the screen was rendered from — so a screen
   spotted after the fact can be **re-rendered or inspected**, since the 1-bit pixels alone
   can't be reversed into the forecast data. The `.edn` is pruned on the same 24h mtime
   schedule as the PNG, and is downloadable from the gallery via a `data` link on each card
   (served as an `application/edn` attachment). The gallery itself lists only PNGs
-  (`archive-entries` restricts to `forecast-*.png`) and shows the data link only when the
-  sidecar exists. Note `last-archived-hash` (the dedupe probe) filters to `.png` before
+  (`entries` restricts to `forecast-*.png`) and shows the data link only when the
+  sidecar exists. Note `last-hash` (the dedupe probe) filters to `.png` before
   taking the newest by mtime, so the sidecar — written just after the PNG, hence newer —
   can't shadow the content hash and defeat dedupe.
 
 - **`trmnl-server.main`** — the CLI entry point (`-main`). Kept separate from `core`
-  purely so `core` and `server` can each require the other one-way without a cycle
-  (`server` requires `core` for `forecast-screen`; `main` requires both). Renders
+  purely so the screen composition and the HTTP serving can each require the other
+  one-way without a cycle (`server.render` requires `core` for `forecast-screen`;
+  `main` requires both). Renders
   the live screen by default, one screen per `demo/seasons` entry plus the
   `demo/rain-test-points` stress-test day when invoked with `--demo` (writing both
   PNG variants of each to `out/`), or starts the HTTP server
@@ -239,14 +265,14 @@ the JVM pins a zone, so these timestamps are the Pi's **local** wall-clock (Euro
 matching journald and the device screen (whose on-screen times are separately hardcoded to
 Europe/Stockholm in `smhi`, so the host zone doesn't affect the display either way).
 
-Device telemetry (`POST /api/log`) is **written straight to disk by the server, bypassing
-logback entirely** (`server/append-device-log!`): each received body is collapsed to one
+Device telemetry (`POST /api/log`) is **written straight to disk, bypassing
+logback entirely** (`server.telemetry/append-log!`): each received body is collapsed to one
 line and appended as **raw JSON** (no timestamp prefix) to `logs/device-<yyyy-MM-dd>.log`,
 the file picked by the **UTC** date (`today-utc-date`), so the filename does the daily
 partitioning a rolling policy used to. The dir is `$DEVICE_LOG_DIR` (default `logs/`), created
-on demand; writes are serialised under `device-log-lock` and are best-effort (an IO error is
+on demand; writes are serialised under a private lock and are best-effort (an IO error is
 logged via the main logger and swallowed, so the device still gets its `204`). Old days
-self-prune: `prune-device-logs!` (run on each write) keeps only the newest `max-device-log-files`
+self-prune: `prune-logs!` (run on each write) keeps only the newest `max-log-files`
 (7) `device-<date>.log` files — a count cap, not a calendar window, so a device that skips
 days still retains its last 7 *reporting* days. This replaced a
 logback `DEVICE` appender + dedicated `trmnl-server.device` logger — dropped because once
@@ -255,10 +281,10 @@ was the only remaining complexity and the hand-written path is simpler. Two cons
 the switch: device rows are **no longer echoed to journald** (they live only in the files +
 `/status`), and the `DEVICE_LOG_FILE` env var is gone (use `DEVICE_LOG_DIR`).
 
-The `/status` **device-log table just shows the contents of one day's file**. `device-log-days`
+The `/status` **device-log table just shows the contents of one day's file**. `telemetry/log-days`
 lists the `device-<date>.log` files (newest first) as the day-picker strip above the table;
 `?day=<date>` selects one, defaulting to today (`today-utc-date`), which is always shown as a
-tab even before it has a file. `read-device-log` reads the chosen file (plain read — the DIY
+tab even before it has a file. `telemetry/read-log` reads the chosen file (plain read — the DIY
 files aren't gzipped) and renders its rows newest first, time column headed "time (UTC)" (it
 renders `created_at` through `Instant`, always UTC — matching the UTC filename dates). `sel` is
 constrained to a day that actually exists on disk (or today), so a bogus/traversal `?day=` just
@@ -271,11 +297,11 @@ the *current* day even while you're viewing an older one.
 The **Awake card** surfaces the firmware's `Wake-Time` header (how long the device was
 awake during its previous cycle, ms — a health signal, since fighting weak WiFi keeps it
 awake longer and drains the battery): the latest value in seconds plus moving averages over
-1h/6h/24h/7d windows. Every device `/api/display` poll feeds one sample into `record-wake-time!`,
+1h/6h/24h/7d windows. Every device `/api/display` poll feeds one sample into `telemetry/record-poll!`,
 which keeps a rolling `wake-history` series of `{:t :ms}` maps **persisted to disk** as
 `wake-times.edn` (in `$DEVICE_LOG_DIR`, alongside the device logs) so the trend survives
 restarts/redeploys — `load-wake-history!` reloads it in `start!`. Samples are pruned to a 7-day
-window (`wake-history-retention-ms`, which also sets the longest average window) and non-positive
+window (`wake-retention-ms`, which also sets the longest average window) and non-positive
 values are dropped (the firmware sends `0` on a fresh boot with no previous cycle). Writes are
 best-effort under `wake-history-lock` and never break the serving path. Unlike the other cards
 this one is history-based, not a single snapshot — an empty series shows "no samples yet".
