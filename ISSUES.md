@@ -45,11 +45,27 @@ badge (`core/stamp-stale-badge`) and served under its own `-stale.png` content-h
 filename, so a stale screen is recognisable on the wall without reading the logs.
 Only the very first request ever (empty cache) can still surface the exception.
 
+**Hardened since** (2026-07-30), now that it's clear this recurs:
+- `smhi/fetch-raw-forecast` checks the status code and throws `ex-info` with
+  `{:url :status :body}`, so the log says what SMHI actually answered instead of
+  `unexpected character: <`.
+- It retries a transient failure (network/timeout, 429, 5xx, unparseable 2xx) 3
+  times, 1s then 2s apart, inside a 15s budget — enough to absorb episodes of the
+  length seen so far. A 4xx still fails immediately, since that's our URL being
+  wrong, not SMHI being unwell.
+- `server.render` holds off further attempts for a minute after a failure
+  (`failure-cooldown-ms`). Previously the failed entry stayed expired, so every
+  device poll *and* browser hit refetched SMHI mid-outage — the most plausible way
+  we'd trip a rate limit, if there is one.
+- `/status` has a Forecast card: last successful render, and a pill counting
+  consecutive failures while the stale badge is being served.
+
 **To investigate later**:
-- Whether prolonged staleness is worth alerting on now that we know it recurs —
-  e.g. page/notify if the cache has been serving the stale badge for longer than
-  some threshold, rather than relying on noticing the badge.
-- Whether SMHI has a documented rate limit we might be tripping — check request
+- Whether passive visibility is enough. The card and the on-screen badge both
+  require someone to look; an outage lasting hours would still go unnoticed until
+  the screen is read. Active notification is the open question, not detection.
+- Whether SMHI has a documented rate limit we might be tripping — the cooldown
+  bounds our side of it now, but the limit itself is still unknown; check request
   frequency against `refresh-rate-seconds` (900s) plus the device's own retry
   behavior (it was retrying every ~2s during the first failure window, which may
   have compounded whatever SMHI was doing).

@@ -23,7 +23,10 @@ h1{font-size:20px;font-weight:500;margin:0 0 18px}
 .sec{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
 .cards{display:grid;gap:12px}
 .cards-health{grid-template-columns:1fr 1fr 2fr}
-.cards-build{grid-template-columns:repeat(3,1fr)}
+/* Four cards, two of them full timestamps — 20px is what keeps "2026-07-30 23:19:06"
+   on one line in a quarter-width card. */
+.cards-build{grid-template-columns:repeat(4,1fr)}
+.cards-build .v{font-size:20px}
 .card{background:var(--card);border-radius:10px;padding:12px 15px}
 .k{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
 .v{font-size:24px;font-weight:500;margin:3px 0 7px}

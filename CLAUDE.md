@@ -179,7 +179,8 @@ version, and 3.6x the entire screen composition).
   welcome screen), `POST /api/log` (device telemetry, replied to with `204`), and
   `GET /images/*` (serves the cached PNG bytes). Plus three human-facing pages:
   `GET /` (landing page — title, the screen being served right now, link to status),
-  `GET /status` (battery/firmware/awake-trend/deployed-commit/device-log dashboard) and
+  `GET /status` (battery/firmware/awake-trend/deployed-commit/forecast-health/device-log
+  dashboard) and
   `GET /archive` (a gallery of the rolling 24h image archive), with `GET /archive/*`
   serving each archived PNG (or its `.edn` sidecar) off disk. Uses `http-kit` as both the Ring
   request/response convention and the embedded server (handlers are plain
@@ -212,7 +213,11 @@ version, and 3.6x the entire screen composition).
   (`failure-cooldown-ms`): the failed entry keeps its expired `:generated-at`, so
   without that cooldown every incoming request — device poll *and* browser hit on
   `/` — would refetch SMHI while it's already failing. Nothing clears `:failed-at`
-  explicitly; the next successful render replaces the whole entry.
+  explicitly; the next successful render replaces the whole entry. `cache-status`
+  reports that bookkeeping (last success, last failure, consecutive failures) to
+  `/status`'s Forecast card, deliberately without calling `current-image` — looking
+  at the status page shouldn't fetch SMHI, least of all to regenerate what it's
+  reporting on.
 
 - **`trmnl-server.server.pages`** — the three human-facing HTML pages, built with
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so

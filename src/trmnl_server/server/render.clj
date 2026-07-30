@@ -116,11 +116,25 @@
                         stale-entry (assoc entry
                                       :stale-bytes stale-bytes
                                       :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png")
-                                      :failed-at (System/currentTimeMillis))]
+                                      :failed-at (System/currentTimeMillis)
+                                      :failures (inc (:failures entry 0)))]
                     (log/warn e "Forecast regeneration failed, serving stale cache")
                     (reset! cache stale-entry)
                     stale-entry)
                   (throw e))))))))))
+
+(defn cache-status
+  "A read-only snapshot of the cache for the /status page: when the last *successful*
+   render happened, when the last attempt failed (nil once a later one succeeds), and
+   how many attempts have failed in a row. nil before the first render.
+
+   Deliberately doesn't call current-image: looking at the status page shouldn't fetch
+   SMHI, least of all to regenerate the very thing it's reporting on."
+  []
+  (when-let [entry @cache]
+    {:generated-at (:generated-at entry)
+     :failed-at    (:failed-at entry)
+     :failures     (:failures entry 0)}))
 
 (defn serve-filename
   "The filename the current entry should be served under — the stale one when the last

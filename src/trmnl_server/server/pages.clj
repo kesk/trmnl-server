@@ -82,6 +82,32 @@
   [ms]
   (/ (Math/round (/ (double ms) 100.0)) 10.0))
 
+(defn- ago-str
+  "A rough 'how long ago' for a past epoch-millis timestamp, at the coarsest unit that
+   still says something useful — the /status cards care about 'a while back', not
+   seconds."
+  [millis now]
+  (let [mins (quot (- now millis) 60000)]
+    (cond
+      (< mins 1)    "just now"
+      (< mins 60)   (str mins " min ago")
+      (< mins 1440) (str (quot mins 60) " h ago")
+      :else         (str (quot mins 1440) " d ago"))))
+
+(defn- forecast-quality
+  "Maps render/cache-status to a human label and pill class for the Forecast card.
+   A live :failed-at means SMHI is currently failing us and the device is being served
+   the stale-badged image (see ISSUES.md); the failure count is what distinguishes a
+   single blip from an outage worth looking into. How long it's been going on is left
+   to the card's value — the timestamp of the last render that did succeed."
+  [status now]
+  (let [{:keys [generated-at failed-at failures]} status]
+    (cond
+      (nil? status)    ["not rendered yet" "pill-unknown"]
+      (nil? failed-at) [(str "rendered " (ago-str generated-at now)) "pill-ok"]
+      :else            [(str "stale · " failures " failed attempt" (when (> failures 1) "s"))
+                        (if (> failures 1) "pill-low" "pill-watch")])))
+
 (defn- battery-percent
   "Rough charge estimate from a raw battery_voltage reading (LiPo, ~3V empty to
    ~4.2V full). Not the device's exact curve — just enough to flag a low battery."
@@ -204,7 +230,10 @@
          wifi-pill] (wifi-quality (:rssi dev))
         wakes       (telemetry/wake-samples)
         now         (System/currentTimeMillis)
-        latest-wake (:ms (last wakes))]
+        latest-wake (:ms (last wakes))
+        fcast       (render/cache-status)
+        [fc-lbl
+         fc-pill]   (forecast-quality fcast now)]
     (page "trmnl-server status" status-css
       (list
         [:div.top
@@ -250,6 +279,10 @@
            [:div.v.mono (or (:commit deployed-version) "unknown")]
            (when-let [built (:built-at deployed-version)]
              [:span.pill.pill-unknown "built " (format-built-at built)])]
+          [:div.card
+           [:div.k "Forecast"]
+           [:div.v.mono (if (:generated-at fcast) (format-millis (:generated-at fcast)) "—")]
+           [:span {:class (str "pill " fc-pill)} fc-lbl]]
           [:div.card
            [:div.k "Last poll"]
            [:div.v.mono (if dev (format-millis (:received-at dev)) "—")]
