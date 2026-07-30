@@ -1,8 +1,10 @@
 (ns trmnl-server.smhi
   "Client for SMHI's public point-forecast API (category snow1g, replaced pmp3g on 2026-03-31)."
   (:require [clojure.data.json :as json]
-            [clojure.string :as str])
-  (:import [java.net URI]
+            [clojure.string :as str]
+            [clojure.tools.logging :as log])
+  (:import [java.io IOException]
+           [java.net URI]
            [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]
            [java.time Duration Instant LocalDate ZoneId]
            [java.time.format DateTimeFormatter]
@@ -25,8 +27,8 @@
       (str (subs flat 0 200) "…")
       flat)))
 
-(defn fetch-raw-forecast
-  "Fetches and parses SMHI's point forecast for `location`.
+(defn- fetch-once
+  "One request/response cycle: fetches and parses SMHI's point forecast for `location`.
 
    Both failure paths throw `ex-info` carrying `{:url :status :body}` rather than
    letting the JSON reader speak for them: SMHI answers an outage, a rate-limit or a
@@ -60,6 +62,57 @@
           (throw (ex-info (str "SMHI returned unparseable JSON (HTTP " status ")")
                    {:url url :status status :body (body-snippet body)}
                    e)))))))
+
+(def ^:private max-attempts 3)
+(def ^:private retry-delays-ms [1000 2000])
+
+;; A ceiling on the whole retry sequence, not just the pauses: a new attempt only starts
+;; if we're still inside it. Each request already has its own 10s timeout, so without this
+;; three hanging attempts could keep a device's /api/display poll waiting ~33s — well past
+;; the point where the device gives up and re-polls anyway.
+(def ^:private retry-budget-ms 15000)
+
+(defn- retryable?
+  "Whether a failed fetch is worth another attempt. Retryable: a network or timeout
+   error (no response at all), a 429, a 5xx, or a 2xx whose body wouldn't parse — the
+   transient shapes behind every episode in ISSUES.md. Not retryable: any other 4xx,
+   which means our URL is wrong rather than SMHI being unwell, and a 404 in particular
+   most likely means the API moved again (pmp3g → snow1g). Anything else propagates
+   immediately — a bug here shouldn't be tried three times."
+  [e]
+  (if-let [status (:status (ex-data e))]
+    (or (= 429 status) (<= 500 status 599) (<= 200 status 299))
+    (instance? IOException e)))
+
+(defn fetch-raw-forecast
+  "Fetches and parses SMHI's point forecast for `location`, retrying a transient
+   failure up to max-attempts times with a short backoff (see fetch-once for the
+   error shape, retryable? for what counts as transient).
+
+   SMHI intermittently answers with an HTML error page instead of JSON; the episodes
+   logged so far lasted from a single request to ~30 seconds, so a couple of quick
+   retries covers the short ones outright and the stale-cache fallback in
+   server.render still covers the rest. Gives up early once retry-budget-ms has
+   elapsed, and rethrows the last failure so the caller sees the real cause."
+  [location]
+  (let [deadline (+ (System/currentTimeMillis) retry-budget-ms)]
+    (loop [attempt 1]
+      (let [result (try
+                     {:ok (fetch-once location)}
+                     (catch Exception e
+                       (let [delay-ms (nth retry-delays-ms (dec attempt) (last retry-delays-ms))]
+                         (if (and (< attempt max-attempts)
+                               (retryable? e)
+                               (< (+ (System/currentTimeMillis) delay-ms) deadline))
+                           {:retry e :delay-ms delay-ms}
+                           (throw e)))))]
+        (if-let [e (:retry result)]
+          (do
+            (log/warnf "SMHI fetch attempt %d/%d failed (%s), retrying in %dms"
+              attempt max-attempts (ex-message e) (:delay-ms result))
+            (Thread/sleep (long (:delay-ms result)))
+            (recur (inc attempt)))
+          (:ok result))))))
 
 (defn- ->forecast-point [{:keys [time data]}]
   {:time          time

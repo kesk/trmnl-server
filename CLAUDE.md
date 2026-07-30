@@ -111,7 +111,12 @@ version, and 3.6x the entire screen composition).
   won't parse, throws `ex-info` with `{:url :status :body}` (the body truncated to a
   whitespace-collapsed 200-char snippet) rather than letting SMHI's HTML error pages
   reach the JSON reader as a bare `unexpected character: <` — see ISSUES.md, this is
-  a failure that recurs. Also owns the `symbol_code` → text mapping (1–27) and
+  a failure that recurs. Which is also why `fetch-raw-forecast` retries: 3 attempts,
+  1s then 2s apart, but only for the transient shapes (`retryable?` — network/timeout,
+  429, 5xx, or an unparseable 2xx), never for a plain 4xx, and never past a 15s total
+  budget so a hung SMHI can't hold a device poll open for three 10s timeouts. Short
+  outages are absorbed here; longer ones fall through to `server.render`'s stale cache.
+  Also owns the `symbol_code` → text mapping (1–27) and
   timezone-aware formatting helpers. `forecast` additionally carries the response's
   top-level `referenceTime` (the SMHI forecast run's issuance time) as `:reference-time`
   **metadata on the returned seq** — data the point maps don't need but a caller may want
