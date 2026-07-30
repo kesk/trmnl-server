@@ -276,10 +276,10 @@
   [canvas points x y w h & {:keys [keep-out]}]
   (let [temp-layout (series-layout points :temp x y w h 2 nil)
         wind-layout (series-layout points :wind x y w h 2 0)
-        series      [{:layout temp-layout                :value-key :temp
-                      :fmt    (fn [t] (str (int t) "°"))}
-                     {:layout wind-layout                                         :value-key :wind
-                      :fmt    (fn [v] (str (int (Math/round (double v))) " m/s"))}]
+        series      [{:layout temp-layout                                     :value-key :temp
+                      :fmt    (fn [t] (str (int (Math/rint (double t))) "°"))}
+                     {:layout wind-layout                                        :value-key :wind
+                      :fmt    (fn [v] (str (int (Math/rint (double v))) " m/s"))}]
         global-i    (fn [layout kind]
                       (:i (first ((if (= kind :max) :maxima :minima) (:candidates layout)))))
         spec        (fn [{:keys [layout value-key fmt]} i kind required?]
@@ -514,8 +514,8 @@
      ;; Wordmark top-right, right edge flush with the 760 content margin (same
      ;; as the divider/Uppdaterad below it); its 38px height clears that line.
      (draw-logo canvas (- 760 logo-w) 14)
-     (img/draw-text canvas (str (int (:temp now)) "°") 122 44 :font (img/pixel-font :bold 32))
-     (img/draw-text canvas (str (int (Math/round (double (:wind now)))) " m/s, " condition) 122 68
+     (img/draw-text canvas (str (int (Math/rint (double (:temp now)))) "°") 122 44 :font (img/pixel-font :bold 32))
+     (img/draw-text canvas (str (int (Math/rint (double (:wind now)))) " m/s, " condition) 122 68
        :font (img/pixel-font :regular 16))
      (let [label (str "Uppdaterad " (smhi/local-now-str))
            font  (img/pixel-font :regular 16)
