@@ -349,6 +349,12 @@ not server diagnostics.
   pixel box and leans on direct min/max labels (with units) to keep it honest. If
   adding a third series or a shared axis, preserve this — a dual-axis chart that
   implies comparability between unrelated units is worse than two separate charts.
+  Because each axis is fitted to its own data, amplitude is **not** comparable
+  between two renders either; only the labels carry real values. `nice-bounds`
+  frames tightly (1 unit of padding, rounded to a multiple of 2) so an ordinary
+  day uses most of the box, and puts a floor under the *span* rather than under
+  the padding — that `:min-span` is the one thing keeping a near-flat day from
+  being stretched into a mountain range, so don't trade it away for more travel.
 - **Chart labels are positioned in one pass, against real boxes.** `core/chart-labels`
   → `labels/place` walks every label the chart wants in importance order (each series'
   global high/low, which are always drawn, then up to two prominence-ranked extras per

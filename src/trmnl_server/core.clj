@@ -6,14 +6,39 @@
            [java.awt.image BufferedImage]))
 
 (defn- nice-bounds
-  "Rounds [min max] outward to a multiple of step, with a little padding.
-   :floor clamps the low end (e.g. wind speed can't sensibly go below 0)."
-  [values step & {:keys [floor]}]
-  (let [lo  (apply min values)
-        hi  (apply max values)
-        lo' (* step (Math/floor (/ (- lo 2) step)))
-        hi' (* step (Math/ceil (/ (+ hi 2) step)))]
-    [(if floor (max floor lo') lo') hi']))
+  "Rounds [min max] outward to a multiple of step, after :pad units of breathing
+   room on each side. :floor clamps the low end (e.g. wind speed can't sensibly
+   go below 0).
+
+   :min-span is the narrowest axis the result may span, and is what lets the
+   padding stay tight. The two knobs do separate jobs that used to be conflated:
+   generous padding (and a coarse step) kept a flat day looking flat, but it paid
+   for that by spending 40% of the plot box on empty margin on an ordinary day,
+   so a real 6° swing only travelled 60% of the box. Framing tightly instead and
+   putting an explicit floor under the *span* gives an ordinary day most of the
+   box while still rendering a degree of overnight jitter as the near-flat line
+   it actually is, rather than stretching it into a mountain range.
+
+   Note the min-span case can return bounds that aren't multiples of step (the
+   window is grown around its own midpoint). Nothing draws y ticks or gridlines
+   off these — they only scale the series into the box — so the multiple is a
+   stability device, not a layout one.
+
+   :floor wins over :min-span at the low end: a too-narrow window that would
+   reach below the floor is shifted up rather than clamped, so the span is
+   honoured either way."
+  [values step & {:keys [floor pad min-span] :or {pad 1 min-span 6}}]
+  (let [lo    (apply min values)
+        hi    (apply max values)
+        lo'   (* step (Math/floor (/ (- lo pad) step)))
+        hi'   (* step (Math/ceil (/ (+ hi pad) step)))
+        lo'   (if floor (max floor lo') lo')
+        short (- min-span (- hi' lo'))]
+    (if (pos? short)
+      (let [a (- lo' (/ short 2.0))
+            a (if floor (max floor a) a)]
+        [a (+ a min-span)])
+      [lo' hi'])))
 
 (defn- day-groups
   "Splits point indices into runs sharing the same Europe/Stockholm calendar
@@ -155,21 +180,41 @@
     (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
 
 (defn- draw-thunder-flash
-  "A solid lightning bolt in a w×h box centered on (cx, cy). Backed by a white
-   halo — the same bolt scaled up ~2px on each side — so it stays legible where
-   it overlaps the cloud strip's checkerboard or the rain stipple behind it."
+  "A solid lightning bolt in a w×h box centered on (cx, cy), backed by a white
+   halo so it stays legible over the cloud strip's checkerboard or the rain
+   stipple behind it.
+
+   The halo is the bolt's own outline stroked white at twice the halo radius,
+   the same trick draw-text and draw-dot use: the stroke straddles the path, so
+   it stands `halo` px proud all the way round, and the black fill then covers
+   the half that fell inside.
+
+   **The halo radius has to stay well under half the bolt's narrowest feature**,
+   which is what sets the 22x30 box below against a 2.5px halo. Widening the
+   halo instead is the obvious move and it does not work: a halo of radius r
+   closes off any concavity narrower than 2r, so at r=4 the bolt's mid-step
+   simply fills in and the white gap stops being bolt-shaped — it unions into a
+   blocky wedge. That's morphology, not a drawing-technique problem, so it
+   survives every way of building the halo (a scaled-up copy and a ring of
+   stamped offsets were both tried; switching between them moved 29 pixels).
+   Growing the bolt so its features outrun the halo is the fix. It matters
+   because the bolt sits *inside* the strip, where too thin a surround reads as
+   a smudge against the checkerboard and too thick a one eats the shape."
   [canvas cx cy w h]
   (let [;; normalized ⚡ outline (0..1 box), traced clockwise: a wide top "head"
         ;; narrowing to a mid step, then a left-offset lower stroke down to the
         ;; tip — the offset between the two strokes is what reads as a bolt.
         norm  [[0.42 0.00] [0.78 0.00] [0.50 0.42] [0.72 0.42]
                [0.20 1.00] [0.38 0.52] [0.16 0.52]]
-        verts (fn [bw bh]
-                (map (fn [[nx ny]]
-                       [(+ cx (* (- nx 0.5) bw)) (+ cy (* (- ny 0.5) bh))])
-                  norm))]
-    (img/draw-polygon canvas (verts (+ w 4) (+ h 4)) :fill? true :color Color/WHITE)
-    (img/draw-polygon canvas (verts w h) :fill? true)))
+        halo  2.5
+        verts (mapv (fn [[nx ny]]
+                      [(+ cx (* (- nx 0.5) w)) (+ cy (* (- ny 0.5) h))])
+                norm)]
+    ;; Closed loop, so the outline strokes the last edge back to the first
+    ;; vertex; draw-polyline's round join keeps the tip from growing a miter
+    ;; spike where the two strokes meet at a sharp angle.
+    (img/draw-polyline canvas (conj verts (first verts)) :width (* 2 halo) :paint Color/WHITE)
+    (img/draw-polygon canvas verts :fill? true)))
 
 (defn thunder-flashes
   "Marks each thundery hour with a lightning bolt, centered vertically on cy.
@@ -178,15 +223,16 @@
    slot — the same slot-per-point geometry (w/n wide) the rain-background column
    and the precip bar use, NOT the (n-1)-divisor plotting-point spacing of the
    cloud strip / temp-wind chart — so the flash sits centered over the rainy
-   column it belongs to rather than drifting off its bar. It overlaps the cloud
-   strip's lower edge (its halo carves it out of the checkerboard) and hangs
-   into the gap above the temp/wind chart."
+   column it belongs to rather than drifting off its bar. It sits inside the
+   cloud strip (cy is the strip's own centre line), its halo carving it out of
+   the checkerboard — the gap below the strip belongs to the temp/wind chart,
+   whose box starts just under it."
   [canvas points x cy w]
   (let [n           (count points)
         slot-center (fn [i] (+ x (* w (/ (+ i 0.5) n))))]
     (doseq [[i point] (map-indexed vector points)]
       (when (smhi/thunder? (:symbol point))
-        (draw-thunder-flash canvas (slot-center i) cy 17.0 23.0)))))
+        (draw-thunder-flash canvas (slot-center i) cy 22.0 30.0)))))
 
 (defn- rain-background
   "Shades a light stippled column behind every hour that has any
@@ -228,8 +274,8 @@
    dev/label_collisions.clj, which asserts no label box ever lands on a dot or
    another label."
   [canvas points x y w h & {:keys [keep-out]}]
-  (let [temp-layout (series-layout points :temp x y w h 5 nil)
-        wind-layout (series-layout points :wind x y w h 5 0)
+  (let [temp-layout (series-layout points :temp x y w h 2 nil)
+        wind-layout (series-layout points :wind x y w h 2 0)
         series      [{:layout temp-layout                :value-key :temp
                       :fmt    (fn [t] (str (int t) "°"))}
                      {:layout wind-layout                                         :value-key :wind
@@ -482,20 +528,42 @@
         ["Vind (m/s)" {:dash [6.0 5.0]}]
         ["Moln (%)" {:width 14.0 :paint (img/checkerboard-paint)}]])
 
-     (let [precip-y    355
+     (let [cloud-y     136
+           cloud-max-w 40.0
+           ;; The strip is centered on cloud-y and can reach half its max width
+           ;; either side (116..156). Fenced off like precip-band below, because
+           ;; the chart box now starts just under it: without this a high label
+           ;; would sit on the checkerboard, and check-labels would never see it
+           ;; -- that check only knows about the rects it's handed.
+           cloud-band  [0 (- cloud-y (/ cloud-max-w 2)) img/og-width (+ cloud-y (/ cloud-max-w 2))]
+           precip-y    355
            precip-h    85
            ;; precip-bar-chart's "Regn (0-Xmm)" title sits at (- precip-y 6), so
            ;; its ink starts a little above that: fence off everything from there
            ;; down, across the full panel width, and combined-chart will place a
            ;; low label beside its dot rather than on top of the titles or bars.
            precip-band [0 (- precip-y 20) img/og-width (+ precip-y precip-h)]]
-       (rain-background canvas points 40 136 (+ precip-y precip-h) 720)
-       (cloud-cover-strip canvas points 40 136 720 :max-width 40.0)
-       ;; Bolts are centered at y 158: they overlap the cloud strip's lower
-       ;; edge (max extent y 136 + max-width/2 = 156) and hang into the gap
-       ;; above the chart box top (172), the halo carving them out cleanly.
-       (thunder-flashes canvas points 40 158 720)
-       (combined-chart canvas points 40 172 720 155 :keep-out [precip-band])
+       (rain-background canvas points 40 cloud-y (+ precip-y precip-h) 720)
+       (cloud-cover-strip canvas points 40 cloud-y 720 :max-width cloud-max-w)
+       ;; Bolts sit *inside* the strip, centered on it (27x35 including halo, so
+       ;; 118..154 against the strip's 116..156) rather than hanging below it --
+       ;; their halo carves them out of the checkerboard the same way either way,
+       ;; and the gap under the strip is the chart's now. A thundery hour is an
+       ;; overcast one, so there's always strip to carve.
+       (thunder-flashes canvas points 40 cloud-y 720)
+       ;; Top edge sits just under the cloud band. The axis padding in
+       ;; nice-bounds is what makes that safe: it guarantees the extreme value
+       ;; lands a unit or more inside the box, so no dot (with its 3px halo ring)
+       ;; ever reaches up over the strip.
+       ;; Bottom edge runs right up to precip-band, reclaiming the dead strip
+       ;; that used to sit between the box and the titles. Same padding argument
+       ;; as the top edge: no dot reaches the box edge, so nothing collides with
+       ;; the band. What it does cost is label room *below* the box -- a label is
+       ;; ~16px tall and there is no longer 16px between box bottom and band, so
+       ;; a low minimum near the bottom now places its label beside or above its
+       ;; dot instead. That's a placement the label code already handles; it's
+       ;; check-labels, not inspection, that confirms it stays collision-free.
+       (combined-chart canvas points 40 158 720 176 :keep-out [cloud-band precip-band])
        ;; Three z-layers in the precip strip: bars, then the (XOR) probability
        ;; line over them, then the mm labels on top -- so the line stays visible
        ;; through a tall bar while each label's halo still masks the line where
