@@ -1,93 +1,55 @@
 # Known issues
 
-Notes from investigating dashboard-pi's `trmnl-server` journal on 2026-07-07.
-Both issues below are on the device/firmware or upstream-API side, not bugs in
-this repo's rendering logic — recorded here for follow-up, not because
-anything needs fixing in this codebase beyond the mitigation already applied.
+Problems seen in production that live on the device/firmware or upstream-API side,
+not in this repo's rendering logic — recorded for follow-up, not because anything
+needs fixing in this codebase beyond the mitigations already applied. (Weaknesses in
+*our own* code belong in `KNOWN-ISSUES.md` instead.)
 
-## 1. Device-side filesystem error, every poll cycle
+## 1. SMHI intermittently answers with HTML instead of JSON
 
-The TRMNL OG device logs this pair on essentially every ~15-minute wake cycle
-(confirmed recurring continuously since at least 2026-07-07 04:21, unaffected
-by a `trmnl-server` restart):
-
-```
-{"message":"File open ERROR","source_line":228,"source_path":"src/filesystem.cpp", ...}
-{"message":"File writing ERROR. Result - 0","source_line":3622,"source_path":"src/bl.cpp", ...}
-```
-
-Observed alongside each occurrence: `wifi_status: "no_shield"`, `wifi_signal: 0`
-(despite the device clearly having working wifi, since it successfully POSTs
-this very log to us — likely a stale/default field rather than a real wifi
-fault), and a healthy free heap (~221KB, so not memory pressure).
-
-**Read on it so far**: looks like the device firmware failing to open/write a
-local file on its internal flash (LittleFS/SPIFFS) — plausibly for caching the
-downloaded PNG before decoding it to the e-ink panel. This is firmware-internal
-(`filesystem.cpp` / `bl.cpp` in `usetrmnl/firmware`) and not something our
-server's response can cause or fix.
-
-**Update 2026-07-07 23:19**: checked `usetrmnl/trmnl-firmware` issues #270 and
-#350 (the two that surfaced for filesystem/image-save failures) — neither
-matches this error, so it doesn't look reported upstream yet.
-
-**Update 2026-07-07 23:34**: tried a soft reset (15-20s button hold) to rule
-out transient runtime state. Didn't help — the device's internal log-id
-counter restarted at `id: 1` after the reset (confirming it *was* a fresh
-post-reset boot), and that very first post-reset log entry was already the
-same `File open ERROR` / `File writing ERROR` pair, at `retry: 0`,
-`refresh_rate: 0` (i.e. before the device had even re-fetched its config).
-So this isn't cleared by resetting runtime state — next step, if pursued,
-would be a full factory reset (clears stored flash config too, not just
-runtime state) or accepting it as a firmware bug on 1.8.9.
-
-Added a `GET /status` endpoint (`src/trmnl_server/server.clj`) that shows the
-last 200 `/api/log` rows plus a rough battery estimate, so checking on this
-(and battery level) no longer requires pulling `journalctl` by hand.
-
-**To investigate later**:
-- Check `usetrmnl/firmware` GitHub issues for "File open ERROR" / `filesystem.cpp:228`
-  again after new releases — nothing matching as of 2026-07-07.
-- Try a full factory reset (not just soft reset — see update above) to rule
-  out flash wear/corruption vs. a firmware bug on 1.8.9.
-- Confirm the device still displays the correct forecast image despite the
-  error — if so, this is cosmetic/log-noise; if the screen is stale or wrong,
-  it's more serious.
-
-## 2. Uncaught exception on a bad SMHI response → bare 500 to the device
-
-At 2026-07-07 04:05:36–04:06:05, `trmnl-server` threw on every `/api/display`
-and `/api/setup` request for about 30 seconds:
+First seen 2026-07-07 04:05:36–04:06:05, when `trmnl-server` threw on every
+`/api/display` and `/api/setup` request for about 30 seconds:
 
 ```
 java.lang.Exception: JSON error (unexpected character): <
 	at trmnl_server.smhi$fetch_raw_forecast...
 	at trmnl_server.core$forecast_screen...
-	at trmnl_server.server$current_image...
+	at trmnl_server.server.render$current_image...
 	at trmnl_server.server$display_response...
 ```
 
 The `<` strongly suggests SMHI returned an HTML page (error/rate-limit/outage)
-instead of JSON. The device's own log corroborates this from its side:
+instead of JSON. The device's own log corroborated this from its side:
 `"Error fetching API display: 8, detail: HTTP Client failed with error: (500)"`.
 
-It didn't recur in the following 4+ hours of normal polling, so it looks like
-a transient SMHI-side hiccup rather than a repeat of the `pmp3g` → `snow1g`
-migration already documented in `CLAUDE.md` — but the same failure mode
-(SMHI returns something unparseable) could happen again at any time, migration
-or not.
+**It is not a one-off.** The same failure has recurred twice since, both times
+handled by the mitigation below rather than reaching the device:
 
-**Mitigation already shipped** (2026-07-07, commit `08519eb`): `current-image`
-in `src/trmnl_server/server.clj` now catches regeneration failures and serves
-the last successfully cached image instead of propagating a bare 500 — a
-stale forecast beats none. Only the very first request ever (empty cache) can
-still surface the exception.
+```
+2026-07-16 22:06:13 WARN  server - Forecast regeneration failed, serving stale cache
+java.lang.Exception: JSON error (unexpected character): <
+2026-07-17 01:08:17 WARN  server - Forecast regeneration failed, serving stale cache
+java.lang.Exception: JSON error (unexpected character): <
+```
+
+So it's a recurring upstream hiccup (three episodes in the ~3 weeks of logs kept),
+distinct from the `pmp3g` → `snow1g` migration documented in `CLAUDE.md` — but the
+same failure mode is exactly what a future migration would look like too, so a burst
+of these is worth a glance at the SMHI API status before assuming it'll pass.
+
+**Mitigation shipped** (2026-07-07, commit `08519eb`; since moved and extended):
+`current-image` in `src/trmnl_server/server/render.clj` catches regeneration
+failures and serves the last successfully rendered image instead of propagating a
+bare 500 — a stale forecast beats none. The fallback copy is stamped with a warning
+badge (`core/stamp-stale-badge`) and served under its own `-stale.png` content-hash
+filename, so a stale screen is recognisable on the wall without reading the logs.
+Only the very first request ever (empty cache) can still surface the exception.
 
 **To investigate later**:
-- Whether this was a one-off SMHI outage or something worth alerting on if it
-  recurs (e.g. log a warning count, or page if the cache is serving stale data
-  for longer than some threshold).
-- Whether SMHI has a documented rate limit we might be tripping — check
-  request frequency against `refresh-rate-seconds` (900s) plus the device's
-  own retry behavior (it was retrying every ~2s during the failure window,
-  which may have compounded whatever SMHI was doing).
+- Whether prolonged staleness is worth alerting on now that we know it recurs —
+  e.g. page/notify if the cache has been serving the stale badge for longer than
+  some threshold, rather than relying on noticing the badge.
+- Whether SMHI has a documented rate limit we might be tripping — check request
+  frequency against `refresh-rate-seconds` (900s) plus the device's own retry
+  behavior (it was retrying every ~2s during the first failure window, which may
+  have compounded whatever SMHI was doing).
