@@ -107,7 +107,11 @@ version, and 3.6x the entire screen composition).
 - **`trmnl-server.smhi`** — HTTP client for SMHI's public point-forecast API, using
   `java.net.http.HttpClient` directly (no HTTP dependency needed). Fetches raw JSON,
   normalizes each `timeSeries` entry into a flat `{:time :temp :symbol :wind
-  :precip-chance :precip-mm :cloud-cover}` map. Also owns the `symbol_code` → text mapping (1–27) and
+  :precip-chance :precip-mm :cloud-cover}` map. A non-2xx status, or a body that
+  won't parse, throws `ex-info` with `{:url :status :body}` (the body truncated to a
+  whitespace-collapsed 200-char snippet) rather than letting SMHI's HTML error pages
+  reach the JSON reader as a bare `unexpected character: <` — see ISSUES.md, this is
+  a failure that recurs. Also owns the `symbol_code` → text mapping (1–27) and
   timezone-aware formatting helpers. `forecast` additionally carries the response's
   top-level `referenceTime` (the SMHI forecast run's issuance time) as `:reference-time`
   **metadata on the returned seq** — data the point maps don't need but a caller may want

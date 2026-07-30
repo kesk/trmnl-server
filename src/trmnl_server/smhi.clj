@@ -1,6 +1,7 @@
 (ns trmnl-server.smhi
   "Client for SMHI's public point-forecast API (category snow1g, replaced pmp3g on 2026-03-31)."
-  (:require [clojure.data.json :as json])
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str])
   (:import [java.net URI]
            [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]
            [java.time Duration Instant LocalDate ZoneId]
@@ -15,17 +16,50 @@
   (format "https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1/geotype/point/lon/%s/lat/%s/data.json"
     lon lat))
 
-(defn fetch-raw-forecast [location]
+(defn- body-snippet
+  "The head of a response body, whitespace-collapsed, for error context — enough to
+   recognise an HTML error page in a log line without dumping the whole document."
+  [body]
+  (let [flat (str/trim (str/replace (str body) #"\s+" " "))]
+    (if (> (count flat) 200)
+      (str (subs flat 0 200) "…")
+      flat)))
+
+(defn fetch-raw-forecast
+  "Fetches and parses SMHI's point forecast for `location`.
+
+   Both failure paths throw `ex-info` carrying `{:url :status :body}` rather than
+   letting the JSON reader speak for them: SMHI answers an outage, a rate-limit or a
+   moved endpoint with an HTML page, and handing that straight to `json/read-str`
+   surfaces as `JSON error (unexpected character): <`, which says nothing about what
+   actually went wrong (see ISSUES.md). With the status and a snippet of the body in
+   the exception, the log line names the real failure, and a caller can tell a
+   retryable 5xx/429 from a 404 that means the API moved again — as pmp3g → snow1g
+   did on 2026-03-31."
+  [location]
   (with-open [client (-> (HttpClient/newBuilder)
                        (.connectTimeout (Duration/ofSeconds 10))
                        (.build))]
-    (let [request  (-> (HttpRequest/newBuilder)
-                     (.uri (URI/create (forecast-url location)))
+    (let [url      (forecast-url location)
+          request  (-> (HttpRequest/newBuilder)
+                     (.uri (URI/create url))
                      (.timeout (Duration/ofSeconds 10))
                      (.GET)
                      (.build))
-          response (.send client request (HttpResponse$BodyHandlers/ofString))]
-      (json/read-str (.body response) :key-fn keyword))))
+          response (.send client request (HttpResponse$BodyHandlers/ofString))
+          status   (.statusCode response)
+          body     (.body response)]
+      (when-not (<= 200 status 299)
+        (throw (ex-info (str "SMHI request failed: HTTP " status)
+                 {:url url :status status :body (body-snippet body)})))
+      (try
+        (json/read-str body :key-fn keyword)
+        (catch Exception e
+          ;; A 2xx that isn't JSON — an error page served with the wrong status, or a
+          ;; truncated response. Same diagnosis problem, same context attached.
+          (throw (ex-info (str "SMHI returned unparseable JSON (HTTP " status ")")
+                   {:url url :status status :body (body-snippet body)}
+                   e)))))))
 
 (defn- ->forecast-point [{:keys [time data]}]
   {:time          time
