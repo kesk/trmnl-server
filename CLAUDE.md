@@ -208,6 +208,11 @@ version, and 3.6x the entire screen composition).
   mid-fetch 404s (prompting a re-poll) instead of serving mismatched bytes. On a failed
   regeneration it falls back to the last good image with a stale badge stamped on it
   (see `core/stamp-stale-badge`), and only rethrows when there's nothing to fall back on.
+  A failure also stamps `:failed-at`, which holds the next attempt off for a minute
+  (`failure-cooldown-ms`): the failed entry keeps its expired `:generated-at`, so
+  without that cooldown every incoming request — device poll *and* browser hit on
+  `/` — would refetch SMHI while it's already failing. Nothing clears `:failed-at`
+  explicitly; the next successful render replaces the whole entry.
 
 - **`trmnl-server.server.pages`** — the three human-facing HTML pages, built with
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so

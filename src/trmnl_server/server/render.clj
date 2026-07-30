@@ -14,6 +14,14 @@
 
 (def ^:private cache-ttl-ms (* 10 60 1000))
 
+;; How long a failed regeneration suppresses the next attempt. Without it the failed
+;; entry keeps its old (already expired) :generated-at, so *every* request retries the
+;; fetch — and during the first outage in ISSUES.md the device was retrying every ~2s,
+;; which is the most plausible way we'd trip an SMHI rate limit while it's already
+;; unwell. One attempt a minute is still well inside the device's 15-minute poll cycle,
+;; so a recovered SMHI shows up on the next poll either way.
+(def ^:private failure-cooldown-ms (* 60 1000))
+
 (defonce ^:private cache (atom nil))
 (defonce ^:private regen-lock (Object.))
 
@@ -36,6 +44,25 @@
       {:lat (Double/parseDouble lat) :lon (Double/parseDouble lon)}
       core/default-forecast-location)))
 
+(defn- fresh?
+  "Whether an entry is young enough to serve without regenerating."
+  [entry]
+  (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms)))
+
+(defn- cooling-down?
+  "Whether an entry's last regeneration failed recently enough that we shouldn't try
+   again yet (see failure-cooldown-ms). Cleared implicitly by the next success, which
+   replaces the entry with one that has no :failed-at."
+  [entry]
+  (when-let [failed-at (:failed-at entry)]
+    (< (- (System/currentTimeMillis) failed-at) failure-cooldown-ms)))
+
+(defn- serve-as-is?
+  "Whether to hand back the cached entry untouched — either it's still fresh, or it's
+   stale but we're inside the cooldown after a failed attempt."
+  [entry]
+  (and entry (or (fresh? entry) (cooling-down? entry))))
+
 (defn current-image
   "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
    forecast when the cache is empty or older than cache-ttl-ms. If regeneration
@@ -46,6 +73,11 @@
    stale and go check the logs. Only propagates the exception when there's no
    prior image to fall back on.
 
+   A failed attempt also stamps :failed-at, which holds off further attempts for
+   failure-cooldown-ms — otherwise the entry stays expired and every incoming
+   request (device poll, browser hit on / or /status) fetches SMHI again while
+   it's already struggling.
+
    The `filename` is keyed on an MD5 of the rendered pixels, so it only changes when
    the image actually changes — which is what lets the device skip re-downloading an
    identical screen between polls.
@@ -54,13 +86,12 @@
    an expired cache don't both fetch SMHI and re-render; the second re-checks the
    cache inside the lock and reuses the entry the first one just produced."
   []
-  (let [fresh? (fn [entry] (and entry (< (- (System/currentTimeMillis) (:generated-at entry)) cache-ttl-ms)))
-        entry  @cache]
-    (if (fresh? entry)
+  (let [entry @cache]
+    (if (serve-as-is? entry)
       entry
       (locking regen-lock
         (let [entry @cache]
-          (if (fresh? entry)
+          (if (serve-as-is? entry)
             entry
             (try
               (let [location  (forecast-location)
@@ -84,7 +115,8 @@
                   (let [stale-bytes (or (:stale-bytes entry) (png-bytes (core/stamp-stale-badge (:image entry))))
                         stale-entry (assoc entry
                                       :stale-bytes stale-bytes
-                                      :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png"))]
+                                      :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png")
+                                      :failed-at (System/currentTimeMillis))]
                     (log/warn e "Forecast regeneration failed, serving stale cache")
                     (reset! cache stale-entry)
                     stale-entry)
