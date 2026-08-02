@@ -203,8 +203,17 @@ version, and 3.6x the entire screen composition).
   batch-render modes) and
   caches them for 10 minutes keyed by an MD5 content hash, so the `filename`
   embedded in `/api/display`'s response only changes when the rendered image
-  actually changes — this lets the device skip re-downloading identical screens
-  between polls. `bytes-for` is what enforces that contract on the way back out: it
+  actually changes — which would let the device skip re-downloading identical screens
+  between polls. **In practice it never does**, for two measured reasons worth knowing
+  before optimising here: the 10-min TTL is shorter than the device's 15-min
+  `refresh-rate`, so every device poll lands on an expired cache and pays a full
+  SMHI-fetch-plus-render inline (~0.83s on the Pi, vs ~0.07s warm) — the TTL only ever
+  benefits browser hits on `/`; and the header's per-render "Uppdaterad HH:mm" stamp
+  changes the pixels every time, so the hash always differs and the firmware reports
+  `image-cached: false` ("image refreshed" on `/status`) on every poll. Neither is
+  obviously worth fixing — see the archive dedupe note below for why the forecast data
+  really does change every 15 min, so a stable image isn't available for free.
+  `bytes-for` is what enforces that contract on the way back out: it
   serves only the bytes whose hash matches the requested filename, so a cache rollover
   mid-fetch 404s (prompting a re-poll) instead of serving mismatched bytes. On a failed
   regeneration it falls back to the last good image with a stale badge stamped on it
@@ -242,7 +251,7 @@ version, and 3.6x the entire screen composition).
 
 - **`trmnl-server.server.archive`** — the rolling 24h on-disk archive, as pure storage
   (`dir`, `write!`, `entries`). Every *successful* render (i.e. each new cache entry,
-  so ~one per 10-min cache miss, not the stale-fallback copies) is also written to
+  one per cache miss, not the stale-fallback copies) is also written to
   disk by `write!` as `forecast-<yyyyMMdd-HHmmss>-run<yyyyMMdd-HHmm>-<hash8>.png`
   under `archive/`
   (relative to the working dir, like `logs/`; override with `$ARCHIVE_DIR`), and
@@ -253,8 +262,17 @@ version, and 3.6x the entire screen composition).
   rendered pixels, because the header's per-render "Uppdaterad HH:mm" stamp changes the
   pixels on every render and would defeat pixel-level dedupe. The write is **deduped**
   on that data hash: a render whose forecast matches the newest archived file is skipped,
-  so the gallery stays a list of *distinct* screens rather than ~100 near-identical ones
-  a day — SMHI only republishes the point forecast ~hourly. The `run<...>` segment is
+  so the gallery stays a list of *distinct* screens. This dedupe is a **backstop, not the
+  common case** — SMHI republishes the point forecast roughly every **15 minutes**, not
+  hourly, and each new run genuinely moves the rendered pixels. Measured over a 23.8h
+  archive window (2026-08-02): 85 archived screens against ~95 device polls, so dedupe
+  suppressed ~10% of writes; re-rendering all 85 with the "Uppdaterad" stamp masked out
+  gave 85 distinct images and *zero* identical consecutive pairs. (15 min is an upper
+  bound on the republish interval, not a measurement of it — renders only happen once
+  per 15-min poll, so a faster rate would be invisible here.) So don't read this passage
+  as saying consecutive screens are near-identical: they aren't, which also rules out
+  saving device battery by making the served image stable enough for the firmware to
+  skip its redraw. The `run<...>` segment is
   SMHI's `referenceTime` (issuance time of the forecast run, from the seq metadata above),
   rendered in local time purely as at-a-glance provenance — it labels which run each screen
   came from and plays **no** part in dedupe (that's the content hash's job; the trailing-hash
