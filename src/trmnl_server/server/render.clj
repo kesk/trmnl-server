@@ -1,8 +1,15 @@
 (ns trmnl-server.server.render
-  "The served screen and its cache: renders core/forecast-screen to 1-bit PNG bytes in
-   memory, hands them out under a content-hash filename, and keeps them for 10 minutes.
-   The served bytes never touch disk (out/ stays reserved for the batch-render modes) —
-   the only thing written out is the rolling archive copy, via server.archive."
+  "The served screens and their caches: renders core/forecast-screen to 1-bit PNG bytes
+   in memory, hands them out under a content-hash filename, and keeps them for 10
+   minutes. The served bytes never touch disk (out/ stays reserved for the batch-render
+   modes) — the only thing written out is the rolling archive copy, via server.archive.
+
+   Everything here is per *device*: each registered display has its own cache entry, its
+   own regeneration lock, and its own archive subdirectory, keyed by the device's :name
+   (see server.devices). Two displays therefore fetch SMHI independently even if they
+   sat in the same town — deliberate, since sharing an entry would make it ambiguous
+   which device's archive a render belongs to, and the displays are in different places
+   anyway."
   (:require [clojure.tools.logging :as log]
             [trmnl-server.core :as core]
             [trmnl-server.image :as img]
@@ -22,8 +29,20 @@
 ;; so a recovered SMHI shows up on the next poll either way.
 (def ^:private failure-cooldown-ms (* 60 1000))
 
-(defonce ^:private cache (atom nil))
-(defonce ^:private regen-lock (Object.))
+;; Device :name -> cache entry. One entry per registered display.
+(defonce ^:private cache (atom {}))
+
+;; Device :name -> lock object, created on demand by lock-for.
+(defonce ^:private locks (atom {}))
+
+(defn- lock-for
+  "The regeneration lock for one device, created on first use. Per-device rather than
+   one global lock so a slow SMHI fetch for one display can't hold another display's
+   poll open — the device waits with its radio powered, which is exactly what the
+   wake-time trend on /status is watching for."
+  [device-name]
+  (-> (swap! locks (fn [m] (cond-> m (not (contains? m device-name)) (assoc device-name (Object.)))))
+    (get device-name)))
 
 (defn- png-bytes [^BufferedImage image]
   (let [out (ByteArrayOutputStream.)]
@@ -34,15 +53,21 @@
   (let [digest (.digest (MessageDigest/getInstance "MD5") bytes)]
     (apply str (map #(format "%02x" %) digest))))
 
-(defn- forecast-hours []
-  (or (some-> (System/getenv "FORECAST_HOURS") Integer/parseInt) core/default-forecast-hours))
+(defn- forecast-hours
+  "How many hourly points to render for a device: its own :hours, else $FORECAST_HOURS,
+   else the project default. The env var stays as a server-wide default so a registry
+   entry only has to mention hours when it wants something unusual."
+  [device]
+  (or (:hours device)
+    (some-> (System/getenv "FORECAST_HOURS") Integer/parseInt)
+    core/default-forecast-hours))
 
-(defn- forecast-location []
-  (let [lat (System/getenv "FORECAST_LAT")
-        lon (System/getenv "FORECAST_LON")]
-    (if (and lat lon)
-      {:lat (Double/parseDouble lat) :lon (Double/parseDouble lon)}
-      core/default-forecast-location)))
+(defn- forecast-location
+  "Where a device's forecast comes from. :lat/:lon are required of every registry entry
+   (server.devices validates them at load), so there's no fallback to reach for — a
+   device that doesn't say where it is, isn't a device we can render for."
+  [device]
+  (select-keys device [:lat :lon]))
 
 (defn- fresh?
   "Whether an entry is young enough to serve without regenerating."
@@ -63,15 +88,22 @@
   [entry]
   (and entry (or (fresh? entry) (cooling-down? entry))))
 
+(defn cached-entry
+  "The device's cache entry if it has one, without ever regenerating. For callers who
+   want to show the last screen rather than guarantee a current one — notably the
+   landing page, which is public and shouldn't turn a crawler's visit into a live SMHI
+   fetch and a full render. nil before the device's first successful render."
+  [device]
+  (get @cache (:name device)))
+
 (defn current-image
-  "Returns the cached {:bytes :filename :generated-at}, regenerating from a fresh
-   forecast when the cache is empty or older than cache-ttl-ms. If regeneration
-   throws (e.g. SMHI returns something other than JSON), falls back to serving
-   the last successfully rendered image — with a warning badge stamped on a
-   copy of it — rather than a bare 500. A stale forecast is more useful to the
-   device than none; the badge is what lets you notice at a glance that it's
-   stale and go check the logs. Only propagates the exception when there's no
-   prior image to fall back on.
+  "Returns the device's cached {:bytes :filename :generated-at}, regenerating from a
+   fresh forecast when its cache is empty or older than cache-ttl-ms. If regeneration
+   throws (e.g. SMHI returns something other than JSON), falls back to serving the
+   last successfully rendered image — with a warning badge stamped on a copy of it —
+   rather than a bare 500. A stale forecast is more useful to the device than none;
+   the badge is what lets you notice at a glance that it's stale and go check the
+   logs. Only propagates the exception when there's no prior image to fall back on.
 
    A failed attempt also stamps :failed-at, which holds off further attempts for
    failure-cooldown-ms — otherwise the entry stays expired and every incoming
@@ -82,20 +114,22 @@
    the image actually changes — which is what lets the device skip re-downloading an
    identical screen between polls.
 
-   The regeneration path is serialized on regen-lock so two requests arriving on
-   an expired cache don't both fetch SMHI and re-render; the second re-checks the
-   cache inside the lock and reuses the entry the first one just produced."
-  []
-  (let [entry @cache]
+   The regeneration path is serialized on the device's own lock so two requests
+   arriving on an expired cache don't both fetch SMHI and re-render; the second
+   re-checks the cache inside the lock and reuses the entry the first one just
+   produced."
+  [device]
+  (let [device-name (:name device)
+        entry       (get @cache device-name)]
     (if (serve-as-is? entry)
       entry
-      (locking regen-lock
-        (let [entry @cache]
+      (locking (lock-for device-name)
+        (let [entry (get @cache device-name)]
           (if (serve-as-is? entry)
             entry
             (try
-              (let [location  (forecast-location)
-                    points    (core/live-points (forecast-hours) location)
+              (let [location  (forecast-location device)
+                    points    (core/live-points (forecast-hours device) location)
                     image     (img/->1-bit (core/forecast-screen points location))
                     bytes     (png-bytes image)
                     ;; Cache/download key is the pixel hash; the archive dedupe key is the
@@ -107,8 +141,8 @@
                                :bytes        bytes
                                :filename     (str "forecast-" (md5-hex bytes) ".png")
                                :generated-at (System/currentTimeMillis)}]
-                (reset! cache new-entry)
-                (archive/write! bytes data-hash (:reference-time (meta points)) points)
+                (swap! cache assoc device-name new-entry)
+                (archive/write! device-name bytes data-hash (:reference-time (meta points)) points)
                 new-entry)
               (catch Exception e
                 (if entry
@@ -118,32 +152,32 @@
                                       :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png")
                                       :failed-at (System/currentTimeMillis)
                                       :failures (inc (:failures entry 0)))]
-                    (log/warn e "Forecast regeneration failed, serving stale cache")
-                    (reset! cache stale-entry)
+                    (log/warn e (str "Forecast regeneration failed for " device-name ", serving stale cache"))
+                    (swap! cache assoc device-name stale-entry)
                     stale-entry)
                   (throw e))))))))))
 
 (defn cache-status
-  "A read-only snapshot of the cache for the /status page: when the last *successful*
-   render happened, when the last attempt failed (nil once a later one succeeds), and
-   how many attempts have failed in a row. nil before the first render.
+  "A read-only snapshot of one device's cache for the /status page: when its last
+   *successful* render happened, when its last attempt failed (nil once a later one
+   succeeds), and how many attempts have failed in a row. nil before its first render.
 
    Deliberately doesn't call current-image: looking at the status page shouldn't fetch
    SMHI, least of all to regenerate the very thing it's reporting on."
-  []
-  (when-let [entry @cache]
+  [device]
+  (when-let [entry (cached-entry device)]
     {:generated-at (:generated-at entry)
      :failed-at    (:failed-at entry)
      :failures     (:failures entry 0)}))
 
 (defn serve-filename
-  "The filename the current entry should be served under — the stale one when the last
+  "The filename the given entry should be served under — the stale one when the last
    regeneration failed, so callers link the badge-stamped copy."
   [entry]
   (or (:stale-filename entry) (:filename entry)))
 
 (defn bytes-for
-  "The PNG bytes matching `filename` in the current cache entry, or nil when it names
+  "The PNG bytes matching `filename` in the given cache entry, or nil when it names
    neither the fresh nor the stale image. Serving only the bytes whose content hash
    matches the requested filename means a cache rollover between the device's
    /api/display poll and its image fetch 404s (prompting a re-poll) instead of silently

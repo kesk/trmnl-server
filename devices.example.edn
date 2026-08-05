@@ -1,0 +1,29 @@
+;; Device registry — copy to devices.edn and edit. Read once at startup, so restart
+;; the service after changing it. Override the path with $DEVICES_FILE.
+;;
+;; Keyed by the device's MAC address, which the TRMNL firmware sends as the `ID`
+;; header on every request. Case doesn't matter. Don't know the MAC yet? Point the
+;; device at this server and its poll will be rejected — the MAC then shows up on
+;; /status under "Unregistered devices", ready to paste in here.
+;;
+;;   :name   required, [a-z0-9-]+. Becomes a URL segment (/images/<name>/…,
+;;           ?device=<name>) and a directory name (archive/<name>/, logs/<name>/),
+;;           so it's validated strictly at load.
+;;   :lat    required, decimal degrees.
+;;   :lon    required, decimal degrees.
+;;   :token  required. Handed to the device by /api/setup as its api_key, and
+;;           checked against the Access-Token header on every later request.
+;;           Any long random string will do: `head -c 24 /dev/urandom | base64`
+;;   :hours  optional. How many hourly points to render; falls back to
+;;           $FORECAST_HOURS, then to core/default-forecast-hours (23).
+
+{"AA:BB:CC:DD:EE:FF" {:name  "hallway"
+                      :lat   57.715722
+                      :lon   12.035778
+                      :token "replace-me-with-something-random"}
+
+ "11:22:33:44:55:66" {:name  "pappa"
+                      :lat   57.6667
+                      :lon   12.85
+                      :token "replace-me-too"
+                      :hours 23}}

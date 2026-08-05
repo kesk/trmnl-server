@@ -3,6 +3,11 @@
    /archive (screen gallery) — built with hiccup2.core, which auto-escapes string
    content so there's no hand-rolled escaping here.
 
+   /status and /archive are scoped to one registered device, chosen by ?device= and
+   selected with a picker strip; / shows every device's latest screen at once. An
+   unknown ?device= falls back to the first registered display, the same way an unknown
+   ?day= falls back to today — the registry and the files on disk are the whitelists.
+
    Each page fn returns an HTML *string*, not a Ring response: HTTP is server's
    business, so these can be called straight from the REPL. Their CSS lives in
    resources/css/ rather than inline string blobs — base.css is the shared shell,
@@ -11,6 +16,7 @@
             [clojure.string :as str]
             [hiccup2.core :as h]
             [trmnl-server.server.archive :as archive]
+            [trmnl-server.server.devices :as devices]
             [trmnl-server.server.render :as render]
             [trmnl-server.server.telemetry :as telemetry])
   (:import [java.io File]
@@ -135,6 +141,63 @@
     (>= rssi -78) ["fair" "pill-watch"]
     :else         ["weak" "pill-low"]))
 
+;; --- Shared chrome ----------------------------------------------------------------------
+
+(defn- picker
+  "A row of selectable pills. The device picker and the day picker are the same shape,
+   so they're the same markup — `href-for` builds each item's link and the selected one
+   renders as a plain span."
+  [items sel href-for]
+  [:div.days
+   (for [item items]
+     (if (= item sel)
+       [:span.day.sel item]
+       [:a.day {:href (href-for item)} item]))])
+
+(defn- device-picker
+  "The device strip, shown only when there's more than one display to choose between —
+   with a single device it would be a row of one pill that's always selected, and the
+   page heading already names it."
+  [all-devices sel path]
+  (when (> (count all-devices) 1)
+    [:div.dev-strip (picker (map :name all-devices) sel #(str path "?device=" %))]))
+
+(defn- select-device
+  "The device a ?device= parameter names, falling back to the first registered one. The
+   registry is the whitelist, so a bogus or hostile value can only ever land on a real
+   device — the same guarantee /status's ?day= gets from matching against files on disk.
+   nil when nothing is registered at all."
+  [requested]
+  (or (devices/by-name requested) (first (devices/all))))
+
+(defn- no-devices
+  "What every page shows when devices.edn is missing or empty. Lists any MACs that have
+   polled, since that's exactly what you need to write the file — a device you've just
+   plugged in announces itself here rather than only in the log."
+  [title css-text]
+  (page title css-text
+    (list
+      [:h1 "No devices registered"]
+      [:p.empty "Create a devices.edn (see devices.example.edn) and restart the server."]
+      (when-let [macs (seq (devices/unknown-macs))]
+        (list
+          [:div.h "Seen polling"]
+          [:pre.reg (str/join "\n" (map :mac macs))])))))
+
+(defn- unregistered-block
+  "A copy-pasteable list of MACs that have polled without being in the registry. Adding a
+   display otherwise means grepping the log for its MAC; this puts it where you're
+   already looking."
+  []
+  (when-let [macs (seq (devices/unknown-macs))]
+    (list
+      [:div.h "Unregistered devices"]
+      [:p.empty "Seen polling but not in devices.edn. Add an entry and restart:"]
+      [:pre.reg
+       (str/join "\n" (map (fn [{:keys [mac seen-at]}]
+                             (str "\"" mac "\"  ; seen " (format-millis seen-at)))
+                        macs))])))
+
 ;; --- /status ----------------------------------------------------------------------------
 
 (def ^:private wake-windows
@@ -204,152 +267,179 @@
     [:tbody (map log-row logs)]]])
 
 (defn status
-  "The /status dashboard for a requested day (a yyyy-MM-dd string from ?day, or nil).
-   Anything not on disk — a bogus or traversal value included — falls back to today, so
-   `requested-day` can only ever name a real device-<date>.log file.
+  "The /status dashboard for one device and one day. `requested-device` is a ?device=
+   value resolved against the registry (falling back to the first registered display);
+   `requested-day` is a ?day= value resolved against that device's log files on disk
+   (falling back to today). Anything not on either whitelist — a bogus or traversal
+   value included — falls back, so neither can ever name something off-list.
 
    The device-log table just shows the contents of one day's file, re-read on each load:
    the files are the source of truth, there's no in-memory buffer to clear. The summary
    cards, though, always read *today's* newest row (falling back to the /api/display poll
    telemetry), so they reflect the current day even while you're viewing an older one."
-  [requested-day]
-  (let [today       (telemetry/today-utc-date)
-        on-disk     (telemetry/log-days)
-        sel         (if (some #{requested-day} on-disk) requested-day today)
-        ;; Today is always offered as a tab, even before it has a file.
-        days        (->> (cons today on-disk) distinct (sort #(compare %2 %1)) vec)
-        rows        (reverse (telemetry/read-log sel))
-        latest      (if (= sel today) rows (reverse (telemetry/read-log today)))
-        dev         (telemetry/poll-status)
-        voltage     (or (:battery-voltage dev) (some :battery_voltage latest))
-        pct         (battery-percent voltage)
-        [batt-lbl
-         batt-pill] (battery-quality pct)
-        firmware    (or (:fw-version dev) (some :firmware_version latest))
-        [wifi-lbl
-         wifi-pill] (wifi-quality (:rssi dev))
-        wakes       (telemetry/wake-samples)
-        now         (System/currentTimeMillis)
-        latest-wake (:ms (last wakes))
-        fcast       (render/cache-status)
-        [fc-lbl
-         fc-pill]   (forecast-quality fcast now)]
-    (page "trmnl-server status" status-css
-      (list
-        [:div.top
-         [:h1 "trmnl-server status"]
-         [:a.top-link {:href "/archive"} "Archived screens →"]]
-        [:section.group
-         [:div.sec "Device health"]
-         [:div.cards.cards-health
-          [:div.card
-           [:div.k "Battery"]
-           [:div.v (if voltage
-                     (String/format java.util.Locale/US "%.3f V" (to-array [voltage]))
-                     "—")]
-           [:span {:class (str "pill " batt-pill)}
-            (if voltage (str "~" pct "% · " batt-lbl) "no data yet")]]
-          [:div.card
-           [:div.k "WiFi"]
-           [:div.v.mono (if (:rssi dev) (str (:rssi dev) " dBm") "—")]
-           [:span {:class (str "pill " wifi-pill)} wifi-lbl]]
-          [:div.card.awake
-           [:div.k "Awake · last cycle"]
-           [:div.v (if latest-wake (str (ms->secs latest-wake) " s") "—")]
-           (if (seq wakes)
-             (list
-               (wake-sparkline wakes)
-               [:div.avgs
-                (for [[lbl window] wake-windows
-                      :let         [avg (telemetry/wake-average wakes now window)]]
-                  [:div.avg
-                   [:div.al lbl]
-                   [:div.av (if avg (str (ms->secs avg) "s") "—")]])])
-             [:span.pill.pill-unknown "no samples yet"])]]]
-        [:section.group
-         [:div.sec "Server · build"]
-         [:div.cards.cards-build
-          [:div.card
-           [:div.k "Firmware"]
-           [:div.v.mono (or firmware "—")]
-           (when-let [model (:model dev)]
-             [:span.pill.pill-unknown model])]
-          [:div.card
-           [:div.k "Deployed"]
-           [:div.v.mono (or (:commit deployed-version) "unknown")]
-           (when-let [built (:built-at deployed-version)]
-             [:span.pill.pill-unknown "built " (format-built-at built)])]
-          [:div.card
-           [:div.k "Forecast"]
-           [:div.v.mono (if (:generated-at fcast) (format-millis (:generated-at fcast)) "—")]
-           [:span {:class (str "pill " fc-pill)} fc-lbl]]
-          [:div.card
-           [:div.k "Last poll"]
-           [:div.v.mono (if dev (format-millis (:received-at dev)) "—")]
-           [:span {:class (str "pill " (if dev "pill-ok" "pill-unknown"))}
-            (if dev
-              (str (or (:update-source dev) "unknown source")
-                " · " (case (:image-cached dev)
-                        true  "image cached"
-                        false "image refreshed"
-                        "—"))
-              "no poll yet")]]]]
-        [:div.h-row
-         [:div.h "Device log"
-          (when (seq rows)
-            [:span {:style "color:var(--muted);font-weight:400"}
-             (str "  ·  " (count rows) " rows")])]
-         [:div.days
-          (for [d days]
-            (if (= d sel)
-              [:span.day.sel d]
-              [:a.day {:href (str "/status?day=" d)} d]))]]
-        (if (seq rows)
-          (log-table rows)
-          [:p.empty (str "No device logs for " sel ".")])))))
+  [requested-device requested-day]
+  (if-let [device (select-device requested-device)]
+    (let [name        (:name device)
+          all-devices (devices/all)
+          today       (telemetry/today-utc-date)
+          on-disk     (telemetry/log-days name)
+          sel         (if (some #{requested-day} on-disk) requested-day today)
+          ;; Today is always offered as a tab, even before it has a file.
+          days        (->> (cons today on-disk) distinct (sort #(compare %2 %1)) vec)
+          rows        (reverse (telemetry/read-log name sel))
+          latest      (if (= sel today) rows (reverse (telemetry/read-log name today)))
+          dev         (telemetry/poll-status name)
+          voltage     (or (:battery-voltage dev) (some :battery_voltage latest))
+          pct         (battery-percent voltage)
+          [batt-lbl
+           batt-pill] (battery-quality pct)
+          firmware    (or (:fw-version dev) (some :firmware_version latest))
+          [wifi-lbl
+           wifi-pill] (wifi-quality (:rssi dev))
+          wakes       (telemetry/wake-samples name)
+          now         (System/currentTimeMillis)
+          latest-wake (:ms (last wakes))
+          fcast       (render/cache-status device)
+          [fc-lbl
+           fc-pill]   (forecast-quality fcast now)]
+      (page (str "trmnl-server status · " name) status-css
+        (list
+          [:div.top
+           [:h1 "trmnl-server status · " name]
+           [:a.top-link {:href (str "/archive?device=" name)} "Archived screens →"]]
+          (device-picker all-devices name "/status")
+          [:section.group
+           [:div.sec "Device health"]
+           [:div.cards.cards-health
+            [:div.card
+             [:div.k "Battery"]
+             [:div.v (if voltage
+                       (String/format java.util.Locale/US "%.3f V" (to-array [voltage]))
+                       "—")]
+             [:span {:class (str "pill " batt-pill)}
+              (if voltage (str "~" pct "% · " batt-lbl) "no data yet")]]
+            [:div.card
+             [:div.k "WiFi"]
+             [:div.v.mono (if (:rssi dev) (str (:rssi dev) " dBm") "—")]
+             [:span {:class (str "pill " wifi-pill)} wifi-lbl]]
+            [:div.card.awake
+             [:div.k "Awake · last cycle"]
+             [:div.v (if latest-wake (str (ms->secs latest-wake) " s") "—")]
+             (if (seq wakes)
+               (list
+                 (wake-sparkline wakes)
+                 [:div.avgs
+                  (for [[lbl window] wake-windows
+                        :let         [avg (telemetry/wake-average wakes now window)]]
+                    [:div.avg
+                     [:div.al lbl]
+                     [:div.av (if avg (str (ms->secs avg) "s") "—")]])])
+               [:span.pill.pill-unknown "no samples yet"])]]]
+          [:section.group
+           [:div.sec "Server · build"]
+           [:div.cards.cards-build
+            [:div.card
+             [:div.k "Firmware"]
+             [:div.v.mono (or firmware "—")]
+             (when-let [model (:model dev)]
+               [:span.pill.pill-unknown model])]
+            [:div.card
+             [:div.k "Deployed"]
+             [:div.v.mono (or (:commit deployed-version) "unknown")]
+             (when-let [built (:built-at deployed-version)]
+               [:span.pill.pill-unknown "built " (format-built-at built)])]
+            [:div.card
+             [:div.k "Forecast"]
+             [:div.v.mono (if (:generated-at fcast) (format-millis (:generated-at fcast)) "—")]
+             [:span {:class (str "pill " fc-pill)} fc-lbl]]
+            [:div.card
+             [:div.k "Last poll"]
+             [:div.v.mono (if dev (format-millis (:received-at dev)) "—")]
+             [:span {:class (str "pill " (if dev "pill-ok" "pill-unknown"))}
+              (if dev
+                (str (or (:update-source dev) "unknown source")
+                  " · " (case (:image-cached dev)
+                          true  "image cached"
+                          false "image refreshed"
+                          "—"))
+                "no poll yet")]]]]
+          [:div.h-row
+           [:div.h "Device log"
+            (when (seq rows)
+              [:span {:style "color:var(--muted);font-weight:400"}
+               (str "  ·  " (count rows) " rows")])]
+           (picker days sel #(str "/status?device=" name "&day=" %))]
+          (if (seq rows)
+            (log-table rows)
+            [:p.empty (str "No device logs for " name " on " sel ".")])
+          (unregistered-block))))
+    (no-devices "trmnl-server status" status-css)))
 
 ;; --- /archive ---------------------------------------------------------------------------
 
-(defn- archive-card [^File f]
+(defn- archive-card [device-name ^File f]
   (let [name (.getName f)
-        edn  (str/replace name #"\.png\z" ".edn")]
+        edn  (str/replace name #"\.png\z" ".edn")
+        href (str "/archive/" device-name "/")]
     [:div.shot
-     [:a {:href (str "/archive/" name) :title name}
-      [:img {:loading "lazy" :src (str "/archive/" name) :alt name}]]
+     [:a {:href (str href name) :title name}
+      [:img {:loading "lazy" :src (str href name) :alt name}]]
      [:div.cap.mono
       (format-millis (.lastModified f))
       ;; The data link only appears when the sidecar forecast dump is still there —
       ;; it's pruned on the same 24h schedule as the PNG.
-      (when (.isFile (io/file (archive/dir) edn))
-        (list " · " [:a {:href (str "/archive/" edn)} "data"]))]]))
+      (when (.isFile (io/file (archive/dir device-name) edn))
+        (list " · " [:a {:href (str href edn)} "data"]))]]))
 
 (defn gallery
-  "The /archive gallery: every screen still inside the rolling 24h window, newest first."
-  []
-  (let [entries (archive/entries)]
-    (page "trmnl-server archive" archive-css
-      (list
-        [:h1 "Archived screens"]
-        [:p.nav
-         [:a {:href "/status"} "← status"]
-         " · " (count entries) " screens · rolling 24h"]
-        (if (seq entries)
-          [:div.grid (map archive-card entries)]
-          [:p.empty "No archived screens yet."])))))
+  "The /archive gallery for one device: every screen of its still inside the rolling 24h
+   window, newest first."
+  [requested-device]
+  (if-let [device (select-device requested-device)]
+    (let [name        (:name device)
+          all-devices (devices/all)
+          entries     (archive/entries name)]
+      (page (str "trmnl-server archive · " name) archive-css
+        (list
+          [:h1 "Archived screens · " name]
+          [:p.nav
+           [:a {:href (str "/status?device=" name)} "← status"]
+           " · " (count entries) " screens · rolling 24h"]
+          (device-picker all-devices name "/archive")
+          (if (seq entries)
+            [:div.grid (map #(archive-card name %) entries)]
+            [:p.empty "No archived screens yet."]))))
+    (no-devices "trmnl-server archive" archive-css)))
 
 ;; --- / ----------------------------------------------------------------------------------
 
+(defn- screen-block
+  "One device's latest screen on the landing page, from the cache only — never
+   regenerating. / is public and a crawler shouldn't be able to turn a visit into a live
+   SMHI fetch and a full render, once per registered device at that."
+  [device]
+  (let [name  (:name device)
+        entry (render/cached-entry device)]
+    [:div.screen
+     [:div.screen-name name]
+     (if entry
+       (let [src (str "/images/" name "/" (render/serve-filename entry))]
+         (list
+           [:a.shot-link {:href src}
+            [:img {:src src :alt (str "Latest rendered forecast screen for " name)}]]
+           [:p.caption (str "Uppdaterad " (format-millis (:generated-at entry)))]))
+       [:p.caption "Not rendered yet — waiting for this device's first poll."])]))
+
 (defn home
-  "The landing page: what this server is, the screen it's serving right now, and a way
-   into /status."
+  "The landing page: what this server is, the screen each registered device is being
+   served right now, and a way into /status."
   []
-  (let [entry (render/current-image)
-        src   (str "/images/" (render/serve-filename entry))]
+  (let [all-devices (devices/all)]
     (page "trmnl-server" home-css
       [:div.hero
        [:h1 "trmnl-server"]
-       [:p.tag "Weather forecast screen for a TRMNL e-ink display"]
-       [:a.shot-link {:href src}
-        [:img {:src src :alt "Latest rendered forecast screen"}]]
-       [:p.caption (str "Uppdaterad " (format-millis (:generated-at entry)))]
+       [:p.tag "Weather forecast screens for TRMNL e-ink displays"]
+       (if (seq all-devices)
+         (map screen-block all-devices)
+         [:p.caption "No devices registered — see devices.example.edn."])
        [:p.cta [:a {:href "/status"} "Status →"]]])))

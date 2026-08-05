@@ -4,6 +4,7 @@
 /logs/
 /archive/
 /scratch/
+/devices.edn
 *.jar
 .nrepl-port
 .lsp/
