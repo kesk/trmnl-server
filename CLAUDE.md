@@ -60,6 +60,14 @@ bb deploy.clj
 # registry at all.
 bb deploy.clj --devices
 
+# Deploy to the *test* instance instead: a second, independent service on the same Pi
+# (~/trmnl-server-test, port 8081, unit trmnl-server-test, see
+# deploy/trmnl-server-test.service). Own working directory, so own devices.edn, archive/
+# and logs/ — nothing is shared with the live service but the host. It exists to rehearse
+# a change against a real display before it touches the one on the wall; registering a
+# device is the case that can't be tested any other way. Combines with --devices.
+bb deploy.clj --test
+
 # Reformat source per .cljfmt.edn (dev.weavejester/cljfmt) — run on any
 # Clojure files touched before committing
 clojure -M:fmt
