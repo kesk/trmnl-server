@@ -1,0 +1,23 @@
+[Unit]
+# Second, independent instance of the forecast server, for rehearsing a change against a
+# real display before it touches the one on the wall. Shares nothing with trmnl-server.service
+# but the host: its own working directory (so its own devices.edn, archive/ and logs/),
+# its own port, its own unit.
+Description=TRMNL forecast server (test instance)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seb
+WorkingDirectory=/home/seb/trmnl-server-test
+Environment=PORT=8081
+# Server-wide default only. Each display's location — and, if it wants one, its own
+# hour count — lives in /home/seb/trmnl-server-test/devices.edn.
+Environment=FORECAST_HOURS=23
+ExecStart=/usr/bin/java -jar /home/seb/trmnl-server-test/trmnl-server.jar --serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
