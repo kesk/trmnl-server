@@ -1,8 +1,9 @@
 /* Gallery-only rules, layered over base.css (which supplies the page shell,
    colour vars and dark-mode handling). Shots sit on white (#fff) so the 1-bit
    PNGs stay legible in dark mode too. */
-.nav{font-size:13px;margin:0 0 18px}
-.nav a{color:var(--muted);text-decoration:none}
+/* Subtitle under the breadcrumb — just the count, now that the crumbs carry the
+   navigation this line used to. */
+.nav{font-size:13px;color:var(--muted);margin:0 0 18px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
 .shot{background:var(--card);border:.5px solid var(--bd);border-radius:10px;overflow:hidden}
 .shot a{display:block}

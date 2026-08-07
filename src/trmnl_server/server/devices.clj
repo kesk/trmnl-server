@@ -9,8 +9,8 @@
    admin UI.
 
    `:name` is the one field with reach outside this namespace. It is the URL segment
-   in /images/<name>/… and /archive/<name>/…, the ?device= value on the pages, and
-   the directory name under logs/ and archive/. Validating it against a strict
+   in /images/<name>/… and in every human page under /device/<name>/…, and the
+   directory name under logs/ and archive/. Validating it against a strict
    [a-z0-9-]+ here, at load, is what lets all of those skip their own sanitising —
    the same move /status makes by matching ?day= against the days actually on disk."
   (:require [clojure.edn :as edn]
@@ -119,9 +119,9 @@
   (get @registry (normalise-mac mac)))
 
 (defn by-name
-  "The device with this :name, or nil. Used to resolve the ?device= parameter and the
-   /images/<name>/ and /archive/<name>/ path segments — a nil here is what turns an
-   unknown or hostile segment into a 404."
+  "The device with this :name, or nil. Used to resolve the /device/<name> and
+   /images/<name>/ path segments — a nil here is what turns an unknown or hostile
+   segment into a 404."
   [name]
   (first (filter #(= name (:name %)) (vals @registry))))
 
