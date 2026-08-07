@@ -37,7 +37,7 @@ clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 # fill in one entry per device before this does anything useful; without a registry the
 # server starts but refuses every poll. $FORECAST_HOURS (default 23) is the server-wide
 # fallback for entries that don't set :hours. $ADMIN_PASSWORD_HASH is the login for the human
-# pages (/, /status, /archive); unset — the usual case when running from source — leaves
+# pages (/ and /device/<name>[/archive]); unset — the usual case when running from source — leaves
 # them open and says so at startup. $ADMIN_TRUST_LAN=true exempts the home network from
 # that login (off by default), and $ADMIN_REQUIRE_TLS_LOGIN (on by default) refuses to
 # accept a password over an unencrypted connection.
@@ -126,8 +126,8 @@ the serving path, which only `--serve` exercises.
 **The server is multi-device.** One Pi serves several TRMNL displays, each with its own
 location, and everything in the serving path is scoped by a device `:name` — its render
 cache and regeneration lock, its `archive/<name>/` subdirectory, its `logs/<name>/`
-telemetry, its `/images/<name>/…` URLs, and the `?device=` view of `/status` and
-`/archive`. The domain namespaces are untouched by this: they already took location and
+telemetry, and its `/images/<name>/…` and `/device/<name>/…` URLs. The domain
+namespaces are untouched by this: they already took location and
 points as arguments, so nothing below `server.*` knows there is more than one display.
 
 **The whole codebase is reflection-free** — `(set! *warn-on-reflection* true)` plus a
@@ -228,13 +228,45 @@ version, and 3.6x the entire screen composition).
   `GET /images/<device>/*` (serves the cached PNG bytes). Plus `GET /health` (a bare
   200 for `deploy.clj`'s post-restart check — `/api/display` can't serve that job any
   more, since it now 404s a caller it doesn't recognise) and three human-facing pages:
-  `GET /` (landing page — every registered display's latest screen, link to status),
-  `GET /status` (per-device battery/firmware/awake-trend/deployed-commit/forecast-health/
-  device-log dashboard) and
-  `GET /archive` (a gallery of that device's rolling 24h image archive), with
-  `GET /archive/<device>/*`
+  `GET /` (the index — a card per registered display showing its latest screen, each
+  one linking into that display's status page, which links back),
+  `GET /device/<name>` (per-device battery/firmware/awake-trend/deployed-commit/
+  forecast-health/device-log dashboard — the display's *own* page, not a `/status` leaf
+  under it, so the URLs nest into a hierarchy) and
+  `GET /device/<name>/archive` (a gallery of that device's rolling 24h image archive), with
+  `GET /device/<name>/archive/<file>`
   serving each archived PNG (or its `.edn` sidecar) off disk — all three behind the admin
-  password (`GET`/`POST /login`, `POST /logout`, see `server.auth`). Uses `http-kit` as both the Ring
+  password (`GET`/`POST /login`, `POST /logout`, see `server.auth`).
+
+  **The display is a path segment, not a `?device=` filter.** It identifies which pages
+  these *are*, so an unregistered name is a 404 from the router (`device-page-response`
+  resolves it once and hands the entry to the page fn) rather than a fallback inside each
+  page — the old query form silently rendered the *first* display's data at a URL that had
+  asked for another's. `?day=` on the device page stays a query parameter, because it
+  picks between days of the same page rather than naming a different one. The segment is
+  the registry's `:name` and never the MAC — `/api/setup` issues a token on presentation
+  of a registered MAC alone, so it stays out of reach even past the login — and it's safe
+  to interpolate for the same reason it's safe as a directory name: `devices` validates it
+  to `[a-z0-9-]+` at load.
+
+  There are **no `/status` or `/archive` compatibility routes**, and `?device=` is gone
+  from the codebase entirely — this server has one user, who said so. They existed briefly
+  as 303s; deleting them took the human side down to two routes (`/` and `/device/*`) and
+  left `query-param` with only `?day=` and `?next=` to read. Don't reintroduce them for
+  tidiness: `/` is the entry point.
+  **No page has a device picker any more** either — `/` is the index and the only switcher,
+  and a second one on every page was just a different way to do the same thing.
+
+  **The routes nest, and `pages/crumbs` is what walks them back up**: `/` → `/device/<name>`
+  → `/device/<name>/archive` → one archived screen. Making the dashboard the display's own
+  page rather than `/device/<name>/status` is what buys that — a breadcrumb needs each
+  ancestor to be a real page, and a bare `/device/<name>` that 404s isn't one. The
+  breadcrumb *is* the heading (ancestors as muted links, current page as the `h1`, all one
+  size), which is why there's no separate title line and no per-page back-links: those
+  were three different hand-rolled chains ("← All displays", "← status · all displays")
+  that each page had to get right on its own.
+
+  Uses `http-kit` as both the Ring
   request/response convention and the embedded server (handlers are plain
   `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
   `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
@@ -255,9 +287,14 @@ version, and 3.6x the entire screen composition).
   **Device identity and auth.** Every device route resolves the firmware's `ID` header
   (the MAC) through `server.devices`; `with-device` then checks the `Access-Token`
   header against that device's registered `:token` and 401s on a mismatch. An
-  unrecognised MAC is recorded for `/status` to display — that list is
-  how a new display gets registered, rather than grepping the log for its MAC (and it's
-  logged once per MAC, not once per poll, because the endpoint is internet-reachable).
+  unrecognised MAC is recorded (logged once per MAC, not once per poll, because the
+  endpoint is internet-reachable). **How a new display gets registered is by reading its
+  MAC off its own screen** — see the next paragraph. The device pages used to carry a
+  copy-pasteable list of unregistered MACs as well; that's gone, since the on-screen MAC
+  answers the same question better and the list was server-wide, so it appeared
+  identically on every display's page while belonging to none of them. The record itself
+  stays: `seen-unknown?` gates the unregistered-screen render, and `/` still lists them in
+  the first-run case, where there's no registry and so no device page to visit.
 
   **An unregistered device is shown its own MAC.** Rather than 404ing `/api/display` and
   leaving the panel on a firmware error, the server answers 200 with
@@ -299,7 +336,7 @@ version, and 3.6x the entire screen composition).
   out right for both routes — verified: the same poll returns an `https://trmnl.kluft.io/…`
   image URL through the tunnel and an `http://192.168.86.232:8080/…` one over the LAN.
 
-  The human pages (`/`, `/status`, `/archive`, and the archived files under it) sit
+  The human pages (`/`, everything under `/device/`, and the archived files there) sit
   behind **one admin password and a signed session cookie** — `server.auth`, wired in at
   `handler` via `gated`. Which is what being internet-reachable bought: they were
   deliberately open before, on the grounds that they expose only read-only telemetry, and
@@ -317,8 +354,8 @@ version, and 3.6x the entire screen composition).
   The traversal guards live here, in the
   namespace the untrusted URI arrives in: `archive-file-response` constrains the name to a
   flat `forecast-*.{png,edn}` basename, `?day` is validated in `pages/status` against
-  the days actually on disk, and every `<device>` path segment and `?device=` value is
-  resolved through the registry — whose `:name`s are themselves validated to `[a-z0-9-]+`
+  the days actually on disk, and every `<name>` path segment is resolved through the
+  registry — whose `:name`s are themselves validated to `[a-z0-9-]+`
   at load. So no route can be walked out of its directory.
 
   The work behind the routes is six namespaces under `trmnl-server.server.*`, none of
@@ -334,11 +371,13 @@ version, and 3.6x the entire screen composition).
   display silently served the wrong town's weather is the worse outcome.
 
   `:name` is validated against `[a-z0-9-]+` **at load**, and that one check is what
-  makes everything downstream safe: the name is a URL segment (`/images/<name>/…`), a
-  `?device=` value, and a directory name (`archive/<name>/`, `logs/<name>/`), none of
+  makes everything downstream safe: the name is a URL segment (`/images/<name>/…` and
+  every human page under `/device/<name>/…`) and a directory name (`archive/<name>/`,
+  `logs/<name>/`), none of
   which then need their own sanitising. Also tracks MACs that polled without being
-  registered (capped, and only if they look like MACs — the endpoint is public) so
-  `/status` can offer them for pasting into the file.
+  registered (capped, and only if they look like MACs — the endpoint is public): that's
+  what gates the unregistered-screen render and what `/` lists when the registry is
+  empty.
 
 - **`trmnl-server.server.auth`** — the admin password gate on the human pages. One
   password, no users, **stored salted and hashed**: `$ADMIN_PASSWORD_HASH` holds a
@@ -421,8 +460,8 @@ version, and 3.6x the entire screen composition).
 
   Percent-decoding — `form-params` here and `query-param` in `server` — is
   **`ring.util.codec`**, not hand-rolled. That's the one dependency the login work earned
-  (8 KB, *zero* transitive deps, unlike the `ring-core` tree behind `reitit`): `?device=`
-  and `?day=` had never needed decoding because both are matched against a whitelist
+  (8 KB, *zero* transitive deps, unlike the `ring-core` tree behind `reitit`): `?day=`
+  had never needed decoding because it's matched against a whitelist
   immediately after, so a missing decode couldn't show — `?next=` is the first parameter
   whose *value* has to survive intact, and the hand-rolled version promptly dropped it on
   the floor. Two behaviours of `form-decode` the callers rely on: a string with no `=`
@@ -477,12 +516,20 @@ version, and 3.6x the entire screen composition).
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
   there's no hand-rolled `escape-html`) via a shared `page` layout helper. Each page fn
   returns an HTML *string*, not a Ring response — HTTP is `server`'s business, so
-  `(pages/status "hallway" nil :session)` can be called straight from the REPL. `/status` and
-  `/archive` are scoped to one display, chosen by `?device=` and switched with a picker
-  strip (the same `.days`/`.day` pills as the day picker, shown only when there's more
-  than one display to pick between); an unknown value falls back to the first registered
-  device, exactly as an unknown `?day=` falls back to today. `/` shows every display's
-  latest screen at once. `/login` is the fourth — the password form `server.auth` gates
+  `(pages/status (devices/by-name "hallway") nil :session)` can be called straight from
+  the REPL. The two per-display pages take the **resolved registry entry**, not a name:
+  the router already had to resolve the path segment to decide between a page and a 404,
+  so re-doing it here would mean a second answer to the same question — and it's that
+  split that lets them drop the fallback they used to need. Neither carries a device
+  picker (see the routing note above). `/` is the index of all of
+  them: one card per display showing the screen it's being served right now, the whole
+  card a link into that display's status page — so it doubles as the switcher, and both
+  per-display pages link back. Its grid is `auto-fit` with the width cap on the
+  *card* rather than the track (a `minmax(…,560px)` track would need 1136px before it
+  made a second column, and the two displays would stack for good inside the 1120px
+  `.wrap`). `device-path` builds every per-display URL, so the shape is written down once;
+  it's private, because with the compatibility redirects gone nothing outside this
+  namespace constructs one. `/login` is the fourth — the password form `server.auth` gates
   the other three with, plus the "Log out" control and the "auth disabled" pill they
   carry in return. Their
   CSS lives in `resources/css/{base,archive,home,login}.css` (slurped at load through
@@ -610,12 +657,13 @@ was the only remaining complexity and the hand-written path is simpler. Two cons
 the switch: device rows are **no longer echoed to journald** (they live only in the files +
 `/status`), and the `DEVICE_LOG_FILE` env var is gone (use `DEVICE_LOG_DIR`).
 
-The `/status` **device-log table just shows the contents of one day's file**, for one
+The device page's **device-log table just shows the contents of one day's file**, for one
 display. `telemetry/log-days`
 lists that device's `device-<date>.log` files (newest first) as the day-picker strip above
 the table;
 `?day=<date>` selects one, defaulting to today (`today-utc-date`), which is always shown as a
-tab even before it has a file. `?device=` picks the display, and every day link carries it. `telemetry/read-log` reads the chosen file (plain read — the DIY
+tab even before it has a file. Which display it is comes from the path, so each day link is
+just `/device/<name>?day=…`. `telemetry/read-log` reads the chosen file (plain read — the DIY
 files aren't gzipped) and renders its rows newest first, time column headed "time (UTC)" (it
 renders `created_at` through `Instant`, always UTC — matching the UTC filename dates). `sel` is
 constrained to a day that actually exists on disk (or today), so a bogus/traversal `?day=` just

@@ -2,8 +2,8 @@
   "HTTP surface for the forecast screens: routing, the API a real TRMNL OG device polls
    when pointed at a custom server (GET /api/display, GET /api/setup, POST /api/log),
    the file routes serving rendered and archived PNGs, and the human-facing pages
-   (/, /status, /archive, and the /login form gating them).
-   Uses http-kit as both the Ring request/response convention
+   (/, the per-display /device/<name> and /device/<name>/archive, and the /login form gating
+   them). Uses http-kit as both the Ring request/response convention
    and the embedded server — handlers are plain (fn [request] response-map) fns
    dispatched on :request-method/:uri in `handler`, chosen over a Ring+Jetty stack for
    a single, self-contained dependency given how few routes there are.
@@ -11,7 +11,14 @@
    Every device-facing route is scoped to one registered display: the firmware's `ID`
    header (its MAC) resolves through server.devices, and its `Access-Token` — issued by
    /api/setup — is checked on every later request. An unrecognised MAC is refused and
-   recorded for /status, which is how a new display gets registered.
+   recorded — and shown its own MAC on its own screen, which is how a new display gets
+   registered.
+
+   The human pages are scoped the same way but by path — /device/<name>/… , resolved
+   through the same registry — so an unknown display is a 404 here rather than a fallback
+   inside the page. The MAC never appears in one of those URLs: the segment is the
+   registry's `:name`, because /api/setup issues a token on presentation of a registered
+   MAC alone and that stays out of reach even for someone past the login.
 
    The human pages are gated separately, by a single admin password and a signed session
    cookie (server.auth) — a browser can log in, a display cannot, so the two
@@ -73,9 +80,9 @@
    decode to a vector; the first wins, so this always hands back a single string.
 
    Decoded, but not trusted: a caller that turns it into a filename or a path still has to
-   validate it (pages/status matches ?day= against the days actually on disk, and ?device=
-   against the registry). Decoding raises the stakes there rather than lowering them — an
-   escaped `..` arrives here as a real one."
+   validate it — pages/status matches ?day= against the days actually on disk. Decoding
+   raises the stakes there rather than lowering them: an escaped `..` arrives here as a
+   real one."
   [request k]
   (let [params (codec/form-decode (or (:query-string request) ""))
         value  (when (map? params) (get params k))]
@@ -146,9 +153,12 @@
   300)
 
 (defn- note-unregistered!
-  "Records the MAC of a device we don't have in the registry, so /status can offer it for
-   pasting into devices.edn. Logged the first time only: /api/display is reachable from
-   the internet and a scanner shouldn't be able to fill the log by varying its ID."
+  "Records the MAC of a device we don't have in the registry. That record is what lets
+   unregistered-image-response render a screen for it (devices/seen-unknown?), and what
+   the first-run / page lists when there's no registry at all; the ordinary way to read a
+   new display's MAC is off the display itself, which unregistered-display-response puts
+   it on. Logged the first time only: /api/display is reachable from the internet and a
+   scanner shouldn't be able to fill the log by varying its ID."
   [request]
   (let [mac (get-in request [:headers "id"])]
     (when (devices/note-unknown! mac)
@@ -202,9 +212,9 @@
 
 (defn- with-device
   "Resolves the request's `ID` header to a registered device, checks its Access-Token,
-   and calls `f` with the device. Unknown MAC → 404 (and recorded for /status); wrong or
-   missing token → 401. Every device route except /api/setup goes through here — setup
-   is the one request a device makes before it has a token."
+   and calls `f` with the device. Unknown MAC → 404 (and recorded, see note-unregistered!);
+   wrong or missing token → 401. Every device route except /api/setup goes through here —
+   setup is the one request a device makes before it has a token."
   [request f]
   (if-let [device (devices/for-request request)]
     (if (authorized? device request)
@@ -277,26 +287,23 @@
 
 (defn- archive-file-response
   "Serves one archived file by name from a device's archive dir — the PNG screen or its
-   sibling `.edn` forecast dump, at /archive/<device>/<name>. The device segment is
-   resolved through the registry (whose names are validated to [a-z0-9-]+ at load) and
-   the name is constrained to a flat `forecast-*.{png,edn}` basename, so neither can
-   escape the directory. The `.edn` is sent as an attachment so the gallery's data link
-   downloads rather than renders it."
-  [uri]
-  (let [[_ device-name requested] (path-segments uri)]
-    (if-let [device (and device-name requested (devices/by-name device-name))]
-      (if-let [[_ ext] (re-matches #"forecast-[0-9A-Za-z-]+\.(png|edn)" requested)]
-        (let [file (io/file (archive/dir (:name device)) requested)]
-          (if (.isFile file)
-            (if (= ext "png")
-              (png-response file)
-              {:status  200
-               :headers {"Content-Type"        "application/edn; charset=utf-8"
-                         "Content-Disposition" (str "attachment; filename=\"" requested "\"")}
-               :body    file})
-            {:status 404}))
-        {:status 404})
-      {:status 404})))
+   sibling `.edn` forecast dump, at /device/<name>/archive/<file>. The device is the one
+   the router already resolved (so its name is a registry entry, validated to [a-z0-9-]+
+   at load) and the filename is constrained to a flat `forecast-*.{png,edn}` basename, so
+   neither segment can escape the directory. The `.edn` is sent as an attachment so the
+   gallery's data link downloads rather than renders it."
+  [device requested]
+  (if-let [[_ ext] (re-matches #"forecast-[0-9A-Za-z-]+\.(png|edn)" requested)]
+    (let [file (io/file (archive/dir (:name device)) requested)]
+      (if (.isFile file)
+        (if (= ext "png")
+          (png-response file)
+          {:status  200
+           :headers {"Content-Type"        "application/edn; charset=utf-8"
+                     "Content-Disposition" (str "attachment; filename=\"" requested "\"")}
+           :body    file})
+        {:status 404}))
+    {:status 404}))
 
 ;; --- Admin session ----------------------------------------------------------------------
 
@@ -383,6 +390,31 @@
 
 ;; --- Routing ----------------------------------------------------------------------------
 
+(defn- device-page-response
+  "Dispatches the per-display pages: /device/<name> (the status dashboard, which is the
+   display's own page rather than a /status leaf under it), /device/<name>/archive, and
+   /device/<name>/archive/<file>.
+
+   The name is resolved through the registry here, once, and the page fns are handed the
+   entry itself — so an unregistered name is a 404 at the door rather than something each
+   page has to fall back from. Anything else under /device/ is a 404 too, which is what
+   keeps this from being a prefix that quietly accepts whatever it's given."
+  [uri request]
+  (let [[_ device-name sub file] (path-segments uri)]
+    (if-let [device (and device-name (devices/by-name device-name))]
+      (cond
+        (nil? sub)
+        (html-response (pages/status device (query-param request "day") (auth-state request)))
+
+        (and (= sub "archive") (nil? file))
+        (html-response (pages/gallery device))
+
+        (and (= sub "archive") file)
+        (archive-file-response device file)
+
+        :else {:status 404})
+      {:status 404})))
+
 (defn- handler [fallback-base]
   (fn [{:keys [request-method uri] :as request}]
     (let [get? (= :get request-method)]
@@ -400,13 +432,10 @@
           (= uri "/login"))                           (login-submit request)
         (and (= :post request-method)
           (= uri "/logout"))                          (logout-response request)
-        ;; Human pages, behind that session.
+        ;; Human pages, behind that session. Two routes: the index, and everything
+        ;; per-display under /device/<name>/….
         (and get? (= uri "/"))                        (gated request #(html-response (pages/home (auth-state request))))
-        (and get? (= uri "/status"))                  (gated request #(html-response (pages/status (query-param request "device")
-                                                                                       (query-param request "day")
-                                                                                       (auth-state request))))
-        (and get? (= uri "/archive"))                 (gated request #(html-response (pages/gallery (query-param request "device"))))
-        (and get? (str/starts-with? uri "/archive/")) (gated request #(archive-file-response uri))
+        (and get? (str/starts-with? uri "/device/"))  (gated request #(device-page-response uri request))
         ;; /images/* is the display's own fetch, so it stays outside the session gate —
         ;; and the gated pages embed the same URLs, which the browser then loads with no
         ;; cookie of interest. What's reachable there is one rendered screen per device,
