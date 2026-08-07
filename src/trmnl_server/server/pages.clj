@@ -460,28 +460,50 @@
 
 (defn- screen-card
   "One device's latest screen on the landing page — the whole card is the link into that
-   display's own page, so the index doubles as the device picker. The image comes from the
-   cache only, never regenerating: / is the page a crawler or a passer-by lands on, and a
-   visit shouldn't turn into a live SMHI fetch and a full render per registered device.
-   A device that hasn't rendered yet still gets a card, since its page is exactly where
-   you'd go to find out why."
+   display's own page, so the index doubles as the device picker.
+
+   Never regenerates: / is the page a crawler or a passer-by lands on, and a visit
+   shouldn't turn into a live SMHI fetch and a full render per registered device. So it
+   takes the last screen from wherever one already exists, in order:
+
+     1. the render cache, which is what the device is being served *right now*;
+     2. failing that, the newest file in the device's archive.
+
+   The fallback exists because the cache is in memory and dies with the process, so
+   without it every deploy left this page showing placeholders until each display's next
+   poll — up to 15 minutes of looking like nothing works. The archived copy is a real
+   render (only successful ones are written) and, right after a restart, is also what the
+   display itself is still showing, since the device holds the last image it downloaded.
+   Its mtime is when that render happened, so the caption stays true either way.
+
+   Only when both are empty has this display genuinely never rendered — which is a
+   question for its own page, hence the card is still a link."
   [device]
-  (let [name  (:name device)
-        entry (render/cached-entry device)]
+  (let [name     (:name device)
+        entry    (render/cached-entry device)
+        archived (when-not entry (first (archive/entries name)))
+        [src at] (cond
+                   entry    [(str "/images/" name "/" (render/serve-filename entry))
+                             (:generated-at entry)]
+                   archived [(str (device-path name "archive") "/" (.getName ^File archived))
+                             (.lastModified ^File archived)])]
     [:a.screen {:href (device-path name)}
      [:div.screen-name name]
-     (if entry
+     (if src
        (list
          [:img {:loading "lazy"
-                :src     (str "/images/" name "/" (render/serve-filename entry))
+                :src     src
                 :alt     (str "Latest rendered forecast screen for " name)}]
          ;; "Updated", not the screen's own Swedish "Uppdaterad": these pages are English
          ;; throughout, and the two timestamps mean different things anyway — the one
          ;; painted into the image is when the forecast was rendered for the *device*.
-         [:p.caption (str "Updated " (format-millis (:generated-at entry)))])
+         [:p.caption (str "Updated " (format-millis at))])
        (list
          [:div.noshot "No screen yet"]
-         [:p.caption "Waiting for this device's first poll."]))]))
+         ;; Not "waiting for its first poll": with the archive fallback above, reaching
+         ;; here means nothing has ever rendered for this display — which a poll alone
+         ;; doesn't fix if the renders are failing.
+         [:p.caption "Nothing rendered for this display yet."]))]))
 
 (defn home
   "The landing page: an index of every registered display, each showing the screen it's
