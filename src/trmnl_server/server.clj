@@ -1,8 +1,9 @@
 (ns trmnl-server.server
   "HTTP surface for the forecast screens: routing, the API a real TRMNL OG device polls
    when pointed at a custom server (GET /api/display, GET /api/setup, POST /api/log),
-   the file routes serving rendered and archived PNGs, and the three human-facing pages
-   (/, /status, /archive). Uses http-kit as both the Ring request/response convention
+   the file routes serving rendered and archived PNGs, and the human-facing pages
+   (/, /status, /archive, and the /login form gating them).
+   Uses http-kit as both the Ring request/response convention
    and the embedded server — handlers are plain (fn [request] response-map) fns
    dispatched on :request-method/:uri in `handler`, chosen over a Ring+Jetty stack for
    a single, self-contained dependency given how few routes there are.
@@ -12,15 +13,23 @@
    /api/setup — is checked on every later request. An unrecognised MAC is refused and
    recorded for /status, which is how a new display gets registered.
 
-   The work behind the routes lives in the five server.* namespaces: devices (the
+   The human pages are gated separately, by a single admin password and a signed session
+   cookie (server.auth) — a browser can log in, a display cannot, so the two
+   authentication schemes stay disjoint: /api/*, /images/* and /health never see the
+   session gate.
+
+   The work behind the routes lives in the six server.* namespaces: devices (the
    registry), render (the screens and their caches), archive (the rolling 24h disk
-   archive), telemetry (what the devices report about themselves), and pages (the HTML)."
+   archive), telemetry (what the devices report about themselves), auth (the admin
+   password gate), and pages (the HTML)."
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [org.httpkit.server :as httpkit]
+            [ring.util.codec :as codec]
             [trmnl-server.server.archive :as archive]
+            [trmnl-server.server.auth :as auth]
             [trmnl-server.server.devices :as devices]
             [trmnl-server.server.pages :as pages]
             [trmnl-server.server.render :as render]
@@ -51,13 +60,26 @@
    :headers {"Content-Type" "text/plain; charset=utf-8"}
    :body    body})
 
+(defn- redirect
+  "303 See Other, so the browser follows a POSTed login with a GET."
+  ([location] (redirect location nil))
+  ([location set-cookie]
+   {:status  303
+    :headers (cond-> {"Location" location}
+               set-cookie (assoc "Set-Cookie" set-cookie))}))
+
 (defn- query-param
-  "The value of query-string key `k`, or nil. Raw — a caller that turns it into a filename
-   or a path must validate it (pages/status matches ?day= against the days actually on
-   disk, and ?device= against the registry) before trusting it."
+  "The value of query-string key `k`, percent-decoded, or nil. Repeated keys (?day=a&day=a)
+   decode to a vector; the first wins, so this always hands back a single string.
+
+   Decoded, but not trusted: a caller that turns it into a filename or a path still has to
+   validate it (pages/status matches ?day= against the days actually on disk, and ?device=
+   against the registry). Decoding raises the stakes there rather than lowering them — an
+   escaped `..` arrives here as a real one."
   [request k]
-  (some->> (some-> (:query-string request) (str/split #"&"))
-    (some #(when (str/starts-with? % (str k "=")) (subs % (inc (count k)))))))
+  (let [params (codec/form-decode (or (:query-string request) ""))
+        value  (when (map? params) (get params k))]
+    (if (vector? value) (first value) value)))
 
 (defn- path-segments
   "The non-empty `/`-separated segments of a request path."
@@ -276,22 +298,95 @@
         {:status 404})
       {:status 404})))
 
+;; --- Admin session ----------------------------------------------------------------------
+
+(defn- gated
+  "Wraps one of the human pages behind the admin session: served as normal to a request
+   carrying a valid session cookie (or when no password is configured at all), otherwise
+   a redirect to /login remembering where it was going.
+
+   `page-fn` is a thunk rather than a value so an unauthenticated request costs nothing —
+   /status re-reads a log file off disk and / walks the render caches, and neither should
+   happen for a caller that isn't going to see the result."
+  [request page-fn]
+  (if (auth/authenticated? request)
+    (page-fn)
+    (redirect (auth/login-url request))))
+
+(defn- login-page
+  "The form itself. Already logged in (or nothing to log into) → straight through to the
+   destination, so a bookmarked /login isn't a dead end."
+  [request]
+  (let [next-path (auth/safe-next (query-param request "next"))]
+    (if (auth/authenticated? request)
+      (redirect next-path)
+      (html-response (pages/login next-path (when (auth/misconfigured?) :misconfigured))))))
+
+(defn- login-submit
+  "Checks a submitted password. A success replaces whatever cookie the caller had with a
+   fresh session and redirects on; a failure re-renders the form with a 401, and enough
+   of them trips auth/locked-out? (which is checked first, so the cooldown can't be
+   spent by guessing during it)."
+  [request]
+  (let [params    (auth/form-params (some-> (:body request) slurp))
+        next-path (auth/safe-next (get params "next"))]
+    (cond
+      ;; Nothing to log into: the GET already redirects, so this is only reachable by
+      ;; posting to it directly. Send it the same way rather than failing a check that
+      ;; can't succeed.
+      (not (auth/enabled?))
+      (redirect next-path)
+
+      ;; Ahead of the throttle: a broken admin.env isn't the caller's fault, and telling
+      ;; them "wrong password" for an hour while they retype a correct one is the worst
+      ;; version of this.
+      (auth/misconfigured?)
+      (assoc (html-response (pages/login next-path :misconfigured)) :status 500)
+
+      (auth/locked-out?)
+      (do (log/warn "Admin login attempt during failed-login cooldown")
+        (assoc (html-response (pages/login next-path :locked)) :status 429))
+
+      (auth/check-password! (get params "password"))
+      (do (log/info "Admin login succeeded")
+        (redirect next-path (auth/login-cookie request)))
+
+      :else
+      (do (log/warn "Admin login failed — wrong password")
+        (assoc (html-response (pages/login next-path :bad-password)) :status 401)))))
+
+(defn- logout-response [request]
+  (redirect "/login" (auth/logout-cookie request)))
+
 ;; --- Routing ----------------------------------------------------------------------------
 
 (defn- handler [fallback-base]
   (fn [{:keys [request-method uri] :as request}]
     (let [get? (= :get request-method)]
       (cond
-        (and get? (= uri "/"))                        (html-response (pages/home))
+        ;; Device API and health check: never gated by the admin session — a display
+        ;; can't log in, and authenticates by registered MAC + Access-Token instead.
         (and get? (= uri "/health"))                  (text-response 200 "ok\n")
         (and get? (= uri "/api/display"))             (display-response request fallback-base)
         (and get? (= uri "/api/setup"))               (setup-response request fallback-base)
         (and (= :post request-method)
           (= uri "/api/log"))                         (log-response request)
-        (and get? (= uri "/status"))                  (html-response (pages/status (query-param request "device")
-                                                                       (query-param request "day")))
-        (and get? (= uri "/archive"))                 (html-response (pages/gallery (query-param request "device")))
-        (and get? (str/starts-with? uri "/archive/")) (archive-file-response uri)
+        ;; The admin session: the form is the one human page that can't be gated.
+        (and get? (= uri "/login"))                   (login-page request)
+        (and (= :post request-method)
+          (= uri "/login"))                           (login-submit request)
+        (and (= :post request-method)
+          (= uri "/logout"))                          (logout-response request)
+        ;; Human pages, behind that session.
+        (and get? (= uri "/"))                        (gated request #(html-response (pages/home)))
+        (and get? (= uri "/status"))                  (gated request #(html-response (pages/status (query-param request "device")
+                                                                                       (query-param request "day"))))
+        (and get? (= uri "/archive"))                 (gated request #(html-response (pages/gallery (query-param request "device"))))
+        (and get? (str/starts-with? uri "/archive/")) (gated request #(archive-file-response uri))
+        ;; /images/* is the display's own fetch, so it stays outside the session gate —
+        ;; and the gated pages embed the same URLs, which the browser then loads with no
+        ;; cookie of interest. What's reachable there is one rendered screen per device,
+        ;; named by a content hash the cache has to be holding right now.
         (and get? (str/starts-with? uri (str "/images/" render/unregistered-prefix)))
         (unregistered-image-response uri request fallback-base)
         (and get? (str/starts-with? uri "/images/"))  (image-response uri)
@@ -317,6 +412,7 @@
   (let [port     (or (some-> (System/getenv "PORT") Integer/parseInt) 8080)
         base-url (str "http://" (lan-ip) ":" port)]
     (devices/load!)
+    (auth/load!)
     (telemetry/load-wake-history! (map :name (devices/all)))
     (httpkit/run-server (handler base-url) {:port port})
     (log/info (str "TRMNL server listening on " base-url))

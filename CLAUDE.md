@@ -36,7 +36,9 @@ clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 # from the device registry, devices.edn ($DEVICES_FILE) — copy devices.example.edn and
 # fill in one entry per device before this does anything useful; without a registry the
 # server starts but refuses every poll. $FORECAST_HOURS (default 23) is the server-wide
-# fallback for entries that don't set :hours.
+# fallback for entries that don't set :hours. $ADMIN_PASSWORD_HASH is the login for the human
+# pages (/, /status, /archive); unset — the usual case when running from source — leaves
+# them open and says so at startup.
 clojure -M -m trmnl-server.main --serve
 # equivalently:
 clojure -M:serve
@@ -51,7 +53,10 @@ java -jar target/trmnl-server.jar --serve
 
 # Build the uberjar, ship it to the Raspberry Pi running the live server
 # (host "dashboard-pi", systemd unit trmnl-server.service, see deploy/trmnl-server.service),
-# and restart it — a babashka script, not a JVM Clojure one (see deploy.clj)
+# and restart it — a babashka script, not a JVM Clojure one (see deploy.clj).
+# Never ships a secret: the device registry (devices.edn, below) and the admin password
+# (admin.env, see deploy/admin.env.example) both live only on the Pi. Deploy just warns
+# when the target has neither.
 bb deploy.clj
 
 # Same, but also push the local devices.edn to the Pi. NOT the default: the local copy
@@ -62,11 +67,26 @@ bb deploy.clj --devices
 
 # Deploy to the *test* instance instead: a second, independent service on the same Pi
 # (~/trmnl-server-test, port 8081, unit trmnl-server-test, see
-# deploy/trmnl-server-test.service). Own working directory, so own devices.edn, archive/
-# and logs/ — nothing is shared with the live service but the host. It exists to rehearse
+# deploy/trmnl-server-test.service). Own working directory, so own devices.edn, admin.env,
+# archive/ and logs/ — nothing is shared with the live service but the host. It exists to rehearse
 # a change against a real display before it touches the one on the wall; registering a
 # device is the case that can't be tested any other way. Combines with --devices.
 bb deploy.clj --test
+
+# Set the admin password for the human-facing pages. Prompts with echo off, hashes the
+# password through the server's own code (salted PBKDF2), writes ~/trmnl-server/admin.env
+# on the Pi with umask 077 and restarts the service. The plaintext never reaches the Pi,
+# a command line, or the terminal — only the hash does. --test targets the test instance;
+# --print just prints the ADMIN_PASSWORD_HASH= line and changes nothing. Setting a
+# password logs out every existing session (fresh salt → new session signing key).
+bb set-password.clj
+bb set-password.clj --test
+bb set-password.clj --print
+
+# What that script shells out to: reads one password from *stdin* (never argv, which `ps`
+# would expose) and prints the admin.env line. The hashing lives in server.auth so the
+# code that writes hashes and the code that checks them can't drift.
+printf 'my password' | clojure -M -m trmnl-server.main --hash-password
 
 # Reformat source per .cljfmt.edn (dev.weavejester/cljfmt) — run on any
 # Clojure files touched before committing
@@ -97,8 +117,8 @@ this is otherwise a `deps.edn`-only exploratory project (no Leiningen).
 
 ## Architecture
 
-Twelve namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
-`demo`, `labels`, `core`, `main`); `server` and the five `server.*` ones under it are
+Thirteen namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
+`demo`, `labels`, `core`, `main`); `server` and the six `server.*` ones under it are
 the serving path, which only `--serve` exercises.
 
 **The server is multi-device.** One Pi serves several TRMNL displays, each with its own
@@ -211,11 +231,24 @@ version, and 3.6x the entire screen composition).
   device-log dashboard) and
   `GET /archive` (a gallery of that device's rolling 24h image archive), with
   `GET /archive/<device>/*`
-  serving each archived PNG (or its `.edn` sidecar) off disk. Uses `http-kit` as both the Ring
+  serving each archived PNG (or its `.edn` sidecar) off disk — all three behind the admin
+  password (`GET`/`POST /login`, `POST /logout`, see `server.auth`). Uses `http-kit` as both the Ring
   request/response convention and the embedded server (handlers are plain
   `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
   `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
   dependency given how few routes there are.
+
+  **A routing library has been declined twice**, most recently after the login routes
+  landed, so don't re-derive it: the second look asked whether `reitit` would simplify the
+  session handling, and the answer is that it's a *router* — every subtle line in
+  `server.auth` (the HMAC token, the conditional `Secure`, the throttle, `safe-next`)
+  would be identical under it. What it would buy is route-data middleware, so the gate
+  couldn't be forgotten on a new route; what it costs is `reitit-core` + `meta-merge` +
+  all of `ring-core` (commons-io, commons-fileupload2, crypto-random/equality) for 13
+  routes whose gated group is visible in one `cond`. `ring-core`'s session middleware was
+  weighed too and is a worse fit than what's here: its cookie store generates a *random*
+  key per boot unless given one, so every deploy would log you out. What did earn its
+  place is **`ring/ring-codec`** — see `server.auth` below.
 
   **Device identity and auth.** Every device route resolves the firmware's `ID` header
   (the MAC) through `server.devices`; `with-device` then checks the `Access-Token`
@@ -264,15 +297,20 @@ version, and 3.6x the entire screen composition).
   out right for both routes — verified: the same poll returns an `https://trmnl.kluft.io/…`
   image URL through the tunnel and an `http://192.168.86.232:8080/…` one over the LAN.
 
-  The human pages (`/`, `/status`, `/archive`) are **deliberately left unauthenticated**
-  — a considered call, not an oversight. Cloudflare Access could gate them (protect the
-  hostname, bypass `^/(api/.*|images/.*|health)$`, which must stay open because a display
-  cannot do an interactive login), and that is the thing to reach for if it becomes a
-  problem. What is exposed today is read-only telemetry: battery voltage, RSSI, firmware
-  version, deployed commit, the device log, and 24h of rendered screens. No credentials,
-  and notably **no MAC address** — which matters, because `/api/setup` hands a device its
-  token on presentation of a registered MAC alone, so the MAC not appearing on any page
-  is what keeps that endpoint out of easy reach.
+  The human pages (`/`, `/status`, `/archive`, and the archived files under it) sit
+  behind **one admin password and a signed session cookie** — `server.auth`, wired in at
+  `handler` via `gated`. Which is what being internet-reachable bought: they were
+  deliberately open before, on the grounds that they expose only read-only telemetry, and
+  that reasoning still holds as the *fallback* (no `$ADMIN_PASSWORD_HASH` → no gate, a startup
+  warning, and an "auth disabled" pill on `/status`), but a login is cheaper than
+  Cloudflare Access and doesn't need the device routes carved out of a hostname policy.
+  The device API is what makes this a two-scheme server rather than a one-scheme one:
+  `/api/*`, `/images/*` and `/health` **must stay outside the gate**, because a display
+  cannot do an interactive login — they authenticate by registered MAC + `Access-Token`
+  instead. What the pages still deliberately don't show is a **registered device's MAC**
+  (only the unregistered ones, which are worth nothing without an entry in the file) —
+  that matters because `/api/setup` hands out a token on presentation of a registered MAC
+  alone, so it stays out of reach even for someone who gets past the login.
 
   The traversal guards live here, in the
   namespace the untrusted URI arrives in: `archive-file-response` constrains the name to a
@@ -281,7 +319,7 @@ version, and 3.6x the entire screen composition).
   resolved through the registry — whose `:name`s are themselves validated to `[a-z0-9-]+`
   at load. So no route can be walked out of its directory.
 
-  The work behind the routes is five namespaces under `trmnl-server.server.*`, none of
+  The work behind the routes is six namespaces under `trmnl-server.server.*`, none of
   which know about HTTP:
 
 - **`trmnl-server.server.devices`** — the device registry, and the only namespace that
@@ -299,6 +337,70 @@ version, and 3.6x the entire screen composition).
   which then need their own sanitising. Also tracks MACs that polled without being
   registered (capped, and only if they look like MACs — the endpoint is public) so
   `/status` can offer them for pasting into the file.
+
+- **`trmnl-server.server.auth`** — the admin password gate on the human pages. One
+  password, no users, **stored salted and hashed**: `$ADMIN_PASSWORD_HASH` holds a
+  self-describing `pbkdf2-sha256$<iterations>$<salt>$<hash>` string, read once at startup.
+  An env var rather than a file because the systemd unit is checked into this repo and
+  overwritten on every deploy, so the secret has to live where `deploy.clj` never treads
+  (`deploy/admin.env.example` → `~/trmnl-server/admin.env`, pulled in by the unit's
+  optional `EnvironmentFile=-`); `EnvironmentFile` rather than `Environment=` in the unit
+  because **`systemctl show` prints `Environment=` values to any local user** — verified
+  on the Pi — while it shows only the *path* of an environment file.
+
+  **Set it with `bb set-password.clj`**, never by hand. The password is read with terminal
+  echo off, piped on **stdin** into `main --hash-password` (an argv is visible in `ps`),
+  and only the hash travels to the Pi — the plaintext never reaches it at all. `auth`
+  owning `hash-password` is what keeps the writer and the checker on the same algorithm.
+
+  **The iteration count is 100k, deliberately under OWASP's 600k**, because the verifier
+  is a Raspberry Pi 3 from 2016: measured there, 600k costs **5.4s** per login (and per
+  unauthenticated request the throttle lets through), 100k costs ~1.1s. What carries the
+  security is the script's 12-character floor, not the iteration count — a random password
+  that long is uncrackable offline at any count, and a weak one wouldn't be saved by 600k.
+  The count lives *in* the hash, so faster hardware can raise it without invalidating
+  what's set.
+
+  Three configuration states, not two. **Nothing set → no gate**, with a startup `WARN` and
+  an "auth disabled" pill on `/status`: running from source is a legitimate state, the same
+  way a missing `devices.edn` is, but a deploy whose env file went missing shouldn't look
+  identical to one that never had a password. **Set but unparseable → enabled and broken**:
+  the pages stay shut (failing open would silently unprotect what someone meant to
+  protect), the service stays up (failing hard would take the *displays* down over a typo
+  in an admin password), an `ERROR` goes to the log, and the login page says so — which it
+  has to, because `/status` is behind the very gate that's broken. A stale `$ADMIN_PASSWORD`
+  from before hashing gets its own warning pointing at the script.
+
+  A session is a **signed cookie, not a session table**: `<expiry>.<hmac>`, HMAC-SHA256
+  over the expiry with a key derived from the stored hash string. That choice buys two
+  things — logins survive a restart (this service is redeployed constantly, and being
+  logged out by every `bb deploy.clj` is how you end up with a four-character password),
+  and re-setting the password draws a fresh salt, which invalidates every outstanding
+  session with nothing to revoke. Keying on the hash rather than the password is the
+  incidental win of hashing at rest: the cookie can't be a password oracle even in
+  principle. Both properties are verified end to end — a cookie survives a restart, and
+  stops working when the password is re-set to *the same value*.
+  30-day expiry, `HttpOnly`, `SameSite=Lax`, and `Secure` **only when the request came in
+  over TLS** (`X-Forwarded-Proto`), since the same server is reached over plain http on
+  the LAN and an unconditional `Secure` would make the cookie unusable there. Logging out
+  is a `POST`, so a link prefetch can't do it. Wrong passwords are counted and throttled
+  (5, then one attempt a minute); the counter is **global rather than per-IP** because the
+  form is behind a tunnel that rewrites the source address — the trade-off, someone
+  hammering the form locking you out of a read-only page for a minute, is the cheaper
+  side. `?next=` is constrained to a local path (`safe-next`): a login form is exactly
+  where an open redirect gets used.
+
+  Percent-decoding — `form-params` here and `query-param` in `server` — is
+  **`ring.util.codec`**, not hand-rolled. That's the one dependency the login work earned
+  (8 KB, *zero* transitive deps, unlike the `ring-core` tree behind `reitit`): `?device=`
+  and `?day=` had never needed decoding because both are matched against a whitelist
+  immediately after, so a missing decode couldn't show — `?next=` is the first parameter
+  whose *value* has to survive intact, and the hand-rolled version promptly dropped it on
+  the floor. Two behaviours of `form-decode` the callers rely on: a string with no `=`
+  decodes to a *string*, not a map (hence the `map?` guards), and a repeated key decodes
+  to a *vector*, which `check-password!` and `safe-next` reject by requiring a string.
+  Decoding also means `safe-next`'s whitespace check now blocks a real CR/LF, not an
+  escaped one — that value goes out in a `Location` header.
 
 - **`trmnl-server.server.render`** — the served screens and their caches, one entry per
   registered display keyed by `:name`, each with its own regeneration lock so a slow
@@ -342,7 +444,7 @@ version, and 3.6x the entire screen composition).
   so a crawler hitting the landing page can't trigger a live fetch and a full render
   per registered display.
 
-- **`trmnl-server.server.pages`** — the three human-facing HTML pages, built with
+- **`trmnl-server.server.pages`** — the four human-facing HTML pages, built with
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
   there's no hand-rolled `escape-html`) via a shared `page` layout helper. Each page fn
   returns an HTML *string*, not a Ring response — HTTP is `server`'s business, so
@@ -351,11 +453,13 @@ version, and 3.6x the entire screen composition).
   strip (the same `.days`/`.day` pills as the day picker, shown only when there's more
   than one display to pick between); an unknown value falls back to the first registered
   device, exactly as an unknown `?day=` falls back to today. `/` shows every display's
-  latest screen at once. Their
-  CSS lives in `resources/css/{base,archive,home}.css` (slurped at load through
+  latest screen at once. `/login` is the fourth — the password form `server.auth` gates
+  the other three with, plus the "Log out" control and the "auth disabled" pill they
+  carry in return. Their
+  CSS lives in `resources/css/{base,archive,home,login}.css` (slurped at load through
   `io/resource`, so it resolves from the uberjar too) rather than inline string
-  blobs — `base.css` is the shared shell, with `archive.css` and `home.css`
-  layered on top for those two pages. The `/status` page also shows the **deployed commit** via
+  blobs — `base.css` is the shared shell, with `archive.css`, `home.css` and
+  `login.css` layered on top for those three pages. The `/status` page also shows the **deployed commit** via
   `deployed-version`, read once at load from a bundled `version.edn` that
   `build.clj`'s uber task bakes in (`git rev-parse --short HEAD`, plus a `-dirty`
   suffix when the tree isn't clean, and a build timestamp). Running from source
@@ -438,8 +542,9 @@ version, and 3.6x the entire screen composition).
 
 Server-side logging uses `clojure.tools.logging` routed through SLF4J to **logback**
 (`ch.qos.logback/logback-classic`) — one of the few places the project departs from its
-otherwise dependency-light stance (the other being `hiccup` for the `/status` and
-`/archive` HTML, see server above), because file logging on the Pi wanted a real
+otherwise dependency-light stance (the others being `hiccup` for the `/status` and
+`/archive` HTML and `ring/ring-codec` for query/form decoding, see server above),
+because file logging on the Pi wanted a real
 appender rather than hand-rolled `println` redirection. This covers the server's **own
 diagnostics only** — device telemetry is hand-written to disk without logback (see below).
 Config is `resources/logback.xml` (bundled into the uberjar via `:paths`): a console

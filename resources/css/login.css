@@ -1,0 +1,16 @@
+/* /login — one field on an otherwise empty page, so it gets its own narrow column
+   rather than the .wrap used by the dashboards. */
+.login{max-width:330px;margin:14vh auto 0}
+.login h1{margin:0 0 3px}
+.login .tag{color:var(--muted);margin:0 0 20px}
+.login form{display:flex;flex-direction:column;gap:10px}
+.login input[type=password]{
+  font:inherit;width:100%;padding:9px 11px;border-radius:8px;
+  border:.5px solid var(--bd);background:var(--card);color:var(--fg);
+}
+.login input[type=password]:focus{outline:none;border-color:var(--muted)}
+.login button{
+  font:inherit;font-weight:500;padding:9px 11px;border:0;border-radius:8px;
+  background:var(--fg);color:var(--bg);cursor:pointer;
+}
+.login .msg{margin:0;font-size:12.5px}

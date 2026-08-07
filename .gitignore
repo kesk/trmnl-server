@@ -5,6 +5,7 @@
 /archive/
 /scratch/
 /devices.edn
+/admin.env
 *.jar
 .nrepl-port
 .lsp/

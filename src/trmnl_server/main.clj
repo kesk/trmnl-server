@@ -5,7 +5,8 @@
   (:require [trmnl-server.core :as core]
             [trmnl-server.demo :as demo]
             [trmnl-server.image :as img]
-            [trmnl-server.server :as server])
+            [trmnl-server.server :as server]
+            [trmnl-server.server.auth :as auth])
   (:gen-class))
 
 (defn- write-screen [canvas name]
@@ -43,7 +44,23 @@
        :lon (Double/parseDouble (nth args (inc lon-i)))}
       core/default-forecast-location)))
 
+(defn- hash-password-from-stdin!
+  "Reads one line from stdin and prints the admin.env line for it. Stdin rather than an
+   argument on purpose — an argv is visible in `ps` to every user on the machine, which
+   would leak the password in the very act of hiding it. set-password.clj is the intended
+   caller; the algorithm lives in server.auth so the thing that writes hashes and the
+   thing that checks them can't drift apart."
+  []
+  (if-let [password (not-empty (read-line))]
+    (println (str "ADMIN_PASSWORD_HASH=" (auth/hash-password password)))
+    (binding [*out* *err*]
+      (println "No password on stdin.")
+      (System/exit 1))))
+
 (defn -main [& args]
+  (when (some #{"--hash-password"} args)
+    (hash-password-from-stdin!)
+    (System/exit 0))
   (System/setProperty "java.awt.headless" "true")
   (let [hours    (hours-arg args)
         location (location-arg args)]

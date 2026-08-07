@@ -61,6 +61,15 @@
     (println "NOTE: no devices.edn on" host (str remote-dir " — every device poll will be rejected"))
     (println "      until one exists. Unregistered MACs are listed on /status.")))
 
+;; Same shape as the devices.edn note above, and for the same reason: the admin password
+;; lives only on the Pi (deploy never ships it), so the only thing this end can usefully
+;; do is notice when the target hasn't got one.
+(when-not (zero? (:exit (shell {:continue true}
+                          "ssh" host (str "test -f " remote-dir "/admin.env"))))
+  (println "NOTE: no admin.env on" host (str remote-dir " — /, /status and /archive will be"))
+  (println "      open to anyone who can reach the server. Fix with: bb set-password.clj"
+    (if (contains? args "--test") "--test" "")))
+
 (println "Copy service file")
 (shell "scp" (:unit-src target) (str host ":~/" (:unit target) ".service"))
 (shell "ssh" host (str "sudo mv ~/" (:unit target) ".service"
