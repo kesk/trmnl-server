@@ -257,6 +257,23 @@ version, and 3.6x the entire screen composition).
   and `Access-Token` to the *image* fetch when the image URL string-prefixes the base
   URL it was given, so a scheme mismatch silently drops those headers.
 
+  **The server is internet-reachable** at `https://trmnl.kluft.io` via a Cloudflare
+  tunnel (`cloudflared` on the Pi, fronting `localhost:8080`), alongside the LAN address
+  the hallway display keeps using. `cloudflared` preserves `Host` and sets
+  `X-Forwarded-Proto: https`, which is what makes the per-request `base-url` above come
+  out right for both routes — verified: the same poll returns an `https://trmnl.kluft.io/…`
+  image URL through the tunnel and an `http://192.168.86.232:8080/…` one over the LAN.
+
+  The human pages (`/`, `/status`, `/archive`) are **deliberately left unauthenticated**
+  — a considered call, not an oversight. Cloudflare Access could gate them (protect the
+  hostname, bypass `^/(api/.*|images/.*|health)$`, which must stay open because a display
+  cannot do an interactive login), and that is the thing to reach for if it becomes a
+  problem. What is exposed today is read-only telemetry: battery voltage, RSSI, firmware
+  version, deployed commit, the device log, and 24h of rendered screens. No credentials,
+  and notably **no MAC address** — which matters, because `/api/setup` hands a device its
+  token on presentation of a registered MAC alone, so the MAC not appearing on any page
+  is what keeps that endpoint out of easy reach.
+
   The traversal guards live here, in the
   namespace the untrusted URI arrives in: `archive-file-response` constrains the name to a
   flat `forecast-*.{png,edn}` basename, `?day` is validated in `pages/status` against
