@@ -37,7 +37,7 @@
 
 ;; Deployed commit, baked into version.edn by build.clj's uber task and bundled into the
 ;; jar. Absent when running from source (clojure -M:serve), where there's no build step —
-;; there's no commit to report there, so /status just shows "dev-local". Read once at load.
+;; there's no commit to report there, so the device page just shows "dev-local". Read once at load.
 (def ^:private deployed-version
   (or (when-let [r (io/resource "version.edn")]
         (try (read-string (slurp r)) (catch Exception _ nil)))
@@ -89,7 +89,7 @@
 (defn- format-built-at
   "build.clj bakes :built-at into version.edn as a raw ISO-8601 instant string
    (e.g. 2026-07-16T10:41:12.123456Z). Render it as a compact local wall-clock time
-   for the /status 'Deployed' pill; pass the original through unchanged if it isn't
+   for the device page's 'Deployed' pill; pass the original through unchanged if it isn't
    parseable as an instant, so a hand-edited version.edn can't blow up the page."
   [built]
   (try
@@ -103,7 +103,7 @@
 
 (defn- ago-str
   "A rough 'how long ago' for a past epoch-millis timestamp, at the coarsest unit that
-   still says something useful — the /status cards care about 'a while back', not
+   still says something useful — the device page's cards care about 'a while back', not
    seconds."
   [millis now]
   (let [mins (quot (- now millis) 60000)]
@@ -248,7 +248,7 @@
 ;; --- The device page --------------------------------------------------------------------
 
 (def ^:private wake-windows
-  "Trend windows shown on /status, label + span in ms — short, day, and week."
+  "Trend windows shown on the device page, label + span in ms — short, day, and week."
   [["1h" (* 60 60 1000)]
    ["6h" (* 6 60 60 1000)]
    ["24h" (* 24 60 60 1000)]
@@ -256,7 +256,7 @@
 
 (defn- wake-sparkline
   "An inline SVG polyline of the wake-time series (ms over time) scaled to a small box,
-   for the /status Awake card. nil when there are fewer than two samples to connect. Pure
+   for the device page's Awake card. nil when there are fewer than two samples to connect. Pure
    server-rendered hiccup — no JS, no axis, no dependency; a glanceable trend read next to
    the numeric averages, not a precise chart. x maps each sample's :t across the width so
    irregular poll spacing shows; y maps :ms so taller = longer awake (inverted). Colour is
@@ -485,7 +485,7 @@
 
 (defn home
   "The landing page: an index of every registered display, each showing the screen it's
-   being served right now and linking into its own /status. `auth-state` is how the viewer
+   being served right now and linking into its own page. `auth-state` is how the viewer
    got past the gate — see session-chrome."
   [auth-state]
   (let [all-devices (devices/all)]
@@ -508,7 +508,7 @@
    a wrong one, :locked while the failed-login cooldown is running, or :misconfigured when
    admin.env holds something that isn't a usable hash — that last one is worth saying out
    loud rather than reporting as a wrong password, because no password can work until it's
-   fixed and /status (where you'd normally look) is behind this very form."
+   fixed and the device page (where you'd normally look) is behind this very form."
   [next-path state]
   (if (= state :insecure)
     ;; No form at all: there is nothing safe to type here, and offering the field anyway

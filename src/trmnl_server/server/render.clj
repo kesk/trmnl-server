@@ -39,7 +39,7 @@
   "The regeneration lock for one device, created on first use. Per-device rather than
    one global lock so a slow SMHI fetch for one display can't hold another display's
    poll open — the device waits with its radio powered, which is exactly what the
-   wake-time trend on /status is watching for."
+   wake-time trend on the device page is watching for."
   [device-name]
   (-> (swap! locks (fn [m] (cond-> m (not (contains? m device-name)) (assoc device-name (Object.)))))
     (get device-name)))
@@ -107,7 +107,7 @@
 
    A failed attempt also stamps :failed-at, which holds off further attempts for
    failure-cooldown-ms — otherwise the entry stays expired and every incoming
-   request (device poll, browser hit on / or /status) fetches SMHI again while
+   request (device poll, browser hit on / or a device page) fetches SMHI again while
    it's already struggling.
 
    The `filename` is keyed on an MD5 of the rendered pixels, so it only changes when
@@ -158,7 +158,7 @@
                   (throw e))))))))))
 
 (defn cache-status
-  "A read-only snapshot of one device's cache for the /status page: when its last
+  "A read-only snapshot of one device's cache for the device page: when its last
    *successful* render happened, when its last attempt failed (nil once a later one
    succeeds), and how many attempts have failed in a row. nil before its first render.
 

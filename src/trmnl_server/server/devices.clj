@@ -12,7 +12,7 @@
    in /images/<name>/… and in every human page under /device/<name>/…, and the
    directory name under logs/ and archive/. Validating it against a strict
    [a-z0-9-]+ here, at load, is what lets all of those skip their own sanitising —
-   the same move /status makes by matching ?day= against the days actually on disk."
+   the same move the device page makes by matching ?day= against the days actually on disk."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -38,8 +38,11 @@
 
 (defonce ^:private registry (atom {}))
 
-;; MAC -> epoch ms last seen. Devices that polled but aren't registered; surfaced on
-;; /status so adding a new display doesn't mean grepping the log for its MAC.
+;; MAC -> epoch ms last seen. Devices that polled but aren't registered. Two things read
+;; this: seen-unknown?, which gates rendering the "you aren't registered" screen for a MAC
+;; (so an unauthenticated route can't be made to draw images on demand), and the / page,
+;; which lists them when the registry is empty. The ordinary way to read a new display's
+;; MAC is off the display itself, which that screen puts it on.
 (defonce ^:private unknown (atom {}))
 
 (defn- registry-file ^File []
@@ -92,7 +95,7 @@
   "Reads devices.edn into the registry.
 
    A missing file is a legitimate first-run state: log it and carry on empty, so
-   /status still loads and can report the MAC of whatever polls next. A *malformed*
+   the device page still loads and can report the MAC of whatever polls next. A *malformed*
    one throws and takes the service down with it — see validate-entry!."
   []
   (let [f (registry-file)]
@@ -109,7 +112,7 @@
 
 (defn all
   "Every registered device, ordered by :name — an EDN map has no order of its own,
-   and the pickers and the /status default both want a stable one."
+   and the pickers and the device page's default both want a stable one."
   []
   (sort-by :name (vals @registry)))
 
@@ -131,8 +134,9 @@
   (by-mac (get-in request [:headers "id"])))
 
 (defn note-unknown!
-  "Records a MAC that polled without being registered, so /status can show it. Ignores
-   anything that doesn't look like a MAC, and keeps only the most recent few.
+  "Records a MAC that polled without being registered — see the `unknown` atom for who
+   reads it. Ignores anything that doesn't look like a MAC, and keeps only the most
+   recent few.
 
    Returns true the first time a given MAC is seen, so the caller can log it once rather
    than on every poll — /api/display is reachable from the internet, and a scanner
