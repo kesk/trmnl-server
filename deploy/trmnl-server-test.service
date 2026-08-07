@@ -15,6 +15,9 @@ Environment=PORT=8081
 # Server-wide default only. Each display's location — and, if it wants one, its own
 # hour count — lives in /home/seb/trmnl-server-test/devices.edn.
 Environment=FORECAST_HOURS=23
+# Its own admin password, like everything else about this instance. Optional (`-`):
+# without the file the pages are open. See deploy/admin.env.example.
+EnvironmentFile=-/home/seb/trmnl-server-test/admin.env
 ExecStart=/usr/bin/java -jar /home/seb/trmnl-server-test/trmnl-server.jar --serve
 Restart=on-failure
 RestartSec=5

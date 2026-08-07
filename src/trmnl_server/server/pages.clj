@@ -1,7 +1,8 @@
 (ns trmnl-server.server.pages
-  "The three human-facing HTML pages — / (landing), /status (device health) and
-   /archive (screen gallery) — built with hiccup2.core, which auto-escapes string
-   content so there's no hand-rolled escaping here.
+  "The human-facing HTML pages — / (landing), /status (device health), /archive
+   (screen gallery) and /login (the admin password form that gates the other three) —
+   built with hiccup2.core, which auto-escapes string content so there's no hand-rolled
+   escaping here.
 
    /status and /archive are scoped to one registered device, chosen by ?device= and
    selected with a picker strip; / shows every device's latest screen at once. An
@@ -16,6 +17,7 @@
             [clojure.string :as str]
             [hiccup2.core :as h]
             [trmnl-server.server.archive :as archive]
+            [trmnl-server.server.auth :as auth]
             [trmnl-server.server.devices :as devices]
             [trmnl-server.server.render :as render]
             [trmnl-server.server.telemetry :as telemetry])
@@ -41,6 +43,7 @@
 (def ^:private status-css (css "base.css"))
 (def ^:private archive-css (css "base.css" "archive.css"))
 (def ^:private home-css (css "base.css" "home.css"))
+(def ^:private login-css (css "base.css" "login.css"))
 
 (defn- page
   "Wraps page-specific body hiccup in the shared HTML shell (doctype, head, the given
@@ -184,6 +187,25 @@
           [:div.h "Seen polling"]
           [:pre.reg (str/join "\n" (map :mac macs))])))))
 
+(defn- logout-form
+  "The way out of a session. A POST, not a link: a GET /logout would let a link
+   prefetch sign you out."
+  []
+  [:form.linkform {:method "post" :action "/logout"}
+   [:button.linkbtn {:type "submit"} "Log out"]])
+
+(defn- session-chrome
+  "The auth corner of a page: a way out when a password is configured, and a standing
+   warning when one isn't. The warning matters because no password is also the state a
+   production deploy lands in if its admin.env goes missing, and the pages would
+   otherwise look exactly the same as before."
+  []
+  (if (auth/enabled?)
+    (logout-form)
+    [:span.pill.pill-watch
+     {:title "No $ADMIN_PASSWORD_HASH is set, so these pages are open to anyone who can reach this server."}
+     "auth disabled"]))
+
 (defn- unregistered-block
   "A copy-pasteable list of MACs that have polled without being in the registry. Adding a
    display otherwise means grepping the log for its MAC; this puts it where you're
@@ -306,7 +328,9 @@
         (list
           [:div.top
            [:h1 "trmnl-server status · " name]
-           [:a.top-link {:href (str "/archive?device=" name)} "Archived screens →"]]
+           [:div.top-nav
+            [:a.top-link {:href (str "/archive?device=" name)} "Archived screens →"]
+            (session-chrome)]]
           (device-picker all-devices name "/status")
           [:section.group
            [:div.sec "Device health"]
@@ -442,4 +466,33 @@
        (if (seq all-devices)
          (map screen-block all-devices)
          [:p.caption "No devices registered — see devices.example.edn."])
-       [:p.cta [:a {:href "/status"} "Status →"]]])))
+       [:p.cta [:a {:href "/status"} "Status →"]]
+       [:p.caption (session-chrome)]])))
+
+;; --- /login -----------------------------------------------------------------------------
+
+(defn login
+  "The password form standing in front of the other pages. `next-path` is where a
+   successful login lands — already constrained to a local path by auth/safe-next, since
+   it arrives as a query parameter. `state` is nil on a first visit, :bad-password after
+   a wrong one, :locked while the failed-login cooldown is running, or :misconfigured when
+   admin.env holds something that isn't a usable hash — that last one is worth saying out
+   loud rather than reporting as a wrong password, because no password can work until it's
+   fixed and /status (where you'd normally look) is behind this very form."
+  [next-path state]
+  (page "trmnl-server · log in" login-css
+    [:div.login
+     [:h1 "trmnl-server"]
+     [:p.tag "Admin password required."]
+     [:form {:method "post" :action "/login"}
+      [:input {:type "hidden" :name "next" :value next-path}]
+      [:input {:type         "password"         :name       "password"       :placeholder "Password"
+               :autocomplete "current-password" :aria-label "Admin password" :autofocus   true}]
+      [:button {:type "submit"} "Log in"]
+      (case state
+        :bad-password   [:p.msg.pill.pill-low "Wrong password."]
+        :locked         [:p.msg.pill.pill-low "Too many attempts. Wait a minute, then try again."]
+        :misconfigured  [:p.msg.pill.pill-low
+                         "$ADMIN_PASSWORD_HASH is unreadable — no login can succeed until "
+                         "admin.env is fixed. Run bb set-password.clj."]
+        nil)]]))

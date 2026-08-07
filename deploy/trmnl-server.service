@@ -10,6 +10,13 @@ WorkingDirectory=/home/seb/trmnl-server
 # Server-wide default only. Each display's location — and, if it wants one, its own
 # hour count — lives in ~/trmnl-server/devices.edn.
 Environment=FORECAST_HOURS=23
+# The admin credential for /, /status and /archive: $ADMIN_PASSWORD_HASH, a salted PBKDF2
+# hash set with `bb set-password.clj`. Kept out of this file because this file is in git
+# and gets overwritten on every deploy — and because `systemctl show` prints Environment=
+# values to any local user, while an EnvironmentFile shows only its path. The leading `-`
+# makes it optional: without it the server starts with the pages open and says so, in the
+# log and on /status. See deploy/admin.env.example.
+EnvironmentFile=-/home/seb/trmnl-server/admin.env
 ExecStart=/usr/bin/java -jar /home/seb/trmnl-server/trmnl-server.jar --serve
 Restart=on-failure
 RestartSec=5

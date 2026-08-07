@@ -19,6 +19,12 @@ h1{font-size:20px;font-weight:500;margin:0 0 18px}
 .top h1{margin:0}
 .top-link{font-size:13px;color:var(--muted);text-decoration:none;white-space:nowrap}
 .top-link:hover{color:var(--fg)}
+.top-nav{display:flex;align-items:center;gap:12px}
+/* Logging out is a POST (a GET link would let a prefetch sign you out), so the control
+   is a button dressed as the .top-link next to it. */
+.linkform{margin:0;display:inline}
+.linkbtn{font:inherit;font-size:13px;color:var(--muted);background:none;border:0;padding:0;cursor:pointer}
+.linkbtn:hover{color:var(--fg)}
 .group{margin-bottom:20px}
 .sec{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
 .cards{display:grid;gap:12px}
