@@ -31,9 +31,12 @@ clojure -M -m trmnl-server.main --hours 24
 # Gothenburg climate normals.
 clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 
-# Serve the live forecast screen to a real TRMNL OG device over HTTP (see
-# trmnl-server.server below). Listens on $PORT or 8080, renders $FORECAST_HOURS
-# hourly points (default 23) for $FORECAST_LAT/$FORECAST_LON (default Gothenburg).
+# Serve live forecast screens to real TRMNL OG devices over HTTP (see
+# trmnl-server.server below). Listens on $PORT or 8080. Each display's location comes
+# from the device registry, devices.edn ($DEVICES_FILE) — copy devices.example.edn and
+# fill in one entry per device before this does anything useful; without a registry the
+# server starts but refuses every poll. $FORECAST_HOURS (default 23) is the server-wide
+# fallback for entries that don't set :hours.
 clojure -M -m trmnl-server.main --serve
 # equivalently:
 clojure -M:serve
@@ -50,6 +53,20 @@ java -jar target/trmnl-server.jar --serve
 # (host "dashboard-pi", systemd unit trmnl-server.service, see deploy/trmnl-server.service),
 # and restart it — a babashka script, not a JVM Clojure one (see deploy.clj)
 bb deploy.clj
+
+# Same, but also push the local devices.edn to the Pi. NOT the default: the local copy
+# is a dev registry with placeholder MACs, and clobbering the real one would point both
+# displays at the wrong forecasts. Without the flag, deploy only warns if the Pi has no
+# registry at all.
+bb deploy.clj --devices
+
+# Deploy to the *test* instance instead: a second, independent service on the same Pi
+# (~/trmnl-server-test, port 8081, unit trmnl-server-test, see
+# deploy/trmnl-server-test.service). Own working directory, so own devices.edn, archive/
+# and logs/ — nothing is shared with the live service but the host. It exists to rehearse
+# a change against a real display before it touches the one on the wall; registering a
+# device is the case that can't be tested any other way. Combines with --devices.
+bb deploy.clj --test
 
 # Reformat source per .cljfmt.edn (dev.weavejester/cljfmt) — run on any
 # Clojure files touched before committing
@@ -80,9 +97,16 @@ this is otherwise a `deps.edn`-only exploratory project (no Leiningen).
 
 ## Architecture
 
-Eleven namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
-`demo`, `labels`, `core`, `main`); `server` and the four `server.*` ones under it are
+Twelve namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
+`demo`, `labels`, `core`, `main`); `server` and the five `server.*` ones under it are
 the serving path, which only `--serve` exercises.
+
+**The server is multi-device.** One Pi serves several TRMNL displays, each with its own
+location, and everything in the serving path is scoped by a device `:name` — its render
+cache and regeneration lock, its `archive/<name>/` subdirectory, its `logs/<name>/`
+telemetry, its `/images/<name>/…` URLs, and the `?device=` view of `/status` and
+`/archive`. The domain namespaces are untouched by this: they already took location and
+points as arguments, so nothing below `server.*` knows there is more than one display.
 
 **The whole codebase is reflection-free** — `(set! *warn-on-reflection* true)` plus a
 `require :reload` of any namespace must stay silent. On the Java2D-heavy fns that means
@@ -168,37 +192,108 @@ version, and 3.6x the entire screen composition).
   values get labelled, how they read, and what they have to stay off — the geometry that
   turns that into positions is `labels` above). `default-forecast-hours`/`default-forecast-location` are
   the single source of truth for "prognosis length" and "where" — callers override
-  them via `--hours`/`--lat`/`--lon` (main) or `$FORECAST_HOURS`/`$FORECAST_LAT`/
-  `$FORECAST_LON` (server) rather than hardcoding a point count or coordinates
-  themselves.
+  them via `--hours`/`--lat`/`--lon` (main) rather than hardcoding a point count or
+  coordinates themselves. The server no longer reaches for
+  `default-forecast-location` at all: every display's coordinates are required fields
+  of its `devices.edn` entry. `$FORECAST_HOURS` survives as the server-wide fallback
+  for an entry that omits `:hours`.
 
 - **`trmnl-server.server`** — the HTTP surface only: routing, response helpers, the
   device API, and `start!`. It implements the small API a real TRMNL OG device
   polls when pointed at a custom server: `GET /api/display` (the main poll, returns
   JSON with an `image_url`/`filename`/`refresh_rate`), `GET /api/setup` (first-boot
-  welcome screen), `POST /api/log` (device telemetry, replied to with `204`), and
-  `GET /images/*` (serves the cached PNG bytes). Plus three human-facing pages:
-  `GET /` (landing page — title, the screen being served right now, link to status),
-  `GET /status` (battery/firmware/awake-trend/deployed-commit/forecast-health/device-log
-  dashboard) and
-  `GET /archive` (a gallery of the rolling 24h image archive), with `GET /archive/*`
+  registration), `POST /api/log` (device telemetry, replied to with `204`), and
+  `GET /images/<device>/*` (serves the cached PNG bytes). Plus `GET /health` (a bare
+  200 for `deploy.clj`'s post-restart check — `/api/display` can't serve that job any
+  more, since it now 404s a caller it doesn't recognise) and three human-facing pages:
+  `GET /` (landing page — every registered display's latest screen, link to status),
+  `GET /status` (per-device battery/firmware/awake-trend/deployed-commit/forecast-health/
+  device-log dashboard) and
+  `GET /archive` (a gallery of that device's rolling 24h image archive), with
+  `GET /archive/<device>/*`
   serving each archived PNG (or its `.edn` sidecar) off disk. Uses `http-kit` as both the Ring
   request/response convention and the embedded server (handlers are plain
   `(fn [request] response-map)` fns dispatched on `:request-method`/`:uri` in
   `handler`) — chosen over a Ring+Jetty stack for a single, self-contained
-  dependency given how few routes there are. The traversal guards live here, in the
-  namespace the untrusted URI arrives in: `archive-file-response` constrains the name to a
-  flat `forecast-*.{png,edn}` basename, and `?day` is validated in `pages/status` against
-  the days actually on disk, so neither route can be walked out of its directory.
+  dependency given how few routes there are.
 
-  The work behind the routes is four namespaces under `trmnl-server.server.*`, none of
+  **Device identity and auth.** Every device route resolves the firmware's `ID` header
+  (the MAC) through `server.devices`; `with-device` then checks the `Access-Token`
+  header against that device's registered `:token` and 401s on a mismatch. An
+  unrecognised MAC is recorded for `/status` to display — that list is
+  how a new display gets registered, rather than grepping the log for its MAC (and it's
+  logged once per MAC, not once per poll, because the endpoint is internet-reachable).
+
+  **An unregistered device is shown its own MAC.** Rather than 404ing `/api/display` and
+  leaving the panel on a firmware error, the server answers 200 with
+  `core/unregistered-screen` — the MAC in 48px type, plus the origin the device reached
+  us on. The MAC is the one thing needed to register a display and the one thing that's
+  otherwise awkward to obtain: it isn't printed on the case. This works because the
+  firmware reaches `/api/display` even when `/api/setup` has just 404'd (`bl.cpp` runs
+  `downloadAndShow` unconditionally after `getDeviceCredentials`), so the screen lands on
+  the next wake; `refresh_rate` is 5 min rather than 15, since somebody is usually
+  standing in front of it.
+
+  The image comes from `/images/unregistered-<hash8>.png`, content-hashed for the same
+  reason the forecast filenames are but with sharper consequences: the firmware decides
+  whether to download by asking whether that filename already exists in its own SPIFFS
+  (`checkCurrentFileName`), never by asking us. A constant name would pin every device to
+  the first version of this screen it ever cached, so a later fix to the wording or the
+  font would silently never arrive. The MAC is resolved off the `ID` header the firmware
+  also sends on image fetches (`buildImageHeaders`) — so it never appears in a URL — and
+  only a MAC that has actually polled (`devices/seen-unknown?`) can trigger a render,
+  which is what keeps an unauthenticated route from drawing 800x480 images on demand.
+
+  `/api/setup` is the one route authenticated by MAC alone, because it's
+  precisely the request a device makes *before* it has a token. Its response **must**
+  carry `"status": 200` — the firmware's `parseResponse_apiSetup` bails otherwise and
+  never persists `api_key`/`friendly_id`, which is why an earlier version of this server
+  left the device re-running setup on every wake, forever tokenless.
+
+  **`base-url` is derived per request** from `Host`, honouring `X-Forwarded-Proto`,
+  rather than being fixed to a LAN IP at startup: one display reaches the Pi over the
+  LAN and the other through a Cloudflare tunnel, and each has to be handed the URL that
+  works for it. It has to be exactly right, too — the firmware only attaches its `ID`
+  and `Access-Token` to the *image* fetch when the image URL string-prefixes the base
+  URL it was given, so a scheme mismatch silently drops those headers.
+
+  The traversal guards live here, in the
+  namespace the untrusted URI arrives in: `archive-file-response` constrains the name to a
+  flat `forecast-*.{png,edn}` basename, `?day` is validated in `pages/status` against
+  the days actually on disk, and every `<device>` path segment and `?device=` value is
+  resolved through the registry — whose `:name`s are themselves validated to `[a-z0-9-]+`
+  at load. So no route can be walked out of its directory.
+
+  The work behind the routes is five namespaces under `trmnl-server.server.*`, none of
   which know about HTTP:
 
-- **`trmnl-server.server.render`** — the served screen and its cache. `current-image`
+- **`trmnl-server.server.devices`** — the device registry, and the only namespace that
+  knows a MAC address from a display. Read once at startup from `devices.edn`
+  (`$DEVICES_FILE`) into an atom: MAC → `{:name :lat :lon :token :hours?}`. Editing it
+  means restarting the service, which is a deliberate ceiling — a household's worth of
+  displays doesn't justify a mutable store or an admin UI. A *missing* file is a
+  legitimate first-run state (empty registry, warning logged, `/status` still loads); a
+  *malformed* one throws and takes the service down with it, on the grounds that a
+  display silently served the wrong town's weather is the worse outcome.
+
+  `:name` is validated against `[a-z0-9-]+` **at load**, and that one check is what
+  makes everything downstream safe: the name is a URL segment (`/images/<name>/…`), a
+  `?device=` value, and a directory name (`archive/<name>/`, `logs/<name>/`), none of
+  which then need their own sanitising. Also tracks MACs that polled without being
+  registered (capped, and only if they look like MACs — the endpoint is public) so
+  `/status` can offer them for pasting into the file.
+
+- **`trmnl-server.server.render`** — the served screens and their caches, one entry per
+  registered display keyed by `:name`, each with its own regeneration lock so a slow
+  SMHI fetch for one display can't hold another's poll open (the device waits with its
+  radio powered — exactly what `/status`'s wake-time trend is watching for). Keying on
+  the device rather than on `[lat lon hours]` means two displays in the same town would
+  fetch twice; that's accepted deliberately, since sharing an entry would make it
+  ambiguous which device's archive a render belongs to. `current-image` takes a device,
   renders via
-  `core/forecast-screen` (fed `core/live-points` of `$FORECAST_HOURS`/
-  `$FORECAST_LAT`/`$FORECAST_LON`, or `core/default-forecast-hours`/
-  `core/default-forecast-location` if unset) + `image/->1-bit`, encodes to PNG bytes in
+  `core/forecast-screen` (fed `core/live-points` of the device's `:lat`/`:lon` and its
+  `:hours`, else `$FORECAST_HOURS`, else `core/default-forecast-hours`)
+  + `image/->1-bit`, encodes to PNG bytes in
   memory (the served bytes never touch disk — `out/` stays reserved for the
   batch-render modes) and
   caches them for 10 minutes keyed by an MD5 content hash, so the `filename`
@@ -226,13 +321,20 @@ version, and 3.6x the entire screen composition).
   reports that bookkeeping (last success, last failure, consecutive failures) to
   `/status`'s Forecast card, deliberately without calling `current-image` — looking
   at the status page shouldn't fetch SMHI, least of all to regenerate what it's
-  reporting on.
+  reporting on. `cached-entry` is the same idea for `/`: a peek that never regenerates,
+  so a crawler hitting the landing page can't trigger a live fetch and a full render
+  per registered display.
 
 - **`trmnl-server.server.pages`** — the three human-facing HTML pages, built with
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
   there's no hand-rolled `escape-html`) via a shared `page` layout helper. Each page fn
   returns an HTML *string*, not a Ring response — HTTP is `server`'s business, so
-  `(pages/status nil)` can be called straight from the REPL. Their
+  `(pages/status "hallway" nil)` can be called straight from the REPL. `/status` and
+  `/archive` are scoped to one display, chosen by `?device=` and switched with a picker
+  strip (the same `.days`/`.day` pills as the day picker, shown only when there's more
+  than one display to pick between); an unknown value falls back to the first registered
+  device, exactly as an unknown `?day=` falls back to today. `/` shows every display's
+  latest screen at once. Their
   CSS lives in `resources/css/{base,archive,home}.css` (slurped at load through
   `io/resource`, so it resolves from the uberjar too) rather than inline string
   blobs — `base.css` is the shared shell, with `archive.css` and `home.css`
@@ -244,19 +346,26 @@ version, and 3.6x the entire screen composition).
   so it shows `dev-local` — there is deliberately **no** git fallback here, since
   shelling out to `git` at load time cost the CLI a ~60s exit hang.
 
-- **`trmnl-server.server.telemetry`** — everything the device reports about itself and
-  where it's kept: the latest `/api/display` header snapshot (`record-poll!`/`poll-status`),
-  the rolling wake-time series, and the raw `/api/log` bodies on disk. See the logging
-  note below.
+- **`trmnl-server.server.telemetry`** — everything each device reports about itself and
+  where it's kept: that device's latest `/api/display` header snapshot
+  (`record-poll!`/`poll-status`),
+  its rolling wake-time series, and its raw `/api/log` bodies on disk. Every fn takes a
+  device `:name`, and on disk that's a subdirectory per device
+  (`logs/<name>/device-<date>.log`, `logs/<name>/wake-times.edn`). Subdirectories rather
+  than mangled filenames specifically because `prune-logs!` then comes out right for
+  free — its cap is a count of files in a directory, so a shared one would let a chatty
+  display evict a quiet one's days. See the logging note below.
 
 - **`trmnl-server.server.archive`** — the rolling 24h on-disk archive, as pure storage
   (`dir`, `write!`, `entries`). Every *successful* render (i.e. each new cache entry,
   one per cache miss, not the stale-fallback copies) is also written to
   disk by `write!` as `forecast-<yyyyMMdd-HHmmss>-run<yyyyMMdd-HHmm>-<hash8>.png`
-  under `archive/`
-  (relative to the working dir, like `logs/`; override with `$ARCHIVE_DIR`), and
-  files older than 24h are pruned by mtime on each write — so the folder self-manages
-  a rolling 24h window with no cron. This exists so a problematic screen spotted after
+  under `archive/<device>/`
+  (relative to the working dir, like `logs/`; override the root with `$ARCHIVE_DIR`) —
+  a subdirectory per display, since both the 24h prune and the dedupe probe work off
+  the directory's own newest file, so a shared one would let one device's render
+  suppress another's as a duplicate. Files older than 24h are pruned by mtime on each
+  write — so each folder self-manages a rolling 24h window with no cron. This exists so a problematic screen spotted after
   the fact can still be recovered and saved. `<hash8>` is the first 8 chars of an MD5
   over the *forecast data* (`pr-str` of the point seq) — deliberately **not** the
   rendered pixels, because the header's per-render "Uppdaterad HH:mm" stamp changes the
@@ -331,24 +440,31 @@ Europe/Stockholm in `smhi`, so the host zone doesn't affect the display either w
 
 Device telemetry (`POST /api/log`) is **written straight to disk, bypassing
 logback entirely** (`server.telemetry/append-log!`): each received body is collapsed to one
-line and appended as **raw JSON** (no timestamp prefix) to `logs/device-<yyyy-MM-dd>.log`,
+line and appended as **raw JSON** (no timestamp prefix) to
+`logs/<device>/device-<yyyy-MM-dd>.log`,
 the file picked by the **UTC** date (`today-utc-date`), so the filename does the daily
-partitioning a rolling policy used to. The dir is `$DEVICE_LOG_DIR` (default `logs/`), created
+partitioning a rolling policy used to. The root dir is `$DEVICE_LOG_DIR` (default `logs/`)
+and each display gets a subdirectory named for it, created
 on demand; writes are serialised under a private lock and are best-effort (an IO error is
 logged via the main logger and swallowed, so the device still gets its `204`). Old days
 self-prune: `prune-logs!` (run on each write) keeps only the newest `max-log-files`
-(7) `device-<date>.log` files — a count cap, not a calendar window, so a device that skips
-days still retains its last 7 *reporting* days. This replaced a
+(7) `device-<date>.log` files **in that device's own directory** — a count cap, not a
+calendar window, so a device that skips
+days still retains its last 7 *reporting* days, and no display can evict another's. (That
+per-device directory is why the cap is still correct with more than one display; a shared
+directory would have made 7 files mean 3½ days each.) This replaced a
 logback `DEVICE` appender + dedicated `trmnl-server.device` logger — dropped because once
 `/status` had become "just show one on-disk file" (below), logback's rolling/gzip/retention
 was the only remaining complexity and the hand-written path is simpler. Two consequences of
 the switch: device rows are **no longer echoed to journald** (they live only in the files +
 `/status`), and the `DEVICE_LOG_FILE` env var is gone (use `DEVICE_LOG_DIR`).
 
-The `/status` **device-log table just shows the contents of one day's file**. `telemetry/log-days`
-lists the `device-<date>.log` files (newest first) as the day-picker strip above the table;
+The `/status` **device-log table just shows the contents of one day's file**, for one
+display. `telemetry/log-days`
+lists that device's `device-<date>.log` files (newest first) as the day-picker strip above
+the table;
 `?day=<date>` selects one, defaulting to today (`today-utc-date`), which is always shown as a
-tab even before it has a file. `telemetry/read-log` reads the chosen file (plain read — the DIY
+tab even before it has a file. `?device=` picks the display, and every day link carries it. `telemetry/read-log` reads the chosen file (plain read — the DIY
 files aren't gzipped) and renders its rows newest first, time column headed "time (UTC)" (it
 renders `created_at` through `Instant`, always UTC — matching the UTC filename dates). `sel` is
 constrained to a day that actually exists on disk (or today), so a bogus/traversal `?day=` just
@@ -362,9 +478,12 @@ The **Awake card** surfaces the firmware's `Wake-Time` header (how long the devi
 awake during its previous cycle, ms — a health signal, since fighting weak WiFi keeps it
 awake longer and drains the battery): the latest value in seconds plus moving averages over
 1h/6h/24h/7d windows. Every device `/api/display` poll feeds one sample into `telemetry/record-poll!`,
-which keeps a rolling `wake-history` series of `{:t :ms}` maps **persisted to disk** as
-`wake-times.edn` (in `$DEVICE_LOG_DIR`, alongside the device logs) so the trend survives
-restarts/redeploys — `load-wake-history!` reloads it in `start!`. Samples are pruned to a 7-day
+which keeps a rolling `wake-history` series of `{:t :ms}` maps per device, **persisted to
+disk** as
+`wake-times.edn` (in that display's `$DEVICE_LOG_DIR/<name>/`, alongside its device logs) so
+the trend survives
+restarts/redeploys — `load-wake-history!` reloads every registered device's series in
+`start!`. Samples are pruned to a 7-day
 window (`wake-retention-ms`, which also sets the longest average window) and non-positive
 values are dropped (the firmware sends `0` on a fresh boot with no previous cycle). Writes are
 best-effort under `wake-history-lock` and never break the serving path. Unlike the other cards

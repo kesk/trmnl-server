@@ -1,8 +1,7 @@
 # Code review findings
 
 Weaknesses in *this repo's own code*, roughly in priority order. None are urgent for
-the current single-device, 15-minute-poll deployment — this is a backlog, not a bug
-list.
+the current 15-minute-poll deployment — this is a backlog, not a bug list.
 
 Not to be confused with `ISSUES.md`, which records device/firmware and upstream-API
 problems observed in production. That file is about things outside this codebase; this
@@ -13,7 +12,51 @@ a reference.
 
 ## Worth doing
 
-### 1. The same two x-geometry formulas are written out eight times
+### 1. `check-labels` validates a chart that isn't the one rendered
+
+`dev/trmnl_server/dev/label_collisions.clj` (:29-31) restates the chart box and keep-out
+band rather than reading them out of `core`, on purpose — "this is the check, so it
+should fail loudly if core's idea of any of them drifts, instead of quietly agreeing
+with the new value." They have drifted, and it did not fail loudly. It quietly checks a
+different chart.
+
+|                                   | box                | keep-out                              |
+| --------------------------------- | ------------------ | ------------------------------------- |
+| checker (:29-30)                   | `[40 172 720 155]` | `[[0 335 800 440]]`                   |
+| `forecast-screen` (`core.clj`:566) | `[40 158 720 176]` | `[[0 116 800 156] [0 335 800 440]]`   |
+
+The cloud band is missing from the checker entirely — and `core` (:535-537) carries a
+comment anticipating exactly this failure: the band was added because "without this a
+high label would sit on the checkerboard, and check-labels would never see it -- that
+check only knows about the rects it's handed." It was handed to `combined-chart` and
+never to the checker.
+
+So the placements don't merely shift, they diverge. `dev/fixtures/flat-start.edn` is the
+reproducer — a real 2026-08-06 forecast off the archive, both series nearly flat and
+running close together at the left edge, so the first-point labels have to crowd. It
+puts the last wind label at:
+
+- **checker geometry** — `[21 163 59 177]`, clear of everything, 0 line-crossings
+- **real geometry** — `[49 232 87 246]`, lying across the temperature line for **40
+  columns**, against a tolerance of 8
+
+The second is what actually ships, and on the device it reads as `6 m/s` with the
+temperature line struck straight through the glyphs.
+
+Measured over the same 2011 datasets (demo seasons, fixtures, archive, 2000 generated
+days): **0 hard collisions under either geometry** — the label/dot and label/label rules
+hold, so nothing is silently eating ink today — but line-crossings go from 264 to 479.
+The checker is understating the soft-rule violations by about 45%, and `line-crossings`'
+own docstring claim that it "should stay at 0 for the demo seasons, the archive, and
+every fixture but calm-hour" is only true of the geometry it invented.
+
+**Fix:** give the two one source of truth. Either `forecast-screen` exposes the box and
+keep-out rects (a `def`, or a small fn returning them) and both call it, or the checker
+keeps its own copy *and* asserts it matches core's, so drift fails the run instead of
+silently changing what is tested. The second keeps the original intent; the first
+removes the failure mode outright.
+
+### 2. The same two x-geometry formulas are written out eight times
 
 `(fn [i] (+ x (* w (/ i (double (dec n))))))` — the plotting-point spacing, which
 divides by `n-1` so the first and last points land on the box edges — appears verbatim
@@ -32,7 +75,7 @@ prose in three separate docstrings rather than expressed once in code.
 **Fix:** two helpers, `plot-x` (the `n-1` divisor) and `slot-center`/`slot-edge` (the `n`
 divisor), and let the names carry the distinction.
 
-### 2. Europe/Stockholm is hardcoded while the location is configurable
+### 3. Europe/Stockholm is hardcoded while the location is configurable
 
 Every timezone-aware helper in `trmnl-server.smhi` pins `Europe/Stockholm`, while
 `--lat`/`--lon` and `$FORECAST_LAT`/`$FORECAST_LON` invite arbitrary coordinates. SMHI's
@@ -42,7 +85,7 @@ Swedish local time for hour labels and day boundaries.
 **Fix:** carry a timezone alongside the location override, or at least document the
 constraint where the flags are documented.
 
-### 3. `smhi` rebuilds a DateTimeFormatter on every call
+### 4. `smhi` rebuilds a DateTimeFormatter on every call
 
 `local-time-str` (:73), `local-date` (:78), `local-day-label` (:134) and `local-now-str`
 (:142) each repeat the same `Instant/parse → atZone` pipeline; the three that format
@@ -53,7 +96,7 @@ treatment.
 
 **Fix:** hoist the formatters to `def`s and factor out the shared pipeline.
 
-### 4. A stale docstring and an undocumented demo output
+### 5. A stale docstring and an undocumented demo output
 
 `core/draw-weather-icon` (:76) still claims the icons' fills "sit above `->1-bit`'s
 threshold and wash to white, leaving just their dark outlines — so the icons need no
@@ -64,7 +107,7 @@ docstring now contradicts it.
 Separately, `--demo` also writes `out/demo-stale.png` (the stale-badge sample), which
 appears in neither the command list nor the `main` description in CLAUDE.md.
 
-### 5. Landing-page loose ends
+### 6. Landing-page loose ends
 
 Added in `0a83cde`, three small things:
 
@@ -78,7 +121,7 @@ Added in `0a83cde`, three small things:
 - `GET /` calls `current-image`, so any crawler that hits the root on a cold cache pays
   for a live SMHI fetch and a full render.
 
-### 6. `/status` reads today's device log twice
+### 7. `/status` reads today's device log twice
 
 `pages/status` (:195-196) reads the selected day, then reads today's file again for the
 summary cards whenever you are viewing an older day. Correct, just wasteful — and the
@@ -86,7 +129,7 @@ second read is invisible at the call site.
 
 ## Cleanup
 
-### 7. Dead code
+### 8. Dead code
 
 - `smhi/upcoming` (:144) — no callers anywhere.
 - `image/draw-wrapped-text` (:92) — no callers.
@@ -94,13 +137,13 @@ second read is invisible at the call site.
   photo/gradient dithering, but it also duplicates `->1-bit`'s greyscale loop line for
   line, so if it stays the two should share that loop.
 
-### 8. `migrate_device_logs.clj` is a spent one-off
+### 9. `migrate_device_logs.clj` is a spent one-off
 
 The babashka migration from the old logback device logs to the per-date layout
 (`6f76b85`, July 2026) has been run and is done, but still sits in the repo root.
 Delete it, or move it under `dev/`.
 
-### 9. `ISSUES.md` and `KNOWN-ISSUES.md` are easy to confuse
+### 10. `ISSUES.md` and `KNOWN-ISSUES.md` are easy to confuse
 
 Both files opened with the heading `# Known issues` until this file was retitled. The
 filenames are still near-identical for two documents with quite different jobs (upstream
@@ -112,20 +155,20 @@ Note also that this file's *Resolved #5* below describes `core/draw-series-label
 Resolved 2026-07-27). The entry is kept as a record of what happened at the time, not as a
 description of the code.
 
-### 10. The label checker prints the wrong season name
+### 11. The label checker prints the wrong season name
 
 `dev/label_collisions.clj` (:131) builds its dataset label with `(:name s)`, but the
 season maps use `:label`. All four demo seasons therefore report as `"demo "`, so a
 failure tells you a season broke without telling you which one. One-word fix.
 
-### 11. `pixel-font` is derived at draw time in eight places
+### 12. `pixel-font` is derived at draw time in eight places
 
 `core` caches `legend-font` (:122) as a `def` but calls `img/pixel-font` inline at :307,
 :349, :370, :406, :426, :471, :473 and :475 — five of which are the identical
 `(img/pixel-font :regular 16)`, the very font `legend-font` already holds. Each call runs
 `Font/.deriveFont`. Two or three cached `def`s would cover every use.
 
-### 12. `fill-string` leaves a 5px stroke on the Graphics2D
+### 13. `fill-string` leaves a 5px stroke on the Graphics2D
 
 `image/fill-string` (:58) sets a `BasicStroke` for the halo and never restores it, unlike
 `draw-polyline`, `draw-variable-line` and `draw-dashed-line`, which all reset to 1.0.
@@ -137,7 +180,7 @@ The deeper point: the canvas map threads a mutable `Graphics2D` whose colour, fo
 stroke are order-dependent global state. A `with-stroke`-style helper, or a consistent
 save/restore discipline, would make that safe rather than merely lucky.
 
-### 13. The mm label's number format depends on the JVM's locale
+### 14. The mm label's number format depends on the JVM's locale
 
 `core/precip-mm-labels` (:369) uses `(format "%.1fmm" …)`, which follows the default
 locale: `1.5mm` on an English JVM, `1,5mm` on a Swedish one. A comma is arguably *right*
@@ -146,7 +189,7 @@ and the rendered screen differs between a dev machine and the Pi. `server.pages`
 `Locale/US` explicitly for the battery voltage, so the codebase is inconsistent with
 itself. Pick one and pass it explicitly.
 
-### 14. "Moln (%)" labels a series that is not a percentage
+### 15. "Moln (%)" labels a series that is not a percentage
 
 The legend in `core/forecast-screen` says `Moln (%)` while the strip's thickness encodes
 SMHI's `cloud_area_fraction` in octas (0-8). It is the only unit on the screen that names
