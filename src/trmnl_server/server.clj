@@ -150,15 +150,16 @@
    downloadAndShow unconditionally after getDeviceCredentials), so the screen shows up on
    the next wake."
   [request fallback-base]
-  (note-unregistered! request)
-  (json-response {:filename          render/unregistered-filename
-                  :image_url         (str (base-url request fallback-base)
-                                       "/images/" render/unregistered-filename)
-                  :image_url_timeout 0
-                  :refresh_rate      unregistered-refresh-seconds
-                  :reset_firmware    false
-                  :update_firmware   false
-                  :firmware_url      nil}))
+  (let [mac      (note-unregistered! request)
+        base     (base-url request fallback-base)
+        filename (:filename (render/unregistered-entry mac base))]
+    (json-response {:filename          filename
+                    :image_url         (str base "/images/" filename)
+                    :image_url_timeout 0
+                    :refresh_rate      unregistered-refresh-seconds
+                    :reset_firmware    false
+                    :update_firmware   false
+                    :firmware_url      nil})))
 
 (defn- unregistered-image-response
   "Serves the unregistered-device screen for whichever MAC is asking. The firmware sends
@@ -166,10 +167,15 @@
    the URL — and only a MAC that has actually polled gets a render, which is what keeps
    this unauthenticated route from being a way to make the Pi draw 800x480 images on
    demand."
-  [request fallback-base]
-  (let [mac (get-in request [:headers "id"])]
+  [uri request fallback-base]
+  (let [mac       (get-in request [:headers "id"])
+        requested (subs uri (count "/images/"))]
     (if (devices/seen-unknown? mac)
-      (png-response (render/unregistered-image mac (base-url request fallback-base)))
+      (let [{:keys [bytes filename]} (render/unregistered-entry mac (base-url request fallback-base))]
+        ;; Same contract as bytes-for: serve only the bytes whose hash the caller asked
+        ;; for, so a device holding a stale filename re-polls instead of being handed
+        ;; something that doesn't match what it was promised.
+        (if (= requested filename) (png-response bytes) {:status 404}))
       {:status 404})))
 
 (defn- with-device
@@ -286,8 +292,8 @@
                                                                        (query-param request "day")))
         (and get? (= uri "/archive"))                 (html-response (pages/gallery (query-param request "device")))
         (and get? (str/starts-with? uri "/archive/")) (archive-file-response uri)
-        (and get? (= uri (str "/images/" render/unregistered-filename)))
-        (unregistered-image-response request fallback-base)
+        (and get? (str/starts-with? uri (str "/images/" render/unregistered-prefix)))
+        (unregistered-image-response uri request fallback-base)
         (and get? (str/starts-with? uri "/images/"))  (image-response uri)
         :else                                         {:status 404}))))
 

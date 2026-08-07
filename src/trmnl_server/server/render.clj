@@ -170,26 +170,33 @@
      :failed-at    (:failed-at entry)
      :failures     (:failures entry 0)}))
 
-;; MAC -> PNG bytes of that device's unregistered-device screen. Tiny and bounded: only
-;; MACs devices/seen-unknown? admits get here, and that list is capped.
+;; [mac server-url] -> {:bytes :filename} for that device's unregistered-device screen.
+;; Tiny and bounded: only MACs devices/seen-unknown? admits ever get here, and that list
+;; is capped.
 (defonce ^:private unregistered-cache (atom {}))
 
-(def unregistered-filename
-  "Constant, unlike the forecast filenames — this screen doesn't change while a device
-   stays unregistered, so the firmware may cache it. The moment the device *is*
-   registered the filename becomes a forecast content hash instead, which differs, so
-   the real screen is fetched immediately rather than after a cache expiry."
-  "unregistered.png")
+(def unregistered-prefix
+  "URL/filename prefix identifying the unregistered-device screen, so the route can
+   recognise it without consulting the registry (there is nothing to consult — that's
+   the point)."
+  "unregistered-")
 
-(defn unregistered-image
-  "PNG bytes of the screen shown to a device that isn't in the registry: its own MAC,
-   large enough to read off the display and paste into devices.edn. Cached per MAC so a
-   device polling this every wake doesn't re-render it each time."
+(defn unregistered-entry
+  "{:bytes :filename} for the screen shown to a device that isn't in the registry: its
+   own MAC, large enough to read off the display and paste into devices.edn. Cached per
+   [mac server-url] so a device polling every wake doesn't re-render it each time.
+
+   The filename carries an MD5 of the rendered pixels, exactly as the forecast screens
+   do, and for a sharper reason: the firmware decides whether to download by asking
+   whether a file of that name is already in SPIFFS (checkCurrentFileName), not by
+   asking the server. A constant name would pin a device to the first version of this
+   screen it ever cached — a later fix to the wording or the font would never reach it."
   [mac server-url]
-  (or (get @unregistered-cache mac)
-    (let [bytes (png-bytes (img/->1-bit (core/unregistered-screen mac server-url)))]
-      (swap! unregistered-cache assoc mac bytes)
-      bytes)))
+  (or (get @unregistered-cache [mac server-url])
+    (let [bytes (png-bytes (img/->1-bit (core/unregistered-screen mac server-url)))
+          entry {:bytes bytes :filename (str unregistered-prefix (subs (md5-hex bytes) 0 8) ".png")}]
+      (swap! unregistered-cache assoc [mac server-url] entry)
+      entry)))
 
 (defn serve-filename
   "The filename the given entry should be served under — the stale one when the last

@@ -226,17 +226,23 @@ version, and 3.6x the entire screen composition).
 
   **An unregistered device is shown its own MAC.** Rather than 404ing `/api/display` and
   leaving the panel on a firmware error, the server answers 200 with
-  `core/unregistered-screen` — the MAC in 40px type, plus the origin the device reached
+  `core/unregistered-screen` — the MAC in 48px type, plus the origin the device reached
   us on. The MAC is the one thing needed to register a display and the one thing that's
   otherwise awkward to obtain: it isn't printed on the case. This works because the
   firmware reaches `/api/display` even when `/api/setup` has just 404'd (`bl.cpp` runs
   `downloadAndShow` unconditionally after `getDeviceCredentials`), so the screen lands on
   the next wake; `refresh_rate` is 5 min rather than 15, since somebody is usually
-  standing in front of it. The image comes from `/images/unregistered.png`, resolved off
-  the `ID` header the firmware also sends on image fetches (`buildImageHeaders`) — so the
-  MAC never appears in a URL — and only for a MAC that has actually polled
-  (`devices/seen-unknown?`), which is what keeps an unauthenticated route from rendering
-  800x480 images on demand.
+  standing in front of it.
+
+  The image comes from `/images/unregistered-<hash8>.png`, content-hashed for the same
+  reason the forecast filenames are but with sharper consequences: the firmware decides
+  whether to download by asking whether that filename already exists in its own SPIFFS
+  (`checkCurrentFileName`), never by asking us. A constant name would pin every device to
+  the first version of this screen it ever cached, so a later fix to the wording or the
+  font would silently never arrive. The MAC is resolved off the `ID` header the firmware
+  also sends on image fetches (`buildImageHeaders`) — so it never appears in a URL — and
+  only a MAC that has actually polled (`devices/seen-unknown?`) can trigger a render,
+  which is what keeps an unauthenticated route from drawing 800x480 images on demand.
 
   `/api/setup` is the one route authenticated by MAC alone, because it's
   precisely the request a device makes *before* it has a token. Its response **must**
