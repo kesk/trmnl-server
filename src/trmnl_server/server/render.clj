@@ -170,6 +170,27 @@
      :failed-at    (:failed-at entry)
      :failures     (:failures entry 0)}))
 
+;; MAC -> PNG bytes of that device's unregistered-device screen. Tiny and bounded: only
+;; MACs devices/seen-unknown? admits get here, and that list is capped.
+(defonce ^:private unregistered-cache (atom {}))
+
+(def unregistered-filename
+  "Constant, unlike the forecast filenames — this screen doesn't change while a device
+   stays unregistered, so the firmware may cache it. The moment the device *is*
+   registered the filename becomes a forecast content hash instead, which differs, so
+   the real screen is fetched immediately rather than after a cache expiry."
+  "unregistered.png")
+
+(defn unregistered-image
+  "PNG bytes of the screen shown to a device that isn't in the registry: its own MAC,
+   large enough to read off the display and paste into devices.edn. Cached per MAC so a
+   device polling this every wake doesn't re-render it each time."
+  [mac server-url]
+  (or (get @unregistered-cache mac)
+    (let [bytes (png-bytes (img/->1-bit (core/unregistered-screen mac server-url)))]
+      (swap! unregistered-cache assoc mac bytes)
+      bytes)))
+
 (defn serve-filename
   "The filename the given entry should be served under — the stale one when the last
    regeneration failed, so callers link the badge-stamped copy."

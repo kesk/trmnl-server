@@ -220,10 +220,25 @@ version, and 3.6x the entire screen composition).
   **Device identity and auth.** Every device route resolves the firmware's `ID` header
   (the MAC) through `server.devices`; `with-device` then checks the `Access-Token`
   header against that device's registered `:token` and 401s on a mismatch. An
-  unrecognised MAC gets a 404 and is recorded for `/status` to display — that list is
+  unrecognised MAC is recorded for `/status` to display — that list is
   how a new display gets registered, rather than grepping the log for its MAC (and it's
   logged once per MAC, not once per poll, because the endpoint is internet-reachable).
-  `/api/setup` is the one exception: it's authenticated by MAC alone, because it's
+
+  **An unregistered device is shown its own MAC.** Rather than 404ing `/api/display` and
+  leaving the panel on a firmware error, the server answers 200 with
+  `core/unregistered-screen` — the MAC in 40px type, plus the origin the device reached
+  us on. The MAC is the one thing needed to register a display and the one thing that's
+  otherwise awkward to obtain: it isn't printed on the case. This works because the
+  firmware reaches `/api/display` even when `/api/setup` has just 404'd (`bl.cpp` runs
+  `downloadAndShow` unconditionally after `getDeviceCredentials`), so the screen lands on
+  the next wake; `refresh_rate` is 5 min rather than 15, since somebody is usually
+  standing in front of it. The image comes from `/images/unregistered.png`, resolved off
+  the `ID` header the firmware also sends on image fetches (`buildImageHeaders`) — so the
+  MAC never appears in a URL — and only for a MAC that has actually polled
+  (`devices/seen-unknown?`), which is what keeps an unauthenticated route from rendering
+  800x480 images on demand.
+
+  `/api/setup` is the one route authenticated by MAC alone, because it's
   precisely the request a device makes *before* it has a token. Its response **must**
   carry `"status": 200` — the firmware's `parseResponse_apiSetup` bails otherwise and
   never persists `api_key`/`friendly_id`, which is why an earlier version of this server

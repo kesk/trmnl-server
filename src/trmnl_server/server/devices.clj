@@ -155,3 +155,11 @@
   (->> @unknown
     (map (fn [[mac seen-at]] {:mac mac :seen-at seen-at}))
     (sort-by :seen-at >)))
+
+(defn seen-unknown?
+  "Whether this MAC has actually polled /api/display and been recorded above. The
+   unregistered-device screen is rendered per MAC off an unauthenticated route, so this
+   is what bounds it: only the handful of MACs already on the capped list can cause a
+   render, rather than any ID header a stranger cares to invent."
+  [mac]
+  (contains? @unknown (normalise-mac mac)))

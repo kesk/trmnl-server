@@ -117,16 +117,60 @@
   [device request]
   (= (:token device) (get-in request [:headers "access-token"])))
 
-(defn- unregistered-response
-  "Reply to a device we don't have in the registry. Records the MAC so /status can offer
-   it for pasting into devices.edn — otherwise registering a new display means grepping
-   the log for its MAC — and logs it the first time only, since /api/display is reachable
-   from the internet and a scanner shouldn't be able to fill the log."
+(def ^:private unregistered-refresh-seconds
+  "How soon an unregistered device comes back. Shorter than the normal 15 minutes so
+   that adding it to devices.edn and restarting shows up on the display promptly — this
+   is the one situation where somebody is standing in front of it waiting."
+  300)
+
+(defn- note-unregistered!
+  "Records the MAC of a device we don't have in the registry, so /status can offer it for
+   pasting into devices.edn. Logged the first time only: /api/display is reachable from
+   the internet and a scanner shouldn't be able to fill the log by varying its ID."
   [request]
   (let [mac (get-in request [:headers "id"])]
     (when (devices/note-unknown! mac)
       (log/warn (str "Request from unregistered device " (pr-str mac) " — add it to devices.edn")))
-    (text-response 404 "unknown device\n")))
+    mac))
+
+(defn- unregistered-response
+  "Reply to an unregistered device on a route that has nothing to offer it."
+  [request]
+  (note-unregistered! request)
+  (text-response 404 "unknown device\n"))
+
+(defn- unregistered-display-response
+  "What an unregistered device gets from /api/display: a normal 200 pointing at a screen
+   showing its own MAC, rather than a bare 404 that leaves it displaying a firmware
+   error.
+
+   The MAC is the one thing needed to register a device and the one thing that's hard to
+   come by — it isn't on the case, and the alternative is watching /status for it. The
+   firmware reaches this route even when /api/setup has just 404'd (bl.cpp runs
+   downloadAndShow unconditionally after getDeviceCredentials), so the screen shows up on
+   the next wake."
+  [request fallback-base]
+  (note-unregistered! request)
+  (json-response {:filename          render/unregistered-filename
+                  :image_url         (str (base-url request fallback-base)
+                                       "/images/" render/unregistered-filename)
+                  :image_url_timeout 0
+                  :refresh_rate      unregistered-refresh-seconds
+                  :reset_firmware    false
+                  :update_firmware   false
+                  :firmware_url      nil}))
+
+(defn- unregistered-image-response
+  "Serves the unregistered-device screen for whichever MAC is asking. The firmware sends
+   its ID on the image fetch too (buildImageHeaders), so the MAC never has to appear in
+   the URL — and only a MAC that has actually polled gets a render, which is what keeps
+   this unauthenticated route from being a way to make the Pi draw 800x480 images on
+   demand."
+  [request fallback-base]
+  (let [mac (get-in request [:headers "id"])]
+    (if (devices/seen-unknown? mac)
+      (png-response (render/unregistered-image mac (base-url request fallback-base)))
+      {:status 404})))
 
 (defn- with-device
   "Resolves the request's `ID` header to a registered device, checks its Access-Token,
@@ -142,19 +186,25 @@
         (text-response 401 "bad access token\n")))
     (unregistered-response request)))
 
-(defn- display-response [request fallback-base]
-  (with-device request
-    (fn [device]
-      (when-let [status (parse-display-headers (:headers request))]
-        (telemetry/record-poll! (:name device) status))
-      (let [filename (render/serve-filename (render/current-image device))]
-        (json-response {:filename          filename
-                        :image_url         (image-url (base-url request fallback-base) (:name device) filename)
-                        :image_url_timeout 0
-                        :refresh_rate      refresh-rate-seconds
-                        :reset_firmware    false
-                        :update_firmware   false
-                        :firmware_url      nil})))))
+(defn- display-response
+  "The main device poll. An unregistered MAC gets a screen showing its own MAC rather
+   than a 404 — see unregistered-display-response; everything else goes through the
+   normal token check."
+  [request fallback-base]
+  (if-not (devices/for-request request)
+    (unregistered-display-response request fallback-base)
+    (with-device request
+      (fn [device]
+        (when-let [status (parse-display-headers (:headers request))]
+          (telemetry/record-poll! (:name device) status))
+        (let [filename (render/serve-filename (render/current-image device))]
+          (json-response {:filename          filename
+                          :image_url         (image-url (base-url request fallback-base) (:name device) filename)
+                          :image_url_timeout 0
+                          :refresh_rate      refresh-rate-seconds
+                          :reset_firmware    false
+                          :update_firmware   false
+                          :firmware_url      nil}))))))
 
 (defn- setup-response
   "First-boot registration. Authenticated by MAC alone — this is the request a device
@@ -236,6 +286,8 @@
                                                                        (query-param request "day")))
         (and get? (= uri "/archive"))                 (html-response (pages/gallery (query-param request "device")))
         (and get? (str/starts-with? uri "/archive/")) (archive-file-response uri)
+        (and get? (= uri (str "/images/" render/unregistered-filename)))
+        (unregistered-image-response request fallback-base)
         (and get? (str/starts-with? uri "/images/"))  (image-response uri)
         :else                                         {:status 404}))))
 
