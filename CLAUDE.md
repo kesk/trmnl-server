@@ -38,7 +38,9 @@ clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 # server starts but refuses every poll. $FORECAST_HOURS (default 23) is the server-wide
 # fallback for entries that don't set :hours. $ADMIN_PASSWORD_HASH is the login for the human
 # pages (/, /status, /archive); unset — the usual case when running from source — leaves
-# them open and says so at startup.
+# them open and says so at startup. $ADMIN_TRUST_LAN=true exempts the home network from
+# that login (off by default), and $ADMIN_REQUIRE_TLS_LOGIN (on by default) refuses to
+# accept a password over an unencrypted connection.
 clojure -M -m trmnl-server.main --serve
 # equivalently:
 clojure -M:serve
@@ -361,6 +363,33 @@ version, and 3.6x the entire screen composition).
   The count lives *in* the hash, so faster hardware can raise it without invalidating
   what's set.
 
+  **The login is only required from the internet** (`$ADMIN_TRUST_LAN=true`, set in the
+  unit; off by default). The decision is made on the request's **TCP peer address**, never
+  on a header — a spoofed source address can't complete a handshake, whereas
+  `X-Forwarded-Proto` and `Host` are Cloudflare's to set, and an auth bypass resting on a
+  third party's header hygiene is not a thing to build.
+
+  **Loopback is deliberately untrusted, and that inversion is the whole subtlety.**
+  cloudflared runs on the Pi and proxies to localhost, so every request from the public
+  internet arrives with a peer address of `::1` — measured, by watching `ss` while curling
+  the tunnel, not assumed. The reflexive "trust localhost" rule would therefore trust the
+  internet and challenge the laptop in the next room. `lan-peer?` matches RFC1918 v4 plus
+  IPv6 ULA/link-local and nothing else; anything unrecognised falls through to "ask for a
+  password". The pill on `/status` says which way you got in, so an unexpected exemption is
+  visible rather than silent.
+
+  **A password is never accepted over cleartext** (`$ADMIN_REQUIRE_TLS_LOGIN`, on by
+  default). A POST that isn't TLS and isn't from loopback is refused with 403 *before the
+  password is examined* — it doesn't even reach the throttle — and the GET renders the
+  reason with **no password field at all**, rather than inviting somebody to type it and
+  refusing afterwards. Loopback is exempt so `clojure -M:serve` still works in development;
+  a tunnel request is already secure by the header test and never reaches that exemption.
+  Trusting `X-Forwarded-Proto` *here* is safe in a way it isn't for authorisation: it only
+  decides whether we'll accept a password the caller is already sending, so forging it
+  gains nothing. Together with the LAN exemption this is the real prize — the password is
+  only ever typed on the tunnel, so it can't cross the WiFi in the clear even by mistake.
+  A LAN-only deployment with no tunnel would set `ADMIN_REQUIRE_TLS_LOGIN=false`.
+
   Three configuration states, not two. **Nothing set → no gate**, with a startup `WARN` and
   an "auth disabled" pill on `/status`: running from source is a legitimate state, the same
   way a missing `devices.edn` is, but a deploy whose env file went missing shouldn't look
@@ -448,7 +477,7 @@ version, and 3.6x the entire screen composition).
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
   there's no hand-rolled `escape-html`) via a shared `page` layout helper. Each page fn
   returns an HTML *string*, not a Ring response — HTTP is `server`'s business, so
-  `(pages/status "hallway" nil)` can be called straight from the REPL. `/status` and
+  `(pages/status "hallway" nil :session)` can be called straight from the REPL. `/status` and
   `/archive` are scoped to one display, chosen by `?device=` and switched with a picker
   strip (the same `.days`/`.day` pills as the day picker, shown only when there's more
   than one display to pick between); an unknown value falls back to the first registered

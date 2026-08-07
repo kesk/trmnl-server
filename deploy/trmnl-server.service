@@ -17,6 +17,14 @@ Environment=FORECAST_HOURS=23
 # makes it optional: without it the server starts with the pages open and says so, in the
 # log and on /status. See deploy/admin.env.example.
 EnvironmentFile=-/home/seb/trmnl-server/admin.env
+# Require the login only for requests arriving from the internet. The home network is
+# exempt, which is also what keeps the password off the LAN: the only place it is ever
+# typed is the https tunnel. Judged by the TCP peer address, never by a header — and
+# note loopback is NOT exempt, because that is where cloudflared's traffic arrives from.
+Environment=ADMIN_TRUST_LAN=true
+# Refuse to accept a password over an unencrypted connection (loopback excepted, so
+# local development still works). On by default; here for visibility.
+Environment=ADMIN_REQUIRE_TLS_LOGIN=true
 ExecStart=/usr/bin/java -jar /home/seb/trmnl-server/trmnl-server.jar --serve
 Restart=on-failure
 RestartSec=5

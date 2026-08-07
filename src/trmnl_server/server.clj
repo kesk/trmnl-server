@@ -313,13 +313,28 @@
     (page-fn)
     (redirect (auth/login-url request))))
 
+(defn- auth-state
+  "How this request is getting past the gate, for the pill the pages show: :open (no
+   password configured at all), :lan (exempt because it came from the home network), or
+   :session (it presented a cookie, so there's something to log out of)."
+  [request]
+  (cond
+    (not (auth/enabled?))       :open
+    (auth/trusted-peer? request) :lan
+    :else                        :session))
+
 (defn- login-page
-  "The form itself. Already logged in (or nothing to log into) → straight through to the
-   destination, so a bookmarked /login isn't a dead end."
+  "The form itself. Already logged in, exempt, or nothing to log into → straight through to
+   the destination, so a bookmarked /login isn't a dead end. On a connection that would
+   carry the password in the clear, the form is replaced by the reason why — better than
+   letting somebody type it and only then refusing."
   [request]
   (let [next-path (auth/safe-next (query-param request "next"))]
-    (if (auth/authenticated? request)
-      (redirect next-path)
+    (cond
+      (auth/authenticated? request) (redirect next-path)
+      (auth/cleartext-login? request)
+      (assoc (html-response (pages/login next-path :insecure)) :status 403)
+      :else
       (html-response (pages/login next-path (when (auth/misconfigured?) :misconfigured))))))
 
 (defn- login-submit
@@ -336,6 +351,14 @@
       ;; can't succeed.
       (not (auth/enabled?))
       (redirect next-path)
+
+      ;; Refused before the password is even looked at, so a cleartext attempt doesn't
+      ;; count against the throttle and — more to the point — a password that has already
+      ;; crossed the wire in the clear is never treated as usable.
+      (auth/cleartext-login? request)
+      (do (log/warn (str "Refused a login over an unencrypted connection from "
+                      (:remote-addr request)))
+        (assoc (html-response (pages/login next-path :insecure)) :status 403))
 
       ;; Ahead of the throttle: a broken admin.env isn't the caller's fault, and telling
       ;; them "wrong password" for an hour while they retype a correct one is the worst
@@ -378,9 +401,10 @@
         (and (= :post request-method)
           (= uri "/logout"))                          (logout-response request)
         ;; Human pages, behind that session.
-        (and get? (= uri "/"))                        (gated request #(html-response (pages/home)))
+        (and get? (= uri "/"))                        (gated request #(html-response (pages/home (auth-state request))))
         (and get? (= uri "/status"))                  (gated request #(html-response (pages/status (query-param request "device")
-                                                                                       (query-param request "day"))))
+                                                                                       (query-param request "day")
+                                                                                       (auth-state request))))
         (and get? (= uri "/archive"))                 (gated request #(html-response (pages/gallery (query-param request "device"))))
         (and get? (str/starts-with? uri "/archive/")) (gated request #(archive-file-response uri))
         ;; /images/* is the display's own fetch, so it stays outside the session gate —

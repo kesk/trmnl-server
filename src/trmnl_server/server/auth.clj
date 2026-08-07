@@ -47,6 +47,14 @@
 ;; misconfigured? then tell apart.
 (defonce ^:private credential (atom nil))
 
+;; $ADMIN_TRUST_LAN — exempt requests coming from the home network from the login. Off by
+;; default; see trusted-peer?.
+(defonce ^:private trust-lan? (atom false))
+
+;; $ADMIN_REQUIRE_TLS_LOGIN — refuse to accept a password over an unencrypted connection.
+;; On by default; see cleartext-login?.
+(defonce ^:private require-tls-login? (atom true))
+
 (defn- utf8 ^bytes [^String s]
   (String/.getBytes s StandardCharsets/UTF_8))
 
@@ -125,8 +133,18 @@
    so. The ERROR here is the diagnosis, since /status is behind the very gate that's
    broken."
   []
-  (let [encoded (some-> (System/getenv "ADMIN_PASSWORD_HASH") str/trim not-empty)]
+  (let [flag    (fn [name default]
+                  (if-let [v (some-> (System/getenv name) str/trim str/lower-case not-empty)]
+                    (contains? #{"true" "1" "yes"} v)
+                    default))
+        encoded (some-> (System/getenv "ADMIN_PASSWORD_HASH") str/trim not-empty)]
     (reset! credential (when encoded {:encoded encoded :parsed (parse-hash encoded)}))
+    (reset! trust-lan? (flag "ADMIN_TRUST_LAN" false))
+    (reset! require-tls-login? (flag "ADMIN_REQUIRE_TLS_LOGIN" true))
+    ;; Logged unconditionally, at INFO, because both change who can see the pages and the
+    ;; only other place that's visible is a pill on a page you may not be able to reach.
+    (log/info (str "Admin gate: trust-LAN=" @trust-lan?
+                " require-TLS-login=" @require-tls-login?))
     (cond
       (:parsed @credential)
       (log/info "Admin password hash loaded — /, /status and /archive require a login.")
@@ -241,11 +259,58 @@
     (some #(when (str/starts-with? % (str name "="))
              (not-empty (subs % (inc (count name))))))))
 
+;; --- Where the request came from --------------------------------------------------------
+
+(def ^:private lan-v4-pattern
+  "RFC1918 space: 10/8, 172.16/12, 192.168/16. Note what is *absent* — loopback. See
+   lan-peer? for why that omission is the whole point."
+  #"(?:10|192\.168)\..*|172\.(?:1[6-9]|2\d|3[01])\..*")
+
+(def ^:private lan-v6-pattern
+  "IPv6 unique-local (fc00::/7) and link-local (fe80::/10). Again, not ::1."
+  #"f[cd][0-9a-f]{2}:.*|fe[89ab][0-9a-f]:.*")
+
+(defn- lan-peer?
+  "Whether a request's TCP peer address is on the home network.
+
+   The peer address is the one signal here that cannot be forged: a spoofed source address
+   never completes a TCP handshake, so anything that talks HTTP to us is telling the truth
+   about where it is. Headers are not — X-Forwarded-Proto and Host are set by Cloudflare,
+   and hanging an auth bypass on a third party's header hygiene is not a thing to do.
+
+   **Loopback is deliberately NOT trusted, and that inversion is the entire subtlety.**
+   cloudflared runs on the Pi and proxies to localhost, so every request arriving from the
+   public internet has a peer address of ::1 — measured, not assumed. The intuitive
+   'trust localhost' rule would therefore trust the internet and challenge the laptop in
+   the next room, which is exactly backwards. Anything unrecognised falls through to
+   'not LAN', so the failure direction is to ask for a password."
+  [addr]
+  (boolean
+    (when-let [addr (some-> addr str/trim str/lower-case not-empty)]
+      (let [addr (str/replace addr #"[\[\]]|%.*$" "")            ; brackets, zone id
+            v4   (second (re-matches #"(?:::ffff:)?(\d{1,3}(?:\.\d{1,3}){3})" addr))]
+        (if v4
+          (re-matches lan-v4-pattern v4)
+          (re-matches lan-v6-pattern addr))))))
+
+(defn trusted-peer?
+  "Whether this request is exempt from the login because it came from the home network and
+   $ADMIN_TRUST_LAN says that's good enough. Off unless explicitly turned on: the failure
+   mode of getting this wrong is a silent, total bypass from the internet, so it doesn't
+   get to happen by default."
+  [request]
+  (and @trust-lan? (lan-peer? (:remote-addr request))))
+
 (defn authenticated?
-  "Whether this request may see the human pages. Trivially true when no password is
-   configured."
+  "Whether this request may see the human pages: no password configured, a trusted LAN
+   peer, or a valid session cookie.
+
+   Note the LAN exemption sits *ahead* of the credential, so it still applies when the
+   stored hash is unreadable — from home you can still reach /status to find out why
+   nobody can log in."
   [request]
   (or (not (enabled?))
+    (trusted-peer? request)
     (valid-token? (cookie-value request cookie-name))))
 
 (defn- secure-request?
@@ -257,6 +322,27 @@
   (some-> (get-in request [:headers "x-forwarded-proto"])
     (str/split #",") first str/trim str/lower-case
     (= "https")))
+
+(defn- loopback-peer? [addr]
+  (contains? #{"127.0.0.1" "::1" "0:0:0:0:0:0:0:1" "::ffff:127.0.0.1"}
+    (some-> addr str/trim str/lower-case)))
+
+(defn cleartext-login?
+  "Whether accepting a password on this request would mean accepting it in the clear.
+
+   True for a plain-http request from anywhere but this machine — notably a browser on the
+   LAN, where the POST crosses the WiFi unencrypted. False over TLS, and false for
+   loopback, which keeps `clojure -M:serve` usable in development without punching a hole:
+   a request through the tunnel carries X-Forwarded-Proto: https and is already secure by
+   the first test, so it never reaches the loopback exemption.
+
+   Trusting that header here is safe in a way it wouldn't be for authorisation: it decides
+   only whether we'll accept a password the caller is already sending, so forging it buys
+   an attacker nothing they don't already have."
+  [request]
+  (and @require-tls-login?
+    (not (secure-request? request))
+    (not (loopback-peer? (:remote-addr request)))))
 
 (defn- cookie-header [request value max-age-seconds]
   (str cookie-name "=" value

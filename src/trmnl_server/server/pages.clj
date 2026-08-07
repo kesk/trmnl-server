@@ -195,16 +195,22 @@
    [:button.linkbtn {:type "submit"} "Log out"]])
 
 (defn- session-chrome
-  "The auth corner of a page: a way out when a password is configured, and a standing
-   warning when one isn't. The warning matters because no password is also the state a
-   production deploy lands in if its admin.env goes missing, and the pages would
-   otherwise look exactly the same as before."
-  []
-  (if (auth/enabled?)
-    (logout-form)
-    [:span.pill.pill-watch
-     {:title "No $ADMIN_PASSWORD_HASH is set, so these pages are open to anyone who can reach this server."}
-     "auth disabled"]))
+  "The auth corner of a page, given how the viewer got in (see server's auth-state).
+
+   :session gets a way out. :open gets a standing warning, because no password is also the
+   state a production deploy lands in if its admin.env goes missing and the pages would
+   otherwise look exactly as they did before. :lan says so rather than offering a logout
+   button that would do nothing — there is no session to end, and clicking it would just
+   bounce you back to the page you were already allowed to see."
+  [auth-state]
+  (case auth-state
+    :open [:span.pill.pill-watch
+           {:title "No $ADMIN_PASSWORD_HASH is set, so these pages are open to anyone who can reach this server."}
+           "auth disabled"]
+    :lan  [:span.pill.pill-unknown
+           {:title "$ADMIN_TRUST_LAN exempts the home network from the login. Reaching this page from the internet requires a password."}
+           "LAN · no login required"]
+    (logout-form)))
 
 (defn- unregistered-block
   "A copy-pasteable list of MACs that have polled without being in the registry. Adding a
@@ -299,7 +305,7 @@
    the files are the source of truth, there's no in-memory buffer to clear. The summary
    cards, though, always read *today's* newest row (falling back to the /api/display poll
    telemetry), so they reflect the current day even while you're viewing an older one."
-  [requested-device requested-day]
+  [requested-device requested-day auth-state]
   (if-let [device (select-device requested-device)]
     (let [name        (:name device)
           all-devices (devices/all)
@@ -330,7 +336,7 @@
            [:h1 "trmnl-server status · " name]
            [:div.top-nav
             [:a.top-link {:href (str "/archive?device=" name)} "Archived screens →"]
-            (session-chrome)]]
+            (session-chrome auth-state)]]
           (device-picker all-devices name "/status")
           [:section.group
            [:div.sec "Device health"]
@@ -456,8 +462,9 @@
 
 (defn home
   "The landing page: what this server is, the screen each registered device is being
-   served right now, and a way into /status."
-  []
+   served right now, and a way into /status. `auth-state` is how the viewer got past the
+   gate — see session-chrome."
+  [auth-state]
   (let [all-devices (devices/all)]
     (page "trmnl-server" home-css
       [:div.hero
@@ -467,7 +474,7 @@
          (map screen-block all-devices)
          [:p.caption "No devices registered — see devices.example.edn."])
        [:p.cta [:a {:href "/status"} "Status →"]]
-       [:p.caption (session-chrome)]])))
+       [:p.caption (session-chrome auth-state)]])))
 
 ;; --- /login -----------------------------------------------------------------------------
 
@@ -480,19 +487,29 @@
    loud rather than reporting as a wrong password, because no password can work until it's
    fixed and /status (where you'd normally look) is behind this very form."
   [next-path state]
-  (page "trmnl-server · log in" login-css
-    [:div.login
-     [:h1 "trmnl-server"]
-     [:p.tag "Admin password required."]
-     [:form {:method "post" :action "/login"}
-      [:input {:type "hidden" :name "next" :value next-path}]
-      [:input {:type         "password"         :name       "password"       :placeholder "Password"
-               :autocomplete "current-password" :aria-label "Admin password" :autofocus   true}]
-      [:button {:type "submit"} "Log in"]
-      (case state
-        :bad-password   [:p.msg.pill.pill-low "Wrong password."]
-        :locked         [:p.msg.pill.pill-low "Too many attempts. Wait a minute, then try again."]
-        :misconfigured  [:p.msg.pill.pill-low
-                         "$ADMIN_PASSWORD_HASH is unreadable — no login can succeed until "
-                         "admin.env is fixed. Run bb set-password.clj."]
-        nil)]]))
+  (if (= state :insecure)
+    ;; No form at all: there is nothing safe to type here, and offering the field anyway
+    ;; would just invite somebody to send the password before reading the warning.
+    (page "trmnl-server · log in" login-css
+      [:div.login
+       [:h1 "trmnl-server"]
+       [:p.tag "This connection isn't encrypted."]
+       [:p.msg.pill.pill-low
+        "The password would cross the network in the clear, so this server won't accept "
+        "one here. Open the same page over https and log in there."]])
+    (page "trmnl-server · log in" login-css
+      [:div.login
+       [:h1 "trmnl-server"]
+       [:p.tag "Admin password required."]
+       [:form {:method "post" :action "/login"}
+        [:input {:type "hidden" :name "next" :value next-path}]
+        [:input {:type         "password"         :name       "password"       :placeholder "Password"
+                 :autocomplete "current-password" :aria-label "Admin password" :autofocus   true}]
+        [:button {:type "submit"} "Log in"]
+        (case state
+          :bad-password   [:p.msg.pill.pill-low "Wrong password."]
+          :locked         [:p.msg.pill.pill-low "Too many attempts. Wait a minute, then try again."]
+          :misconfigured  [:p.msg.pill.pill-low
+                           "$ADMIN_PASSWORD_HASH is unreadable — no login can succeed until "
+                           "admin.env is fixed. Run bb set-password.clj."]
+          nil)]])))

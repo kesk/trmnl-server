@@ -106,13 +106,29 @@
 (let [{:keys [label dir unit port]} target]
   (println (str "Target: " label " (" host ":~/" dir ", port " port ", unit " unit ")")))
 
-;; Written by piping into `tee` over ssh rather than interpolating the hash into the remote
+;; admin.env may hold more than the hash — ADMIN_TRUST_LAN and ADMIN_REQUIRE_TLS_LOGIN live
+;; there too — so read what's there, drop any previous hash line, and keep the rest. Writing
+;; the file wholesale would silently turn those switches back to their defaults, and the
+;; symptom (the LAN suddenly demanding a password) would look like something else entirely.
+(def existing-lines
+  (let [{:keys [exit out]} @(process {:out :string :err :string}
+                              "ssh" host (str "cat " remote-dir "/admin.env 2>/dev/null"))]
+    (if (zero? exit)
+      (->> (str/split-lines out)
+        (remove #(str/starts-with? (str/triml %) "ADMIN_PASSWORD_HASH="))
+        (remove str/blank?))
+      [])))
+
+(when (seq existing-lines)
+  (println (str "Keeping " (count existing-lines) " other line(s) already in admin.env")))
+
+;; Written by piping into the remote `cat` rather than interpolating the hash into the ssh
 ;; command line: it keeps the value out of the Pi's process table and out of its shell
 ;; history, the same reason the password itself went in on stdin. umask 077 so the file is
 ;; 600 from the moment it exists, rather than briefly world-readable.
 (println "Writing admin.env")
 (let [{:keys [exit err]}
-      @(process {:in (str env-line "\n") :out :string :err :string}
+      @(process {:in (str/join "\n" (conj (vec existing-lines) env-line "")) :out :string :err :string}
          "ssh" host (str "umask 077 && mkdir -p " remote-dir " && cat > " remote-dir "/admin.env"))]
   (when-not (zero? exit)
     (println "Could not write admin.env:")
