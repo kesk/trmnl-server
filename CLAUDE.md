@@ -37,7 +37,7 @@ clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 # fill in one entry per device before this does anything useful; without a registry the
 # server starts but refuses every poll. $FORECAST_HOURS (default 23) is the server-wide
 # fallback for entries that don't set :hours. $ADMIN_PASSWORD_HASH is the login for the human
-# pages (/ and /device/<name>[/archive]); unset — the usual case when running from source — leaves
+# pages (/ and /devices/<name>[/archive]); unset — the usual case when running from source — leaves
 # them open and says so at startup. $ADMIN_TRUST_LAN=true exempts the home network from
 # that login (off by default), and $ADMIN_REQUIRE_TLS_LOGIN (on by default) refuses to
 # accept a password over an unencrypted connection.
@@ -126,7 +126,7 @@ the serving path, which only `--serve` exercises.
 **The server is multi-device.** One Pi serves several TRMNL displays, each with its own
 location, and everything in the serving path is scoped by a device `:name` — its render
 cache and regeneration lock, its `archive/<name>/` subdirectory, its `logs/<name>/`
-telemetry, and its `/images/<name>/…` and `/device/<name>/…` URLs. The domain
+telemetry, and its `/images/<name>/…` and `/devices/<name>/…` URLs. The domain
 namespaces are untouched by this: they already took location and
 points as arguments, so nothing below `server.*` knows there is more than one display.
 
@@ -230,11 +230,11 @@ version, and 3.6x the entire screen composition).
   more, since it now 404s a caller it doesn't recognise) and three human-facing pages:
   `GET /` (the index — a card per registered display showing its latest screen, each
   one linking into that display's status page, which links back),
-  `GET /device/<name>` (per-device battery/firmware/awake-trend/deployed-commit/
+  `GET /devices/<name>` (per-device battery/firmware/awake-trend/deployed-commit/
   forecast-health/device-log dashboard — the display's *own* page, not a `/status` leaf
   under it, so the URLs nest into a hierarchy) and
-  `GET /device/<name>/archive` (a gallery of that device's rolling 24h image archive), with
-  `GET /device/<name>/archive/<file>`
+  `GET /devices/<name>/archive` (a gallery of that device's rolling 24h image archive), with
+  `GET /devices/<name>/archive/<file>`
   serving each archived PNG (or its `.edn` sidecar) off disk — all three behind the admin
   password (`GET`/`POST /login`, `POST /logout`, see `server.auth`).
 
@@ -251,16 +251,26 @@ version, and 3.6x the entire screen composition).
 
   There are **no `/status` or `/archive` compatibility routes**, and `?device=` is gone
   from the codebase entirely — this server has one user, who said so. They existed briefly
-  as 303s; deleting them took the human side down to two routes (`/` and `/device/*`) and
+  as 303s; deleting them took the human side down to two routes (`/` and `/devices/*`) and
   left `query-param` with only `?day=` and `?next=` to read. Don't reintroduce them for
   tidiness: `/` is the entry point.
+
+  The one 303 that *is* there is **`/devices` → `/`**, and it's a different thing from
+  those: not a stale path kept alive, but the collection URL of a live hierarchy. `/` is
+  already the list of displays, so truncating `/devices/<name>` back to its parent should
+  land on it rather than 404. It redirects rather than serving a second copy of the index,
+  so that page keeps one canonical URL and `crumbs` has a single `/` to point at — a page
+  reachable at two URLs would have a breadcrumb linking to itself under another name. It
+  sits **outside** the admin gate, alone among the human paths: the response is a constant,
+  so it discloses nothing a login would protect, and gating it would only mean logging in
+  to be told where to go.
   **No page has a device picker any more** either — `/` is the index and the only switcher,
   and a second one on every page was just a different way to do the same thing.
 
-  **The routes nest, and `pages/crumbs` is what walks them back up**: `/` → `/device/<name>`
-  → `/device/<name>/archive` → one archived screen. Making the dashboard the display's own
-  page rather than `/device/<name>/status` is what buys that — a breadcrumb needs each
-  ancestor to be a real page, and a bare `/device/<name>` that 404s isn't one. The
+  **The routes nest, and `pages/crumbs` is what walks them back up**: `/` → `/devices/<name>`
+  → `/devices/<name>/archive` → one archived screen. Making the dashboard the display's own
+  page rather than `/devices/<name>/status` is what buys that — a breadcrumb needs each
+  ancestor to be a real page, and a bare `/devices/<name>` that 404s isn't one. The
   breadcrumb *is* the heading (ancestors as muted links, current page as the `h1`, all one
   size), which is why there's no separate title line and no per-page back-links: those
   were three different hand-rolled chains ("← All displays", "← status · all displays")
@@ -336,7 +346,7 @@ version, and 3.6x the entire screen composition).
   out right for both routes — verified: the same poll returns an `https://trmnl.kluft.io/…`
   image URL through the tunnel and an `http://192.168.86.232:8080/…` one over the LAN.
 
-  The human pages (`/`, everything under `/device/`, and the archived files there) sit
+  The human pages (`/`, everything under `/devices/`, and the archived files there) sit
   behind **one admin password and a signed session cookie** — `server.auth`, wired in at
   `handler` via `gated`. Which is what being internet-reachable bought: they were
   deliberately open before, on the grounds that they expose only read-only telemetry, and
@@ -372,7 +382,7 @@ version, and 3.6x the entire screen composition).
 
   `:name` is validated against `[a-z0-9-]+` **at load**, and that one check is what
   makes everything downstream safe: the name is a URL segment (`/images/<name>/…` and
-  every human page under `/device/<name>/…`) and a directory name (`archive/<name>/`,
+  every human page under `/devices/<name>/…`) and a directory name (`archive/<name>/`,
   `logs/<name>/`), none of
   which then need their own sanitising. Also tracks MACs that polled without being
   registered (capped, and only if they look like MACs — the endpoint is public): that's
@@ -663,7 +673,7 @@ lists that device's `device-<date>.log` files (newest first) as the day-picker s
 the table;
 `?day=<date>` selects one, defaulting to today (`today-utc-date`), which is always shown as a
 tab even before it has a file. Which display it is comes from the path, so each day link is
-just `/device/<name>?day=…`. `telemetry/read-log` reads the chosen file (plain read — the DIY
+just `/devices/<name>?day=…`. `telemetry/read-log` reads the chosen file (plain read — the DIY
 files aren't gzipped) and renders its rows newest first, time column headed "time (UTC)" (it
 renders `created_at` through `Instant`, always UTC — matching the UTC filename dates). `sel` is
 constrained to a day that actually exists on disk (or today), so a bogus/traversal `?day=` just

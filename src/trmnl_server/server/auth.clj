@@ -1,5 +1,5 @@
 (ns trmnl-server.server.auth
-  "The admin password gate in front of the human-facing pages (/ and /device/<name>/…).
+  "The admin password gate in front of the human-facing pages (/ and /devices/<name>/…).
 
    One password, no users: the server is a household dashboard that happens to be
    reachable from the internet, and the thing worth gating is read-only telemetry.
@@ -160,7 +160,7 @@
           (log/warn (str "$ADMIN_PASSWORD is set but is no longer used — the password is "
                       "now stored salted and hashed in $ADMIN_PASSWORD_HASH. Run "
                       "`bb set-password.clj` to convert it.")))
-        (log/warn (str "No $ADMIN_PASSWORD_HASH — / and every /device/ page are open to anyone "
+        (log/warn (str "No $ADMIN_PASSWORD_HASH — / and every /devices/ page are open to anyone "
                     "who can reach this server. Run `bb set-password.clj` to require a login."))))))
 
 (defn enabled?

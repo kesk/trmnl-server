@@ -2,7 +2,7 @@
   "HTTP surface for the forecast screens: routing, the API a real TRMNL OG device polls
    when pointed at a custom server (GET /api/display, GET /api/setup, POST /api/log),
    the file routes serving rendered and archived PNGs, and the human-facing pages
-   (/, the per-display /device/<name> and /device/<name>/archive, and the /login form gating
+   (/, the per-display /devices/<name> and /devices/<name>/archive, and the /login form gating
    them). Uses http-kit as both the Ring request/response convention
    and the embedded server — handlers are plain (fn [request] response-map) fns
    dispatched on :request-method/:uri in `handler`, chosen over a Ring+Jetty stack for
@@ -14,7 +14,7 @@
    recorded — and shown its own MAC on its own screen, which is how a new display gets
    registered.
 
-   The human pages are scoped the same way but by path — /device/<name>/… , resolved
+   The human pages are scoped the same way but by path — /devices/<name>/… , resolved
    through the same registry — so an unknown display is a 404 here rather than a fallback
    inside the page. The MAC never appears in one of those URLs: the segment is the
    registry's `:name`, because /api/setup issues a token on presentation of a registered
@@ -287,7 +287,7 @@
 
 (defn- archive-file-response
   "Serves one archived file by name from a device's archive dir — the PNG screen or its
-   sibling `.edn` forecast dump, at /device/<name>/archive/<file>. The device is the one
+   sibling `.edn` forecast dump, at /devices/<name>/archive/<file>. The device is the one
    the router already resolved (so its name is a registry entry, validated to [a-z0-9-]+
    at load) and the filename is constrained to a flat `forecast-*.{png,edn}` basename, so
    neither segment can escape the directory. The `.edn` is sent as an attachment so the
@@ -391,13 +391,13 @@
 ;; --- Routing ----------------------------------------------------------------------------
 
 (defn- device-page-response
-  "Dispatches the per-display pages: /device/<name> (the status dashboard, which is the
-   display's own page rather than a /status leaf under it), /device/<name>/archive, and
-   /device/<name>/archive/<file>.
+  "Dispatches the per-display pages: /devices/<name> (the status dashboard, which is the
+   display's own page rather than a /status leaf under it), /devices/<name>/archive, and
+   /devices/<name>/archive/<file>.
 
    The name is resolved through the registry here, once, and the page fns are handed the
    entry itself — so an unregistered name is a 404 at the door rather than something each
-   page has to fall back from. Anything else under /device/ is a 404 too, which is what
+   page has to fall back from. Anything else under /devices/ is a 404 too, which is what
    keeps this from being a prefix that quietly accepts whatever it's given."
   [uri request]
   (let [[_ device-name sub file] (path-segments uri)]
@@ -432,10 +432,16 @@
           (= uri "/login"))                           (login-submit request)
         (and (= :post request-method)
           (= uri "/logout"))                          (logout-response request)
-        ;; Human pages, behind that session. Two routes: the index, and everything
-        ;; per-display under /device/<name>/….
+        ;; Human pages, behind that session. Two of them: the index, and everything
+        ;; per-display under /devices/<name>/….
         (and get? (= uri "/"))                        (gated request #(html-response (pages/home (auth-state request))))
-        (and get? (str/starts-with? uri "/device/"))  (gated request #(device-page-response uri request))
+        ;; The collection URL of that hierarchy: / already *is* the list of displays, so
+        ;; truncating /devices/<name> back to its parent should land on it rather than
+        ;; 404. A redirect rather than a second copy of the page, so the index keeps one
+        ;; canonical URL and `crumbs` has one "/" to point at. Ungated on purpose — the
+        ;; response is a constant, so it discloses nothing that a login would protect.
+        (and get? (#{"/devices" "/devices/"} uri))    (redirect "/")
+        (and get? (str/starts-with? uri "/devices/")) (gated request #(device-page-response uri request))
         ;; /images/* is the display's own fetch, so it stays outside the session gate —
         ;; and the gated pages embed the same URLs, which the browser then loads with no
         ;; cookie of interest. What's reachable there is one rendered screen per device,

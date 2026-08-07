@@ -9,7 +9,7 @@
    admin UI.
 
    `:name` is the one field with reach outside this namespace. It is the URL segment
-   in /images/<name>/… and in every human page under /device/<name>/…, and the
+   in /images/<name>/… and in every human page under /devices/<name>/…, and the
    directory name under logs/ and archive/. Validating it against a strict
    [a-z0-9-]+ here, at load, is what lets all of those skip their own sanitising —
    the same move the device page makes by matching ?day= against the days actually on disk."
@@ -122,7 +122,7 @@
   (get @registry (normalise-mac mac)))
 
 (defn by-name
-  "The device with this :name, or nil. Used to resolve the /device/<name> and
+  "The device with this :name, or nil. Used to resolve the /devices/<name> and
    /images/<name>/ path segments — a nil here is what turns an unknown or hostile
    segment into a 404."
   [name]
