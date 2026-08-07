@@ -1,5 +1,5 @@
 /* Landing-page-only rules, layered over base.css. An index of cards, one per
-   registered display, each one a link to /device/<name> — so the whole card gets
+   registered display, each one a link to /devices/<name> — so the whole card gets
    the hover treatment, not just a link inside it. The images sit on white so the
    1-bit PNG stays legible in dark mode too. */
 .tag{color:var(--muted);font-size:14px;margin:-8px 0 22px}

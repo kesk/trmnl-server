@@ -1,6 +1,6 @@
 (ns trmnl-server.server.pages
-  "The human-facing HTML pages — / (the index of displays), /device/<name> (one display's
-   health dashboard), /device/<name>/archive (its screen gallery) and /login (the admin
+  "The human-facing HTML pages — / (the index of displays), /devices/<name> (one display's
+   health dashboard), /devices/<name>/archive (its screen gallery) and /login (the admin
    password form that gates the other three) — built with hiccup2.core, which
    auto-escapes string content so there's no hand-rolled escaping here.
 
@@ -157,8 +157,8 @@
 ;; --- Shared chrome ----------------------------------------------------------------------
 
 (defn- device-path
-  "The URL of a display's own page (/device/<name>) or one of its sub-pages
-   (/device/<name>/archive).
+  "The URL of a display's own page (/devices/<name>) or one of its sub-pages
+   (/devices/<name>/archive).
 
    The display is a path segment rather than a query filter because it identifies which
    page this *is*, not which subset of it to show — so an unknown name is a 404 from the
@@ -168,8 +168,8 @@
    it the root is what turns the URLs into a hierarchy a breadcrumb can walk back up
    (/ → display → archive → one screen). The name is safe to interpolate for the same
    reason it's safe as a directory name: devices validates it to [a-z0-9-]+ at load."
-  ([device-name] (str "/device/" device-name))
-  ([device-name sub] (str "/device/" device-name "/" sub)))
+  ([device-name] (str "/devices/" device-name))
+  ([device-name sub] (str "/devices/" device-name "/" sub)))
 
 (defn- crumbs
   "The breadcrumb, which is also the page heading: ancestors as muted links, the current
@@ -314,7 +314,7 @@
     [:tbody (map log-row logs)]]])
 
 (defn status
-  "The /device/<name> dashboard for one device and one day. `device` is the
+  "The /devices/<name> dashboard for one device and one day. `device` is the
    registry entry the router already resolved the path segment to, so there's no unknown
    name to handle here. `requested-day` is a ?day= value resolved against that device's
    log files on disk, falling back to today — a day is a filter over this page rather than
@@ -440,7 +440,7 @@
         (list " · " [:a {:href (str href edn)} "data"]))]]))
 
 (defn gallery
-  "The /device/<name>/archive gallery: every screen of that display's still inside the
+  "The /devices/<name>/archive gallery: every screen of that display's still inside the
    rolling 24h window, newest first. `device` is the registry entry the router resolved
    the path segment to, and each card's files sit under this same path — see
    archive-card. Like the device page it has no device picker; / is the switcher, and the
