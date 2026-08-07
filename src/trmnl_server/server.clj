@@ -177,7 +177,7 @@
    error.
 
    The MAC is the one thing needed to register a device and the one thing that's hard to
-   come by — it isn't on the case, and the alternative is watching /status for it. The
+   come by — it isn't on the case, and the alternative is watching the device page for it. The
    firmware reaches this route even when /api/setup has just 404'd (bl.cpp runs
    downloadAndShow unconditionally after getDeviceCredentials), so the screen shows up on
    the next wake."
@@ -313,7 +313,7 @@
    a redirect to /login remembering where it was going.
 
    `page-fn` is a thunk rather than a value so an unauthenticated request costs nothing —
-   /status re-reads a log file off disk and / walks the render caches, and neither should
+   a device page re-reads a log file off disk and / walks the render caches, and neither should
    happen for a caller that isn't going to see the result."
   [request page-fn]
   (if (auth/authenticated? request)

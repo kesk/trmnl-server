@@ -587,7 +587,7 @@
 
    This exists because the MAC is the one thing you need to register a device and
    the one thing you can't get at — it isn't printed on the case, and the
-   alternative is watching /status for it to appear. The firmware reaches
+   alternative is watching the device page for it to appear. The firmware reaches
    /api/display even when /api/setup has just 404'd (bl.cpp calls
    downloadAndShow unconditionally after getDeviceCredentials), so an
    unregistered device will fetch and show this on every wake.

@@ -1,5 +1,5 @@
 (ns trmnl-server.server.auth
-  "The admin password gate in front of the human-facing pages (/, /status, /archive).
+  "The admin password gate in front of the human-facing pages (/ and /device/<name>/…).
 
    One password, no users: the server is a household dashboard that happens to be
    reachable from the internet, and the thing worth gating is read-only telemetry.
@@ -10,7 +10,7 @@
    overwritten on every deploy, so the secret has to live somewhere deploy.clj never
    touches — `admin.env`, pulled in by the unit's optional EnvironmentFile (see
    deploy/admin.env.example), and written by `bb set-password.clj`. Nothing configured
-   means no gate, with a warning at startup and an 'auth disabled' pill on /status:
+   means no gate, with a warning at startup and an 'auth disabled' pill on the device page:
    running from source is a legitimate state, the same way a missing devices.edn is, but a
    production deploy that lost its env file shouldn't be able to quietly stop asking.
 
@@ -130,7 +130,7 @@
    pages stay shut (failing open would silently unprotect them, and the whole point of the
    variable is that somebody meant to protect them), the service stays up (failing hard
    would take the displays down over a typo in an admin password), and the login page says
-   so. The ERROR here is the diagnosis, since /status is behind the very gate that's
+   so. The ERROR here is the diagnosis, since the device page is behind the very gate that's
    broken."
   []
   (let [flag    (fn [name default]
@@ -147,7 +147,7 @@
                 " require-TLS-login=" @require-tls-login?))
     (cond
       (:parsed @credential)
-      (log/info "Admin password hash loaded — /, /status and /archive require a login.")
+      (log/info "Admin password hash loaded — the human pages require a login.")
 
       encoded
       (log/error (str "$ADMIN_PASSWORD_HASH is set but is not a valid "
@@ -160,12 +160,12 @@
           (log/warn (str "$ADMIN_PASSWORD is set but is no longer used — the password is "
                       "now stored salted and hashed in $ADMIN_PASSWORD_HASH. Run "
                       "`bb set-password.clj` to convert it.")))
-        (log/warn (str "No $ADMIN_PASSWORD_HASH — /, /status and /archive are open to anyone "
+        (log/warn (str "No $ADMIN_PASSWORD_HASH — / and every /device/ page are open to anyone "
                     "who can reach this server. Run `bb set-password.clj` to require a login."))))))
 
 (defn enabled?
   "Whether a password is configured at all — including one that's configured wrongly, which
-   still means somebody meant these pages to be shut. Also what /status reads to show its
+   still means somebody meant these pages to be shut. Also what the device page reads to show its
    'auth disabled' pill."
   []
   (some? @credential))
@@ -306,7 +306,7 @@
    peer, or a valid session cookie.
 
    Note the LAN exemption sits *ahead* of the credential, so it still applies when the
-   stored hash is unreadable — from home you can still reach /status to find out why
+   stored hash is unreadable — from home you can still reach a device page to find out why
    nobody can log in."
   [request]
   (or (not (enabled?))

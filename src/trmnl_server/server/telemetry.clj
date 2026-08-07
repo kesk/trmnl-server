@@ -2,7 +2,7 @@
   "Everything the devices tell us about themselves, and where it's kept: each one's
    last /api/display poll headers, its rolling wake-time series, and its raw /api/log
    bodies on disk. Storage and aggregation only — the HTTP endpoints that feed it live
-   in server, the /status rendering of it in server.pages.
+   in server, the device page's rendering of it in server.pages.
 
    Every fn here is scoped to one device by its :name (see server.devices). On disk
    that's a subdirectory per device: logs/<name>/device-<date>.log and
@@ -23,7 +23,7 @@
 
 (def ^:private max-log-files 7)
 
-;; How far back wake-time samples are kept — sets the longest trend window (7d) on /status.
+;; How far back wake-time samples are kept — sets the longest trend window (7d) on the device page.
 (def wake-retention-ms (* 7 24 60 60 1000))
 
 (defonce ^:private log-lock (Object.))
@@ -33,7 +33,7 @@
 (defonce ^:private poll-state (atom {}))
 
 ;; Device :name -> rolling series of {:t <epoch-ms> :ms <awake-ms>} wake durations,
-;; oldest→newest, persisted to disk so the /status trend survives restarts. See
+;; oldest→newest, persisted to disk so the device page's trend survives restarts. See
 ;; record-wake-time! below.
 (defonce ^:private wake-history (atom {}))
 
@@ -48,7 +48,7 @@
 
 (defn today-utc-date
   "Today's UTC calendar date as a yyyy-MM-dd string — the day a just-received row files
-   under, and the /status default view."
+   under, and the device page's default view."
   []
   (str (LocalDate/now ZoneOffset/UTC)))
 
@@ -56,7 +56,7 @@
 ;; The firmware's Wake-Time header reports how long the device was awake during its previous
 ;; cycle (ms) — a health signal, since a device fighting weak WiFi stays awake longer and
 ;; drains the battery. We keep a rolling series of these samples per device (persisted so it
-;; survives restarts) and surface the latest value plus moving averages on /status.
+;; survives restarts) and surface the latest value plus moving averages on the device page.
 
 (defn- wake-file
   "Where one device's wake-time series is persisted — a single EDN file in its own
@@ -124,7 +124,7 @@
 
 (defn record-poll!
   "Takes the telemetry parsed off one device's /api/display poll: keeps it as that
-   device's latest snapshot for /status's summary cards, and feeds its Wake-Time into
+   device's latest snapshot for the device page's summary cards, and feeds its Wake-Time into
    that device's rolling trend."
   [device-name status]
   (swap! poll-state assoc device-name status)
@@ -197,7 +197,7 @@
           nil)))))
 
 (defn log-days
-  "The UTC days one device has a device-<date>.log for, newest first — the /status day
+  "The UTC days one device has a device-<date>.log for, newest first — the device page's day
    picker. Ignores names that don't match. Empty when its dir is absent."
   [device-name]
   (let [d (dir device-name)]
