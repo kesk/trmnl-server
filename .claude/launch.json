@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "trmnl-server",
+      "runtimeExecutable": "clojure",
+      "runtimeArgs": ["-M:serve"],
+      "port": 8080
+    }
+  ]
+}
