@@ -2,7 +2,7 @@
   "HTTP surface for the forecast screens: routing, the API a real TRMNL OG device polls
    when pointed at a custom server (GET /api/display, GET /api/setup, POST /api/log),
    the file routes serving rendered and archived PNGs, and the human-facing pages
-   (/, the per-display /devices/<name> and /devices/<name>/archive, and the /login form gating
+   (/, the per-display /devices/<id> and /devices/<id>/archive, and the /login form gating
    them). Uses http-kit as both the Ring request/response convention
    and the embedded server — handlers are plain (fn [request] response-map) fns
    dispatched on :request-method/:uri in `handler`, chosen over a Ring+Jetty stack for
@@ -14,11 +14,12 @@
    recorded — and shown its own MAC on its own screen, which is how a new display gets
    registered.
 
-   The human pages are scoped the same way but by path — /devices/<name>/… , resolved
+   The human pages are scoped the same way but by path — /devices/<id>/… , resolved
    through the same registry — so an unknown display is a 404 here rather than a fallback
-   inside the page. The MAC never appears in one of those URLs: the segment is the
-   registry's `:name`, because /api/setup issues a token on presentation of a registered
-   MAC alone and that stays out of reach even for someone past the login.
+   inside the page. That segment is the registry's `:id`, never its `:name` and never its
+   MAC. Not the name, so a display can be renamed without breaking its URLs (see
+   server.devices); not the MAC, because /api/setup issues a token on presentation of a
+   registered MAC alone, so it stays out of reach even for someone past the login.
 
    The human pages are gated separately, by a single admin password and a signed session
    cookie (server.auth) — a browser can log in, a display cannot, so the two
@@ -114,8 +115,8 @@
       (str proto "://" host))
     fallback))
 
-(defn- image-url [base device-name filename]
-  (str base "/images/" device-name "/" filename))
+(defn- image-url [base device-id filename]
+  (str base "/images/" device-id "/" filename))
 
 ;; --- Device API -------------------------------------------------------------------------
 
@@ -220,7 +221,7 @@
     (if (authorized? device request)
       (f device)
       (do
-        (log/warn (str "Rejected " (:uri request) " for " (:name device) " — bad Access-Token"))
+        (log/warn (str "Rejected " (:uri request) " for " (:id device) " — bad Access-Token"))
         (text-response 401 "bad access token\n")))
     (unregistered-response request)))
 
@@ -234,10 +235,10 @@
     (with-device request
       (fn [device]
         (when-let [status (parse-display-headers (:headers request))]
-          (telemetry/record-poll! (:name device) status))
+          (telemetry/record-poll! (:id device) status))
         (let [filename (render/serve-filename (render/current-image device))]
           (json-response {:filename          filename
-                          :image_url         (image-url (base-url request fallback-base) (:name device) filename)
+                          :image_url         (image-url (base-url request fallback-base) (:id device) filename)
                           :image_url_timeout 0
                           :refresh_rate      refresh-rate-seconds
                           :reset_firmware    false
@@ -252,34 +253,38 @@
    `status` is load-bearing: parseResponse_apiSetup bails unless it is exactly 200, and
    the firmware only persists api_key/friendly_id on that path. Omitting it (as this
    server used to) means the device silently never stores its credentials and re-runs
-   setup on every wake."
+   setup on every wake.
+
+   `friendly_id` is the device's :id rather than its :name, because the firmware writes
+   it to its preferences once, here, and never asks again — so it wants the identifier
+   that doesn't change, not the label that's free to."
   [request fallback-base]
   (if-let [device (devices/for-request request)]
     (let [filename (render/serve-filename (render/current-image device))]
-      (log/info (str "Setup: issued token to " (:name device) " (" (:mac device) ")"))
+      (log/info (str "Setup: issued token to " (:id device) " (" (:mac device) ")"))
       (json-response {:status      200
                       :api_key     (:token device)
-                      :friendly_id (:name device)
-                      :image_url   (image-url (base-url request fallback-base) (:name device) filename)
+                      :friendly_id (:id device)
+                      :image_url   (image-url (base-url request fallback-base) (:id device) filename)
                       :message     "Welcome to trmnl-server"}))
     (unregistered-response request)))
 
 (defn- log-response [request]
   (with-device request
     (fn [device]
-      (telemetry/append-log! (:name device) (slurp (:body request)))
+      (telemetry/append-log! (:id device) (slurp (:body request)))
       {:status 204})))
 
 ;; --- File routes ------------------------------------------------------------------------
 
 (defn- image-response
-  "Serves one device's currently cached PNG: /images/<device>/forecast-<hash>.png. The
-   device segment has to name a registered display and the filename has to match a hash
+  "Serves one device's currently cached PNG: /images/<id>/forecast-<hash>.png. The
+   device segment has to be a registered display's :id and the filename has to match a hash
    the cache is actually holding (render/bytes-for compares rather than reads), so
    neither segment can name anything off-list."
   [uri]
-  (let [[_ device-name filename] (path-segments uri)]
-    (if-let [device (and device-name filename (devices/by-name device-name))]
+  (let [[_ device-id filename] (path-segments uri)]
+    (if-let [device (and device-id filename (devices/by-id device-id))]
       (if-let [bytes (render/bytes-for (render/current-image device) filename)]
         (png-response bytes)
         {:status 404})
@@ -287,14 +292,14 @@
 
 (defn- archive-file-response
   "Serves one archived file by name from a device's archive dir — the PNG screen or its
-   sibling `.edn` forecast dump, at /devices/<name>/archive/<file>. The device is the one
-   the router already resolved (so its name is a registry entry, validated to [a-z0-9-]+
+   sibling `.edn` forecast dump, at /devices/<id>/archive/<file>. The device is the one
+   the router already resolved (so its :id is a registry entry's, validated to [a-z0-9-]+
    at load) and the filename is constrained to a flat `forecast-*.{png,edn}` basename, so
    neither segment can escape the directory. The `.edn` is sent as an attachment so the
    gallery's data link downloads rather than renders it."
   [device requested]
   (if-let [[_ ext] (re-matches #"forecast-[0-9A-Za-z-]+\.(png|edn)" requested)]
-    (let [file (io/file (archive/dir (:name device)) requested)]
+    (let [file (io/file (archive/dir (:id device)) requested)]
       (if (.isFile file)
         (if (= ext "png")
           (png-response file)
@@ -391,17 +396,17 @@
 ;; --- Routing ----------------------------------------------------------------------------
 
 (defn- device-page-response
-  "Dispatches the per-display pages: /devices/<name> (the status dashboard, which is the
-   display's own page rather than a /status leaf under it), /devices/<name>/archive, and
-   /devices/<name>/archive/<file>.
+  "Dispatches the per-display pages: /devices/<id> (the status dashboard, which is the
+   display's own page rather than a /status leaf under it), /devices/<id>/archive, and
+   /devices/<id>/archive/<file>.
 
-   The name is resolved through the registry here, once, and the page fns are handed the
-   entry itself — so an unregistered name is a 404 at the door rather than something each
+   The id is resolved through the registry here, once, and the page fns are handed the
+   entry itself — so an unregistered id is a 404 at the door rather than something each
    page has to fall back from. Anything else under /devices/ is a 404 too, which is what
    keeps this from being a prefix that quietly accepts whatever it's given."
   [uri request]
-  (let [[_ device-name sub file] (path-segments uri)]
-    (if-let [device (and device-name (devices/by-name device-name))]
+  (let [[_ device-id sub file] (path-segments uri)]
+    (if-let [device (and device-id (devices/by-id device-id))]
       (cond
         (nil? sub)
         (html-response (pages/status device (query-param request "day") (auth-state request)))
@@ -433,10 +438,10 @@
         (and (= :post request-method)
           (= uri "/logout"))                          (logout-response request)
         ;; Human pages, behind that session. Two of them: the index, and everything
-        ;; per-display under /devices/<name>/….
+        ;; per-display under /devices/<id>/….
         (and get? (= uri "/"))                        (gated request #(html-response (pages/home (auth-state request))))
         ;; The collection URL of that hierarchy: / already *is* the list of displays, so
-        ;; truncating /devices/<name> back to its parent should land on it rather than
+        ;; truncating /devices/<id> back to its parent should land on it rather than
         ;; 404. A redirect rather than a second copy of the page, so the index keeps one
         ;; canonical URL and `crumbs` has one "/" to point at. Ungated on purpose — the
         ;; response is a constant, so it discloses nothing that a login would protect.
@@ -472,7 +477,7 @@
         base-url (str "http://" (lan-ip) ":" port)]
     (devices/load!)
     (auth/load!)
-    (telemetry/load-wake-history! (map :name (devices/all)))
+    (telemetry/load-wake-history! (map :id (devices/all)))
     (httpkit/run-server (handler base-url) {:port port})
     (log/info (str "TRMNL server listening on " base-url))
     (log/info "Point your TRMNL OG's custom server URL to the above.")))

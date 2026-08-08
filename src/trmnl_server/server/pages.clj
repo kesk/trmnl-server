@@ -1,12 +1,18 @@
 (ns trmnl-server.server.pages
-  "The human-facing HTML pages — / (the index of displays), /devices/<name> (one display's
-   health dashboard), /devices/<name>/archive (its screen gallery) and /login (the admin
+  "The human-facing HTML pages — / (the index of displays), /devices/<id> (one display's
+   health dashboard), /devices/<id>/archive (its screen gallery) and /login (the admin
    password form that gates the other three) — built with hiccup2.core, which
    auto-escapes string content so there's no hand-rolled escaping here.
 
+   **Links are built from a device's :id, text from its :name.** The id is the stable
+   identity that survives a rename (see server.devices); the name is the label, and these
+   pages are the only place it is ever read. So every href here goes through device-path,
+   and every visible string is the :name — which hiccup escapes, since a label is
+   free-form and may hold anything a human types.
+
    / is the index and the only switcher: one card per registered display, the whole card
-   a link into that display's page. The per-display pages carry the name in the path (see
-   device-path) and take the resolved registry entry as an argument, so an unknown name is
+   a link into that display's page. The per-display pages carry the id in the path (see
+   device-path) and take the resolved registry entry as an argument, so an unknown id is
    the router's 404 rather than a fallback that would render one display's data at
    another's URL. What stays a query parameter is the dashboard's ?day=, which selects
    between days of the same page and is matched against the files actually on disk.
@@ -157,19 +163,21 @@
 ;; --- Shared chrome ----------------------------------------------------------------------
 
 (defn- device-path
-  "The URL of a display's own page (/devices/<name>) or one of its sub-pages
-   (/devices/<name>/archive).
+  "The URL of a display's own page (/devices/<id>) or one of its sub-pages
+   (/devices/<id>/archive).
 
-   The display is a path segment rather than a query filter because it identifies which
-   page this *is*, not which subset of it to show — so an unknown name is a 404 from the
-   router, and no page has to carry a fallback that would quietly render one display's
-   data at a URL that asked for another's. The status dashboard is the display's root
-   rather than a /status leaf under it: it's the canonical view of that device, and making
-   it the root is what turns the URLs into a hierarchy a breadcrumb can walk back up
-   (/ → display → archive → one screen). The name is safe to interpolate for the same
-   reason it's safe as a directory name: devices validates it to [a-z0-9-]+ at load."
-  ([device-name] (str "/devices/" device-name))
-  ([device-name sub] (str "/devices/" device-name "/" sub)))
+   The segment is the display's :id, not its :name — that's what lets a display be
+   renamed without breaking every link and bookmark that points at it. It's a path
+   segment rather than a query filter because it identifies which page this *is*, not
+   which subset of it to show — so an unknown id is a 404 from the router, and no page
+   has to carry a fallback that would quietly render one display's data at a URL that
+   asked for another's. The status dashboard is the display's root rather than a /status
+   leaf under it: it's the canonical view of that device, and making it the root is what
+   turns the URLs into a hierarchy a breadcrumb can walk back up (/ → display → archive →
+   one screen). The id is safe to interpolate for the same reason it's safe as a directory
+   name: devices validates it to [a-z0-9-]+ at load."
+  ([device-id] (str "/devices/" device-id))
+  ([device-id sub] (str "/devices/" device-id "/" sub)))
 
 (defn- crumbs
   "The breadcrumb, which is also the page heading: ancestors as muted links, the current
@@ -314,9 +322,9 @@
     [:tbody (map log-row logs)]]])
 
 (defn status
-  "The /devices/<name> dashboard for one device and one day. `device` is the
+  "The /devices/<id> dashboard for one device and one day. `device` is the
    registry entry the router already resolved the path segment to, so there's no unknown
-   name to handle here. `requested-day` is a ?day= value resolved against that device's
+   id to handle here. `requested-day` is a ?day= value resolved against that device's
    log files on disk, falling back to today — a day is a filter over this page rather than
    a different page, which is why it stays a query parameter, and matching it against the
    files means a bogus or traversal value can never name something off-list.
@@ -329,15 +337,16 @@
    cards, though, always read *today's* newest row (falling back to the /api/display poll
    telemetry), so they reflect the current day even while you're viewing an older one."
   [device requested-day auth-state]
-  (let [name        (:name device)
+  (let [id          (:id device)
+        label       (:name device)
         today       (telemetry/today-utc-date)
-        on-disk     (telemetry/log-days name)
+        on-disk     (telemetry/log-days id)
         sel         (if (some #{requested-day} on-disk) requested-day today)
         ;; Today is always offered as a tab, even before it has a file.
         days        (->> (cons today on-disk) distinct (sort #(compare %2 %1)) vec)
-        rows        (reverse (telemetry/read-log name sel))
-        latest      (if (= sel today) rows (reverse (telemetry/read-log name today)))
-        dev         (telemetry/poll-status name)
+        rows        (reverse (telemetry/read-log id sel))
+        latest      (if (= sel today) rows (reverse (telemetry/read-log id today)))
+        dev         (telemetry/poll-status id)
         voltage     (or (:battery-voltage dev) (some :battery_voltage latest))
         pct         (battery-percent voltage)
         [batt-lbl
@@ -345,18 +354,18 @@
         firmware    (or (:fw-version dev) (some :firmware_version latest))
         [wifi-lbl
          wifi-pill] (wifi-quality (:rssi dev))
-        wakes       (telemetry/wake-samples name)
+        wakes       (telemetry/wake-samples id)
         now         (System/currentTimeMillis)
         latest-wake (:ms (last wakes))
         fcast       (render/cache-status device)
         [fc-lbl
          fc-pill]   (forecast-quality fcast now)]
-    (page (str "trmnl-server · " name) status-css
+    (page (str "trmnl-server · " label) status-css
       (list
         [:div.top
-         (crumbs [["trmnl-server" "/"]] name)
+         (crumbs [["trmnl-server" "/"]] label)
          [:div.top-nav
-          [:a.top-link {:href (device-path name "archive")} "Archived screens →"]
+          [:a.top-link {:href (device-path id "archive")} "Archived screens →"]
           (session-chrome auth-state)]]
         [:section.group
          [:div.sec "Device health"]
@@ -418,17 +427,17 @@
           (when (seq rows)
             [:span {:style "color:var(--muted);font-weight:400"}
              (str "  ·  " (count rows) " rows")])]
-         (picker days sel #(str (device-path name) "?day=" %))]
+         (picker days sel #(str (device-path id) "?day=" %))]
         (if (seq rows)
           (log-table rows)
-          [:p.empty (str "No device logs for " name " on " sel ".")])))))
+          [:p.empty (str "No device logs for " label " on " sel ".")])))))
 
 ;; --- /archive ---------------------------------------------------------------------------
 
-(defn- archive-card [device-name ^File f]
+(defn- archive-card [device-id ^File f]
   (let [name (.getName f)
         edn  (str/replace name #"\.png\z" ".edn")
-        href (str (device-path device-name "archive") "/")]
+        href (str (device-path device-id "archive") "/")]
     [:div.shot
      [:a {:href (str href name) :title name}
       [:img {:loading "lazy" :src (str href name) :alt name}]]
@@ -436,24 +445,25 @@
       (format-millis (.lastModified f))
       ;; The data link only appears when the sidecar forecast dump is still there —
       ;; it's pruned on the same 24h schedule as the PNG.
-      (when (.isFile (io/file (archive/dir device-name) edn))
+      (when (.isFile (io/file (archive/dir device-id) edn))
         (list " · " [:a {:href (str href edn)} "data"]))]]))
 
 (defn gallery
-  "The /devices/<name>/archive gallery: every screen of that display's still inside the
+  "The /devices/<id>/archive gallery: every screen of that display's still inside the
    rolling 24h window, newest first. `device` is the registry entry the router resolved
    the path segment to, and each card's files sit under this same path — see
    archive-card. Like the device page it has no device picker; / is the switcher, and the
    breadcrumb is the way back up."
   [device]
-  (let [name    (:name device)
-        entries (archive/entries name)]
-    (page (str "trmnl-server · " name " · archive") archive-css
+  (let [id      (:id device)
+        label   (:name device)
+        entries (archive/entries id)]
+    (page (str "trmnl-server · " label " · archive") archive-css
       (list
-        (crumbs [["trmnl-server" "/"] [name (device-path name)]] "archive")
+        (crumbs [["trmnl-server" "/"] [label (device-path id)]] "archive")
         [:p.nav (count entries) (if (= 1 (count entries)) " screen" " screens") " · rolling 24h"]
         (if (seq entries)
-          [:div.grid (map #(archive-card name %) entries)]
+          [:div.grid (map #(archive-card id %) entries)]
           [:p.empty "No archived screens yet."])))))
 
 ;; --- / ----------------------------------------------------------------------------------
@@ -479,21 +489,22 @@
    Only when both are empty has this display genuinely never rendered — which is a
    question for its own page, hence the card is still a link."
   [device]
-  (let [name     (:name device)
+  (let [id       (:id device)
+        label    (:name device)
         entry    (render/cached-entry device)
-        archived (when-not entry (first (archive/entries name)))
+        archived (when-not entry (first (archive/entries id)))
         [src at] (cond
-                   entry    [(str "/images/" name "/" (render/serve-filename entry))
+                   entry    [(str "/images/" id "/" (render/serve-filename entry))
                              (:generated-at entry)]
-                   archived [(str (device-path name "archive") "/" (.getName ^File archived))
+                   archived [(str (device-path id "archive") "/" (.getName ^File archived))
                              (.lastModified ^File archived)])]
-    [:a.screen {:href (device-path name)}
-     [:div.screen-name name]
+    [:a.screen {:href (device-path id)}
+     [:div.screen-name label]
      (if src
        (list
          [:img {:loading "lazy"
                 :src     src
-                :alt     (str "Latest rendered forecast screen for " name)}]
+                :alt     (str "Latest rendered forecast screen for " label)}]
          ;; "Updated", not the screen's own Swedish "Uppdaterad": these pages are English
          ;; throughout, and the two timestamps mean different things anyway — the one
          ;; painted into the image is when the forecast was rendered for the *device*.

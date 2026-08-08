@@ -1,5 +1,5 @@
 (ns trmnl-server.server.auth
-  "The admin password gate in front of the human-facing pages (/ and /devices/<name>/…).
+  "The admin password gate in front of the human-facing pages (/ and /devices/<id>/…).
 
    One password, no users: the server is a household dashboard that happens to be
    reachable from the internet, and the thing worth gating is read-only telemetry.

@@ -10,10 +10,12 @@
    are pruned by mtime on each write, so the folder self-manages a rolling window
    with no cron.
 
-   Each registered device gets its own subdirectory, named for it, and every fn here
-   takes that device name. Both the 24h prune and the dedupe probe work by looking at
-   the directory's own newest file, so sharing one directory between displays would
-   let one device's render suppress another's as a duplicate."
+   Each registered device gets its own subdirectory and every fn here takes that
+   device's :id — its stable identity, not its :name, so renaming a display on the
+   pages doesn't strand or move its archive (see server.devices). Both the 24h prune
+   and the dedupe probe work by looking at the directory's own newest file, so sharing
+   one directory between displays would let one device's render suppress another's as
+   a duplicate."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log])
@@ -25,13 +27,13 @@
 
 (defn dir
   "Where --serve stows a rolling copy of one device's rendered screens: a subdirectory
-   named for that device under the archive root, which is relative to the process's
+   named for that device's :id under the archive root, which is relative to the process's
    working directory (the systemd unit's WorkingDirectory in prod, so
    /home/seb/trmnl-server/archive/hallway/…) unless ARCHIVE_DIR overrides it —
    mirroring how logs/ is placed. Distinct from out/, which stays reserved for the
    batch-render modes."
-  ^File [device-name]
-  (io/file (or (System/getenv "ARCHIVE_DIR") "archive") device-name))
+  ^File [device-id]
+  (io/file (or (System/getenv "ARCHIVE_DIR") "archive") device-id))
 
 (def ^:private timestamp-format
   (DateTimeFormatter/ofPattern "yyyyMMdd-HHmmss"))
@@ -96,10 +98,10 @@
    affect dedupe. `points` (the forecast seq the PNG was rendered from) is dumped verbatim
    to a sibling `.edn` alongside the PNG, so an archived screen can be re-rendered/inspected
    later — the pixels alone can't be reconstructed into the underlying data. Everything
-   lands in `device-name`'s own subdirectory, so dedupe and pruning stay per display."
-  [device-name bytes hash reference-time points]
+   lands in `device-id`'s own subdirectory, so dedupe and pruning stay per display."
+  [device-id bytes hash reference-time points]
   (try
-    (let [d          (dir device-name)
+    (let [d          (dir device-id)
           short-hash (subs hash 0 8)]
       (.mkdirs d)
       (when-not (= short-hash (last-hash d))
@@ -117,6 +119,6 @@
   "One device's archived PNGs, newest first (by mtime), for the gallery. Empty when its
    dir is absent. The gallery lists only PNGs; each one's sibling .edn is offered as a
    data link."
-  [device-name]
-  (let [d (dir device-name)]
+  [device-id]
+  (let [d (dir device-id)]
     (if (.isDirectory d) (vec (pngs d)) [])))

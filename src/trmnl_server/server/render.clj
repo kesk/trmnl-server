@@ -5,7 +5,7 @@
    modes) — the only thing written out is the rolling archive copy, via server.archive.
 
    Everything here is per *device*: each registered display has its own cache entry, its
-   own regeneration lock, and its own archive subdirectory, keyed by the device's :name
+   own regeneration lock, and its own archive subdirectory, keyed by the device's :id
    (see server.devices). Two displays therefore fetch SMHI independently even if they
    sat in the same town — deliberate, since sharing an entry would make it ambiguous
    which device's archive a render belongs to, and the displays are in different places
@@ -29,10 +29,10 @@
 ;; so a recovered SMHI shows up on the next poll either way.
 (def ^:private failure-cooldown-ms (* 60 1000))
 
-;; Device :name -> cache entry. One entry per registered display.
+;; Device :id -> cache entry. One entry per registered display.
 (defonce ^:private cache (atom {}))
 
-;; Device :name -> lock object, created on demand by lock-for.
+;; Device :id -> lock object, created on demand by lock-for.
 (defonce ^:private locks (atom {}))
 
 (defn- lock-for
@@ -40,9 +40,9 @@
    one global lock so a slow SMHI fetch for one display can't hold another display's
    poll open — the device waits with its radio powered, which is exactly what the
    wake-time trend on the device page is watching for."
-  [device-name]
-  (-> (swap! locks (fn [m] (cond-> m (not (contains? m device-name)) (assoc device-name (Object.)))))
-    (get device-name)))
+  [device-id]
+  (-> (swap! locks (fn [m] (cond-> m (not (contains? m device-id)) (assoc device-id (Object.)))))
+    (get device-id)))
 
 (defn- png-bytes [^BufferedImage image]
   (let [out (ByteArrayOutputStream.)]
@@ -94,7 +94,7 @@
    landing page, which is public and shouldn't turn a crawler's visit into a live SMHI
    fetch and a full render. nil before the device's first successful render."
   [device]
-  (get @cache (:name device)))
+  (get @cache (:id device)))
 
 (defn current-image
   "Returns the device's cached {:bytes :filename :generated-at}, regenerating from a
@@ -119,12 +119,12 @@
    re-checks the cache inside the lock and reuses the entry the first one just
    produced."
   [device]
-  (let [device-name (:name device)
-        entry       (get @cache device-name)]
+  (let [device-id (:id device)
+        entry     (get @cache device-id)]
     (if (serve-as-is? entry)
       entry
-      (locking (lock-for device-name)
-        (let [entry (get @cache device-name)]
+      (locking (lock-for device-id)
+        (let [entry (get @cache device-id)]
           (if (serve-as-is? entry)
             entry
             (try
@@ -141,8 +141,8 @@
                                :bytes        bytes
                                :filename     (str "forecast-" (md5-hex bytes) ".png")
                                :generated-at (System/currentTimeMillis)}]
-                (swap! cache assoc device-name new-entry)
-                (archive/write! device-name bytes data-hash (:reference-time (meta points)) points)
+                (swap! cache assoc device-id new-entry)
+                (archive/write! device-id bytes data-hash (:reference-time (meta points)) points)
                 new-entry)
               (catch Exception e
                 (if entry
@@ -152,8 +152,8 @@
                                       :stale-filename (str "forecast-" (md5-hex stale-bytes) "-stale.png")
                                       :failed-at (System/currentTimeMillis)
                                       :failures (inc (:failures entry 0)))]
-                    (log/warn e (str "Forecast regeneration failed for " device-name ", serving stale cache"))
-                    (swap! cache assoc device-name stale-entry)
+                    (log/warn e (str "Forecast regeneration failed for " device-id ", serving stale cache"))
+                    (swap! cache assoc device-id stale-entry)
                     stale-entry)
                   (throw e))))))))))
 

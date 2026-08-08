@@ -5,23 +5,31 @@
 
    Read once from devices.edn at startup (`load!`, called from server/start!) and
    held in an atom — editing the file means restarting the service. That ceiling is
-   deliberate: a household's worth of devices doesn't justify a mutable store or an
+   deliberate: a household's worth of displays doesn't justify a mutable store or an
    admin UI.
 
-   `:name` is the one field with reach outside this namespace. It is the URL segment
-   in /images/<name>/… and in every human page under /devices/<name>/…, and the
-   directory name under logs/ and archive/. Validating it against a strict
-   [a-z0-9-]+ here, at load, is what lets all of those skip their own sanitising —
-   the same move the device page makes by matching ?day= against the days actually on disk."
+   **A display's identity and its label are two different fields.** `:id` is the
+   identity: the URL segment in /images/<id>/… and in every human page under
+   /devices/<id>/…, the directory name under logs/ and archive/, and the key of every
+   in-memory cache in the serving path. `:name` is only ever shown to a human. That
+   split exists so a display can be *renamed* — call it \"Hallway\" today and
+   \"Kitchen\" tomorrow — without moving its archive and telemetry directories on disk,
+   breaking every bookmark, and orphaning its wake-time history. An :id, by contrast,
+   is chosen once and never changed; it isn't shown anywhere except in the URL bar.
+
+   Only :id is validated against a strict [a-z0-9-]+ here, at load, and that one check
+   is what lets every path and directory downstream skip its own sanitising — the same
+   move the device page makes by matching ?day= against the days actually on disk.
+   :name needs no such rule any more: it reaches nothing but hiccup, which escapes it."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log])
   (:import [java.io File]))
 
-(def ^:private name-pattern
-  "What a :name may contain. Strict because it becomes a path segment and a directory
-   name; see the namespace docstring."
+(def ^:private id-pattern
+  "What an :id may contain. Strict because it becomes a path segment and a directory
+   name; see the namespace docstring. :name has no such pattern — it's a label."
   #"[a-z0-9-]+")
 
 (def ^:private mac-pattern
@@ -58,7 +66,7 @@
   "Throws unless one devices.edn entry is complete and usable. Loud on purpose: a
    device silently served the wrong town's weather is a worse outcome than a service
    that refuses to start."
-  [mac {:keys [name lat lon token hours] :as device}]
+  [mac {:keys [id name lat lon token hours] :as device}]
   (letfn [(fail! [msg]
             (throw (ex-info (str "devices.edn: " (or mac "(missing MAC)") ": " msg)
                      {:mac mac :device device})))]
@@ -66,8 +74,10 @@
       (fail! "entry has a blank MAC address key"))
     (when-not (map? device)
       (fail! "entry must be a map"))
-    (when-not (and (string? name) (re-matches name-pattern name))
-      (fail! ":name is required and must match [a-z0-9-]+ — it becomes a URL segment and a directory name"))
+    (when-not (and (string? id) (re-matches id-pattern id))
+      (fail! ":id is required and must match [a-z0-9-]+ — it becomes a URL segment and a directory name"))
+    (when-not (and (string? name) (seq (str/trim name)))
+      (fail! ":name is required — it's the label the pages show for this display"))
     (when-not (and (number? lat) (number? lon))
       (fail! ":lat and :lon are required and must be numbers"))
     (when-not (and (string? token) (seq (str/trim token)))
@@ -86,9 +96,15 @@
                                (validate-entry! mac device)
                                (assoc acc mac (assoc device :mac mac))))
                   {} raw)
+        ids     (map :id (vals devices))
         names   (map :name (vals devices))]
+    (when (and (seq ids) (not (apply distinct? ids)))
+      (throw (ex-info "devices.edn: two devices share an :id" {:ids (sort ids)})))
+    ;; A clash of *labels* is only confusing, not wrong — nothing is keyed on :name any
+    ;; more — so it's worth saying out loud without refusing to serve any display over it.
     (when (and (seq names) (not (apply distinct? names)))
-      (throw (ex-info "devices.edn: two devices share a :name" {:names (sort names)})))
+      (log/warn (str "devices.edn: two devices share a :name — the pages will show the same "
+                  "label for both. Their URLs and directories are unaffected (those follow :id).")))
     devices))
 
 (defn load!
@@ -103,7 +119,7 @@
       (let [devices (parse (edn/read-string (slurp f)))]
         (reset! registry devices)
         (log/info (str "Loaded " (count devices) " device(s) from " (.getPath f) ": "
-                    (str/join ", " (sort (map :name (vals devices)))))))
+                    (str/join ", " (sort (map :id (vals devices)))))))
       (do
         (reset! registry {})
         (log/warn (str "No device registry at " (.getPath f)
@@ -111,22 +127,23 @@
                     " Copy devices.example.edn to get started."))))))
 
 (defn all
-  "Every registered device, ordered by :name — an EDN map has no order of its own,
-   and the pickers and the device page's default both want a stable one."
+  "Every registered device, ordered by :name — an EDN map has no order of its own, and
+   the index wants a stable one. By label rather than by :id because this order is the
+   one a human reads on /, and case-insensitively because a label is free to be
+   capitalised now."
   []
-  (sort-by :name (vals @registry)))
+  (sort-by (comp str/lower-case :name) (vals @registry)))
 
 (defn by-mac
   "The device with this MAC address, or nil."
   [mac]
   (get @registry (normalise-mac mac)))
 
-(defn by-name
-  "The device with this :name, or nil. Used to resolve the /devices/<name> and
-   /images/<name>/ path segments — a nil here is what turns an unknown or hostile
-   segment into a 404."
-  [name]
-  (first (filter #(= name (:name %)) (vals @registry))))
+(defn by-id
+  "The device with this :id, or nil. Used to resolve the /devices/<id> and /images/<id>/
+   path segments — a nil here is what turns an unknown or hostile segment into a 404."
+  [id]
+  (first (filter #(= id (:id %)) (vals @registry))))
 
 (defn for-request
   "The device a request's `ID` header names, or nil. http-kit lowercases header names."
