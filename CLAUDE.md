@@ -37,7 +37,7 @@ clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 # fill in one entry per device before this does anything useful; without a registry the
 # server starts but refuses every poll. $FORECAST_HOURS (default 23) is the server-wide
 # fallback for entries that don't set :hours. $ADMIN_PASSWORD_HASH is the login for the human
-# pages (/ and /devices/<name>[/archive]); unset — the usual case when running from source — leaves
+# pages (/ and /devices/<id>[/archive]); unset — the usual case when running from source — leaves
 # them open and says so at startup. $ADMIN_TRUST_LAN=true exempts the home network from
 # that login (off by default), and $ADMIN_REQUIRE_TLS_LOGIN (on by default) refuses to
 # accept a password over an unencrypted connection.
@@ -124,11 +124,23 @@ Thirteen namespaces, cleanly separated by concern. Six are the domain (`image`, 
 the serving path, which only `--serve` exercises.
 
 **The server is multi-device.** One Pi serves several TRMNL displays, each with its own
-location, and everything in the serving path is scoped by a device `:name` — its render
-cache and regeneration lock, its `archive/<name>/` subdirectory, its `logs/<name>/`
-telemetry, and its `/images/<name>/…` and `/devices/<name>/…` URLs. The domain
+location, and everything in the serving path is scoped by a device `:id` — its render
+cache and regeneration lock, its `archive/<id>/` subdirectory, its `logs/<id>/`
+telemetry, and its `/images/<id>/…` and `/devices/<id>/…` URLs. The domain
 namespaces are untouched by this: they already took location and
 points as arguments, so nothing below `server.*` knows there is more than one display.
+
+**A display's `:id` and its `:name` are two different fields, and the split is the whole
+point of the `:id`.** The `:id` is the identity — every URL segment, every directory name,
+every in-memory cache key. The `:name` is a label, read only by `server.pages` and shown
+to a human. That exists so a display can be **renamed**: call it "Hallway" today and
+"Kitchen" tomorrow, and its bookmarks, its `archive/` and `logs/` directories, and its
+wake-time history all stay exactly where they were. The corollary is that an `:id` is
+chosen once and never changed — changing one moves that display's directories on disk and
+breaks every link to it, which is precisely the pain the field was added to remove. Only
+`:id` is validated (`[a-z0-9-]+`, unique, at load); `:name` is free-form and non-blank,
+because it reaches nothing but hiccup, which escapes it. Two displays sharing a `:name`
+is a `WARN`, not a refusal — it's now merely confusing, since nothing is keyed on it.
 
 **The whole codebase is reflection-free** — `(set! *warn-on-reflection* true)` plus a
 `require :reload` of any namespace must stay silent. On the Java2D-heavy fns that means
@@ -225,29 +237,30 @@ version, and 3.6x the entire screen composition).
   polls when pointed at a custom server: `GET /api/display` (the main poll, returns
   JSON with an `image_url`/`filename`/`refresh_rate`), `GET /api/setup` (first-boot
   registration), `POST /api/log` (device telemetry, replied to with `204`), and
-  `GET /images/<device>/*` (serves the cached PNG bytes). Plus `GET /health` (a bare
+  `GET /images/<id>/*` (serves the cached PNG bytes). Plus `GET /health` (a bare
   200 for `deploy.clj`'s post-restart check — `/api/display` can't serve that job any
   more, since it now 404s a caller it doesn't recognise) and three human-facing pages:
   `GET /` (the index — a card per registered display showing its latest screen, each
   one linking into that display's status page, which links back),
-  `GET /devices/<name>` (per-device battery/firmware/awake-trend/deployed-commit/
+  `GET /devices/<id>` (per-device battery/firmware/awake-trend/deployed-commit/
   forecast-health/device-log dashboard — the display's *own* page, not a `/status` leaf
   under it, so the URLs nest into a hierarchy) and
-  `GET /devices/<name>/archive` (a gallery of that device's rolling 24h image archive), with
-  `GET /devices/<name>/archive/<file>`
+  `GET /devices/<id>/archive` (a gallery of that device's rolling 24h image archive), with
+  `GET /devices/<id>/archive/<file>`
   serving each archived PNG (or its `.edn` sidecar) off disk — all three behind the admin
   password (`GET`/`POST /login`, `POST /logout`, see `server.auth`).
 
   **The display is a path segment, not a `?device=` filter.** It identifies which pages
-  these *are*, so an unregistered name is a 404 from the router (`device-page-response`
+  these *are*, so an unregistered id is a 404 from the router (`device-page-response`
   resolves it once and hands the entry to the page fn) rather than a fallback inside each
   page — the old query form silently rendered the *first* display's data at a URL that had
   asked for another's. `?day=` on the device page stays a query parameter, because it
   picks between days of the same page rather than naming a different one. The segment is
-  the registry's `:name` and never the MAC — `/api/setup` issues a token on presentation
-  of a registered MAC alone, so it stays out of reach even past the login — and it's safe
-  to interpolate for the same reason it's safe as a directory name: `devices` validates it
-  to `[a-z0-9-]+` at load.
+  the registry's `:id` — never its `:name`, so a rename doesn't break every link (see the
+  id/name split above), and never the MAC, because `/api/setup` issues a token on
+  presentation of a registered MAC alone, so it stays out of reach even past the login. It's
+  safe to interpolate for the same reason it's safe as a directory name: `devices`
+  validates it to `[a-z0-9-]+` at load.
 
   There are **no `/status` or `/archive` compatibility routes**, and `?device=` is gone
   from the codebase entirely — this server has one user, who said so. They existed briefly
@@ -257,7 +270,7 @@ version, and 3.6x the entire screen composition).
 
   The one 303 that *is* there is **`/devices` → `/`**, and it's a different thing from
   those: not a stale path kept alive, but the collection URL of a live hierarchy. `/` is
-  already the list of displays, so truncating `/devices/<name>` back to its parent should
+  already the list of displays, so truncating `/devices/<id>` back to its parent should
   land on it rather than 404. It redirects rather than serving a second copy of the index,
   so that page keeps one canonical URL and `crumbs` has a single `/` to point at — a page
   reachable at two URLs would have a breadcrumb linking to itself under another name. It
@@ -267,10 +280,10 @@ version, and 3.6x the entire screen composition).
   **No page has a device picker any more** either — `/` is the index and the only switcher,
   and a second one on every page was just a different way to do the same thing.
 
-  **The routes nest, and `pages/crumbs` is what walks them back up**: `/` → `/devices/<name>`
-  → `/devices/<name>/archive` → one archived screen. Making the dashboard the display's own
-  page rather than `/devices/<name>/status` is what buys that — a breadcrumb needs each
-  ancestor to be a real page, and a bare `/devices/<name>` that 404s isn't one. The
+  **The routes nest, and `pages/crumbs` is what walks them back up**: `/` → `/devices/<id>`
+  → `/devices/<id>/archive` → one archived screen. Making the dashboard the display's own
+  page rather than `/devices/<id>/status` is what buys that — a breadcrumb needs each
+  ancestor to be a real page, and a bare `/devices/<id>` that 404s isn't one. The
   breadcrumb *is* the heading (ancestors as muted links, current page as the `h1`, all one
   size), which is why there's no separate title line and no per-page back-links: those
   were three different hand-rolled chains ("← All displays", "← status · all displays")
@@ -364,8 +377,8 @@ version, and 3.6x the entire screen composition).
   The traversal guards live here, in the
   namespace the untrusted URI arrives in: `archive-file-response` constrains the name to a
   flat `forecast-*.{png,edn}` basename, `?day` is validated in `pages/status` against
-  the days actually on disk, and every `<name>` path segment is resolved through the
-  registry — whose `:name`s are themselves validated to `[a-z0-9-]+`
+  the days actually on disk, and every `<id>` path segment is resolved through the
+  registry — whose `:id`s are themselves validated to `[a-z0-9-]+`
   at load. So no route can be walked out of its directory.
 
   The work behind the routes is six namespaces under `trmnl-server.server.*`, none of
@@ -373,18 +386,20 @@ version, and 3.6x the entire screen composition).
 
 - **`trmnl-server.server.devices`** — the device registry, and the only namespace that
   knows a MAC address from a display. Read once at startup from `devices.edn`
-  (`$DEVICES_FILE`) into an atom: MAC → `{:name :lat :lon :token :hours?}`. Editing it
+  (`$DEVICES_FILE`) into an atom: MAC → `{:id :name :lat :lon :token :hours?}`. Editing it
   means restarting the service, which is a deliberate ceiling — a household's worth of
   displays doesn't justify a mutable store or an admin UI. A *missing* file is a
   legitimate first-run state (empty registry, warning logged, `/status` still loads); a
   *malformed* one throws and takes the service down with it, on the grounds that a
   display silently served the wrong town's weather is the worse outcome.
 
-  `:name` is validated against `[a-z0-9-]+` **at load**, and that one check is what
-  makes everything downstream safe: the name is a URL segment (`/images/<name>/…` and
-  every human page under `/devices/<name>/…`) and a directory name (`archive/<name>/`,
-  `logs/<name>/`), none of
-  which then need their own sanitising. Also tracks MACs that polled without being
+  `:id` is validated against `[a-z0-9-]+` **at load**, and that one check is what
+  makes everything downstream safe: the id is a URL segment (`/images/<id>/…` and
+  every human page under `/devices/<id>/…`) and a directory name (`archive/<id>/`,
+  `logs/<id>/`), none of
+  which then need their own sanitising. `:name` gets no such rule — it's a free-form
+  label that reaches only hiccup, which escapes it — so the two clashing is a `WARN`
+  while two clashing `:id`s refuse to load. Also tracks MACs that polled without being
   registered (capped, and only if they look like MACs — the endpoint is public): that's
   what gates the unregistered-screen render and what `/` lists when the registry is
   empty.
@@ -481,7 +496,7 @@ version, and 3.6x the entire screen composition).
   escaped one — that value goes out in a `Location` header.
 
 - **`trmnl-server.server.render`** — the served screens and their caches, one entry per
-  registered display keyed by `:name`, each with its own regeneration lock so a slow
+  registered display keyed by `:id`, each with its own regeneration lock so a slow
   SMHI fetch for one display can't hold another's poll open (the device waits with its
   radio powered — exactly what `/status`'s wake-time trend is watching for). Keying on
   the device rather than on `[lat lon hours]` means two displays in the same town would
@@ -526,8 +541,8 @@ version, and 3.6x the entire screen composition).
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
   there's no hand-rolled `escape-html`) via a shared `page` layout helper. Each page fn
   returns an HTML *string*, not a Ring response — HTTP is `server`'s business, so
-  `(pages/status (devices/by-name "hallway") nil :session)` can be called straight from
-  the REPL. The two per-display pages take the **resolved registry entry**, not a name:
+  `(pages/status (devices/by-id "hallway") nil :session)` can be called straight from
+  the REPL. The two per-display pages take the **resolved registry entry**, not an id:
   the router already had to resolve the path segment to decide between a page and a 404,
   so re-doing it here would mean a second answer to the same question — and it's that
   split that lets them drop the fallback they used to need. Neither carries a device
@@ -539,7 +554,10 @@ version, and 3.6x the entire screen composition).
   made a second column, and the two displays would stack for good inside the 1120px
   `.wrap`). `device-path` builds every per-display URL, so the shape is written down once;
   it's private, because with the compatibility redirects gone nothing outside this
-  namespace constructs one. `/login` is the fourth — the password form `server.auth` gates
+  namespace constructs one. **This is the only namespace that reads a device's `:name`**,
+  and the rule throughout is: hrefs from `:id` (via `device-path`), visible text from
+  `:name`. hiccup's escaping is what makes the second half safe now that a label is
+  free-form — verified with a `<script>` tag as a device name. `/login` is the fourth — the password form `server.auth` gates
   the other three with, plus the "Log out" control and the "auth disabled" pill they
   carry in return. Their
   CSS lives in `resources/css/{base,archive,home,login}.css` (slurped at load through
@@ -557,8 +575,8 @@ version, and 3.6x the entire screen composition).
   where it's kept: that device's latest `/api/display` header snapshot
   (`record-poll!`/`poll-status`),
   its rolling wake-time series, and its raw `/api/log` bodies on disk. Every fn takes a
-  device `:name`, and on disk that's a subdirectory per device
-  (`logs/<name>/device-<date>.log`, `logs/<name>/wake-times.edn`). Subdirectories rather
+  device `:id`, and on disk that's a subdirectory per device
+  (`logs/<id>/device-<date>.log`, `logs/<id>/wake-times.edn`). Subdirectories rather
   than mangled filenames specifically because `prune-logs!` then comes out right for
   free — its cap is a count of files in a directory, so a shared one would let a chatty
   display evict a quiet one's days. See the logging note below.
@@ -567,7 +585,7 @@ version, and 3.6x the entire screen composition).
   (`dir`, `write!`, `entries`). Every *successful* render (i.e. each new cache entry,
   one per cache miss, not the stale-fallback copies) is also written to
   disk by `write!` as `forecast-<yyyyMMdd-HHmmss>-run<yyyyMMdd-HHmm>-<hash8>.png`
-  under `archive/<device>/`
+  under `archive/<id>/`
   (relative to the working dir, like `logs/`; override the root with `$ARCHIVE_DIR`) —
   a subdirectory per display, since both the 24h prune and the dedupe probe work off
   the directory's own newest file, so a shared one would let one device's render
@@ -649,10 +667,10 @@ Europe/Stockholm in `smhi`, so the host zone doesn't affect the display either w
 Device telemetry (`POST /api/log`) is **written straight to disk, bypassing
 logback entirely** (`server.telemetry/append-log!`): each received body is collapsed to one
 line and appended as **raw JSON** (no timestamp prefix) to
-`logs/<device>/device-<yyyy-MM-dd>.log`,
+`logs/<id>/device-<yyyy-MM-dd>.log`,
 the file picked by the **UTC** date (`today-utc-date`), so the filename does the daily
 partitioning a rolling policy used to. The root dir is `$DEVICE_LOG_DIR` (default `logs/`)
-and each display gets a subdirectory named for it, created
+and each display gets a subdirectory named for its `:id`, created
 on demand; writes are serialised under a private lock and are best-effort (an IO error is
 logged via the main logger and swallowed, so the device still gets its `204`). Old days
 self-prune: `prune-logs!` (run on each write) keeps only the newest `max-log-files`
@@ -673,7 +691,7 @@ lists that device's `device-<date>.log` files (newest first) as the day-picker s
 the table;
 `?day=<date>` selects one, defaulting to today (`today-utc-date`), which is always shown as a
 tab even before it has a file. Which display it is comes from the path, so each day link is
-just `/devices/<name>?day=…`. `telemetry/read-log` reads the chosen file (plain read — the DIY
+just `/devices/<id>?day=…`. `telemetry/read-log` reads the chosen file (plain read — the DIY
 files aren't gzipped) and renders its rows newest first, time column headed "time (UTC)" (it
 renders `created_at` through `Instant`, always UTC — matching the UTC filename dates). `sel` is
 constrained to a day that actually exists on disk (or today), so a bogus/traversal `?day=` just
@@ -689,7 +707,7 @@ awake longer and drains the battery): the latest value in seconds plus moving av
 1h/6h/24h/7d windows. Every device `/api/display` poll feeds one sample into `telemetry/record-poll!`,
 which keeps a rolling `wake-history` series of `{:t :ms}` maps per device, **persisted to
 disk** as
-`wake-times.edn` (in that display's `$DEVICE_LOG_DIR/<name>/`, alongside its device logs) so
+`wake-times.edn` (in that display's `$DEVICE_LOG_DIR/<id>/`, alongside its device logs) so
 the trend survives
 restarts/redeploys — `load-wake-history!` reloads every registered device's series in
 `start!`. Samples are pruned to a 7-day

@@ -3,12 +3,17 @@
 ;;
 ;; Keyed by the device's MAC address, which the TRMNL firmware sends as the `ID`
 ;; header on every request. Case doesn't matter. Don't know the MAC yet? Point the
-;; device at this server and its poll will be rejected — the MAC then shows up on
-;; /status under "Unregistered devices", ready to paste in here.
+;; device at this server: it will show its own MAC on its own screen, ready to copy
+;; in here.
 ;;
-;;   :name   required, [a-z0-9-]+. Becomes a URL segment (/images/<name>/…,
-;;           ?device=<name>) and a directory name (archive/<name>/, logs/<name>/),
-;;           so it's validated strictly at load.
+;;   :id     required, [a-z0-9-]+, unique. The display's permanent identity: it's the
+;;           URL segment (/images/<id>/…, /devices/<id>/…) and the directory name
+;;           (archive/<id>/, logs/<id>/), so it's validated strictly at load. Pick one
+;;           and never change it — changing an :id moves that display's archive and
+;;           telemetry directories and breaks every existing link to it. Rename the
+;;           :name instead; that's what it's for.
+;;   :name   required. The label shown on the web pages, and nothing else — free-form,
+;;           so "Hallway" or "Pappas kök" are both fine. Change it whenever you like.
 ;;   :lat    required, decimal degrees.
 ;;   :lon    required, decimal degrees.
 ;;   :token  required. Handed to the device by /api/setup as its api_key, and
@@ -17,12 +22,14 @@
 ;;   :hours  optional. How many hourly points to render; falls back to
 ;;           $FORECAST_HOURS, then to core/default-forecast-hours (23).
 
-{"AA:BB:CC:DD:EE:FF" {:name  "hallway"
+{"AA:BB:CC:DD:EE:FF" {:id    "hallway"
+                      :name  "Hallway"
                       :lat   57.715722
                       :lon   12.035778
                       :token "replace-me-with-something-random"}
 
- "11:22:33:44:55:66" {:name  "pappa"
+ "11:22:33:44:55:66" {:id    "pappa"
+                      :name  "Pappa"
                       :lat   57.6667
                       :lon   12.85
                       :token "replace-me-too"

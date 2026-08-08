@@ -4,9 +4,11 @@
    bodies on disk. Storage and aggregation only — the HTTP endpoints that feed it live
    in server, the device page's rendering of it in server.pages.
 
-   Every fn here is scoped to one device by its :name (see server.devices). On disk
-   that's a subdirectory per device: logs/<name>/device-<date>.log and
-   logs/<name>/wake-times.edn. Subdirectories rather than mangled filenames because
+   Every fn here is scoped to one device by its :id — its stable identity rather than
+   its :name, so a display can be renamed without orphaning the wake-time history and
+   log days filed under it (see server.devices). On disk that's a subdirectory per
+   device: logs/<id>/device-<date>.log and
+   logs/<id>/wake-times.edn. Subdirectories rather than mangled filenames because
    prune-logs! then comes out right for free — its cap is a count of files in a
    directory, so a shared one would let a chatty display evict a quiet one's days.
 
@@ -29,10 +31,10 @@
 (defonce ^:private log-lock (Object.))
 (defonce ^:private wake-lock (Object.))
 
-;; Device :name -> that device's latest /api/display header snapshot.
+;; Device :id -> that device's latest /api/display header snapshot.
 (defonce ^:private poll-state (atom {}))
 
-;; Device :name -> rolling series of {:t <epoch-ms> :ms <awake-ms>} wake durations,
+;; Device :id -> rolling series of {:t <epoch-ms> :ms <awake-ms>} wake durations,
 ;; oldest→newest, persisted to disk so the device page's trend survives restarts. See
 ;; record-wake-time! below.
 (defonce ^:private wake-history (atom {}))
@@ -40,11 +42,11 @@
 (def ^:private log-name-re #"device-(\d{4}-\d{2}-\d{2})\.log")
 
 (defn dir
-  "Directory one device's telemetry lives in: a subdirectory named for it under
+  "Directory one device's telemetry lives in: a subdirectory named for its :id under
    $DEVICE_LOG_DIR, else logs/ relative to the process's working dir (the systemd
    unit's WorkingDirectory in prod)."
-  ^File [device-name]
-  (io/file (or (System/getenv "DEVICE_LOG_DIR") "logs") device-name))
+  ^File [device-id]
+  (io/file (or (System/getenv "DEVICE_LOG_DIR") "logs") device-id))
 
 (defn today-utc-date
   "Today's UTC calendar date as a yyyy-MM-dd string — the day a just-received row files
@@ -61,8 +63,8 @@
 (defn- wake-file
   "Where one device's wake-time series is persisted — a single EDN file in its own
    telemetry directory, alongside its device logs."
-  ^File [device-name]
-  (io/file (dir device-name) "wake-times.edn"))
+  ^File [device-id]
+  (io/file (dir device-id) "wake-times.edn"))
 
 (defn- prune-wake
   "Drops samples older than the retention window (by their :t timestamp)."
@@ -71,44 +73,44 @@
     (filterv #(>= (:t %) cutoff) samples)))
 
 (defn load-wake-history!
-  "Reads each named device's persisted wake-time series into the atom at startup, pruning
+  "Reads each listed device's persisted wake-time series into the atom at startup, pruning
    stale samples. Best-effort per device: a missing or corrupt file just leaves that one
    empty rather than taking the others down with it."
-  [device-names]
+  [device-ids]
   (let [now (System/currentTimeMillis)]
     (reset! wake-history
-      (reduce (fn [acc device-name]
-                (let [f (wake-file device-name)]
+      (reduce (fn [acc device-id]
+                (let [f (wake-file device-id)]
                   (if (.isFile f)
                     (try
-                      (assoc acc device-name (prune-wake (vec (read-string (slurp f))) now))
+                      (assoc acc device-id (prune-wake (vec (read-string (slurp f))) now))
                       (catch Exception e
-                        (log/warn e (str "Could not read wake-time history for " device-name))
+                        (log/warn e (str "Could not read wake-time history for " device-id))
                         acc))
                     acc)))
-        {} device-names))))
+        {} device-ids))))
 
 (defn- record-wake-time!
   "Appends one wake-duration sample (ms) to a device's series, prunes to the retention
    window, and persists. Ignores nil/non-positive values — the firmware sends 0 on a fresh
    boot with no previous cycle, which would otherwise drag the averages down. Persistence
    is best-effort: an IO error is logged and swallowed so the device poll still succeeds."
-  [device-name wake-ms]
+  [device-id wake-ms]
   (when (and wake-ms (pos? wake-ms))
     (locking wake-lock
       (let [now     (System/currentTimeMillis)
-            samples (prune-wake (conj (get @wake-history device-name []) {:t now :ms wake-ms}) now)]
-        (swap! wake-history assoc device-name samples)
+            samples (prune-wake (conj (get @wake-history device-id []) {:t now :ms wake-ms}) now)]
+        (swap! wake-history assoc device-id samples)
         (try
-          (.mkdirs (dir device-name))
-          (spit (wake-file device-name) (pr-str samples))
+          (.mkdirs (dir device-id))
+          (spit (wake-file device-id) (pr-str samples))
           (catch Exception e
-            (log/warn e (str "Could not write wake-time history for " device-name))))))))
+            (log/warn e (str "Could not write wake-time history for " device-id))))))))
 
 (defn wake-samples
   "One device's rolling wake-time series, oldest→newest, as {:t :ms} maps."
-  [device-name]
-  (get @wake-history device-name []))
+  [device-id]
+  (get @wake-history device-id []))
 
 (defn wake-average
   "Mean awake-time in *milliseconds* over samples within the last window-ms, or nil when
@@ -126,22 +128,22 @@
   "Takes the telemetry parsed off one device's /api/display poll: keeps it as that
    device's latest snapshot for the device page's summary cards, and feeds its Wake-Time into
    that device's rolling trend."
-  [device-name status]
-  (swap! poll-state assoc device-name status)
-  (record-wake-time! device-name (:wake-time status)))
+  [device-id status]
+  (swap! poll-state assoc device-id status)
+  (record-wake-time! device-id (:wake-time status)))
 
 (defn poll-status
   "One device's most recent /api/display poll telemetry, or nil if it hasn't polled since
    startup."
-  [device-name]
-  (get @poll-state device-name))
+  [device-id]
+  (get @poll-state device-id))
 
 ;; --- Device log files -------------------------------------------------------------------
 
 (defn log-file-for
   "The device-log file for one device on one UTC day (a yyyy-MM-dd string)."
-  ^File [device-name day]
-  (io/file (dir device-name) (str "device-" day ".log")))
+  ^File [device-id day]
+  (io/file (dir device-id) (str "device-" day ".log")))
 
 (defn- prune-logs!
   "Keeps only the max-log-files newest device-<date>.log files in one device's directory,
@@ -162,16 +164,16 @@
    the body are collapsed so each POST stays one physical line (line-based reading in
    read-log depends on it). Best-effort: any IO error is logged and swallowed so the POST
    still gets its 204."
-  [device-name body]
+  [device-id body]
   (try
     (let [line (str/replace (str/trim body) #"\R+" " ")
-          d    (dir device-name)]
+          d    (dir device-id)]
       (locking log-lock
         (.mkdirs d)
-        (spit (log-file-for device-name (today-utc-date)) (str line "\n") :append true)
+        (spit (log-file-for device-id (today-utc-date)) (str line "\n") :append true)
         (prune-logs! d)))
     (catch Exception e
-      (log/warn e (str "Could not write device log for " device-name)))))
+      (log/warn e (str "Could not write device log for " device-id)))))
 
 (defn- parse-log-line
   "Pulls the entry maps out of one device-log line — the raw POST body (`{\"logs\":[…]}`).
@@ -186,8 +188,8 @@
   "Parsed entries from one device's log for one UTC day, in file (chronological) order.
    Empty when that day has no file; nil on a read error (rendered as an empty log either
    way)."
-  [device-name day]
-  (let [file (log-file-for device-name day)]
+  [device-id day]
+  (let [file (log-file-for device-id day)]
     (when (.isFile file)
       (try
         (with-open [r (io/reader file)]
@@ -199,8 +201,8 @@
 (defn log-days
   "The UTC days one device has a device-<date>.log for, newest first — the device page's day
    picker. Ignores names that don't match. Empty when its dir is absent."
-  [device-name]
-  (let [d (dir device-name)]
+  [device-id]
+  (let [d (dir device-id)]
     (if (.isDirectory d)
       (->> (.listFiles d)
         (keep (fn [^File f]
