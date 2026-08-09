@@ -3,12 +3,13 @@
 Weaknesses in *this repo's own code*, roughly in priority order. None are urgent for
 the current 15-minute-poll deployment — this is a backlog, not a bug list.
 
-Not to be confused with `ISSUES.md`, which records device/firmware and upstream-API
+Its counterpart is `DEVICE-ISSUES.md`, which records device/firmware and upstream-API
 problems observed in production. That file is about things outside this codebase; this
 one is about the code.
 
-Line numbers are as of 2026-07-27 and will drift — treat them as a starting point, not
-a reference.
+Line numbers are as of 2026-08-09 and will drift — treat them as a starting point, not
+a reference. Every entry below was re-verified against the code on that date; what had
+been fixed in the meantime moved to *Resolved* at the bottom.
 
 ## Worth doing
 
@@ -60,13 +61,13 @@ removes the failure mode outright.
 
 `(fn [i] (+ x (* w (/ i (double (dec n))))))` — the plotting-point spacing, which
 divides by `n-1` so the first and last points land on the box edges — appears verbatim
-in `core/series-layout` (:44), `cloud-cover-strip` (:152), `hour-axis-labels` (:308) and
-`day-markers` (:421).
+in `core/series-layout` (:69), `cloud-cover-strip` (:177), `hour-axis-labels` (:354) and
+`day-markers` (:467).
 
 The slot geometry, which divides by `n` because each point owns a column, appears in
 four more places and in three different shapes: `slot-center` in `thunder-flashes`
-(:186), `slot-edge` in `rain-background` (:208), and `slot-w` plus an inline centre
-calculation in `precip-bar-chart` (:337) and `precip-probability-line` (:390-393).
+(:232), `slot-edge` in `rain-background` (:254), and `slot-w` plus an inline centre
+calculation in `precip-bar-chart` (:383) and `precip-probability-line` (:436-439).
 
 The distinction between the two is real and load-bearing — it is why a lightning bolt
 sits over its own rainy column instead of drifting off it — and today it is explained in
@@ -77,61 +78,76 @@ divisor), and let the names carry the distinction.
 
 ### 3. Europe/Stockholm is hardcoded while the location is configurable
 
-Every timezone-aware helper in `trmnl-server.smhi` pins `Europe/Stockholm`, while
-`--lat`/`--lon` and `$FORECAST_LAT`/`$FORECAST_LON` invite arbitrary coordinates. SMHI's
-coverage is Nordic-ish so the damage is bounded, but a non-Swedish location silently gets
-Swedish local time for hour labels and day boundaries.
+Every timezone-aware helper in `trmnl-server.smhi` pins `Europe/Stockholm` (:159, :167,
+:220, :228), while arbitrary coordinates can be set from two directions. SMHI's coverage
+is Nordic-ish so the damage is bounded, but a non-Swedish location silently gets Swedish
+local time for hour labels and day boundaries.
 
-**Fix:** carry a timezone alongside the location override, or at least document the
-constraint where the flags are documented.
+**Wider than when this was written.** The entry originally named `--lat`/`--lon` and
+`$FORECAST_LAT`/`$FORECAST_LON`. Those env vars **no longer exist** — the only trace of
+them left is a stale docstring in `core/forecast-screen` (:487) that still cites them by
+name, which is worth deleting on its own. What replaced them is bigger: every display's
+`:lat`/`:lon` is a required field of its `devices.edn` entry, and since the registry forms
+landed those coordinates are **typed into a web form** by a human who is given no hint that
+only Sweden is really supported. `--lat`/`--lon` remain on the CLI path.
+
+**Fix:** carry a timezone alongside the location — derived from the coordinates, or a
+`:tz` field on the registry entry defaulting to `Europe/Stockholm` — or at minimum say so
+on the configure/edit forms, which are now the main way a location gets set.
 
 ### 4. `smhi` rebuilds a DateTimeFormatter on every call
 
-`local-time-str` (:73), `local-date` (:78), `local-day-label` (:134) and `local-now-str`
-(:142) each repeat the same `Instant/parse → atZone` pipeline; the three that format
-construct a `DateTimeFormatter` inline on every call — while the `swedish` locale right
-above them is correctly a `def`. The server side of this was consolidated into
+`local-time-str` (:157), `local-date` (:162), `local-day-label` (:218) and `local-now-str`
+(:223) each repeat the same `Instant/parse → atZone` pipeline; the three that format
+construct a `DateTimeFormatter` inline on every call (:160, :221, :229) — while the
+`swedish` locale right above them is correctly a `def`. The server side of this was consolidated into
 `pages/format-instant` during the 2026-07-27 refactor; `smhi` did not get the same
 treatment.
 
 **Fix:** hoist the formatters to `def`s and factor out the shared pipeline.
 
-### 5. A stale docstring and an undocumented demo output
+### 5. Stale docstrings and an undocumented demo output
 
-`core/draw-weather-icon` (:76) still claims the icons' fills "sit above `->1-bit`'s
-threshold and wash to white, leaving just their dark outlines — so the icons need no
-recoloring". That stopped being true at commit `8f66c38`/`7441ec4`, which gave the fills
-ordered-dither texture; CLAUDE.md describes the current behaviour correctly, so the
-docstring now contradicts it.
+Three separate things, all the same class — prose that outlived what it described:
 
-Separately, `--demo` also writes `out/demo-stale.png` (the stale-badge sample), which
-appears in neither the command list nor the `main` description in CLAUDE.md.
+- `core/draw-weather-icon` (:110) still claims the icons' fills "sit above `->1-bit`'s
+  threshold and wash to white, leaving just their dark outlines — so the icons need no
+  recoloring". That stopped being true at commit `8f66c38`/`7441ec4`, which gave the fills
+  ordered-dither texture; CLAUDE.md describes the current behaviour correctly, so the
+  docstring now contradicts it.
+- `core/forecast-screen` (:487) cites `FORECAST_LAT`/`FORECAST_LON` as a way to override
+  the location. Those env vars do not exist anywhere in the codebase (see #3).
+- `--demo` also writes `out/demo-stale.png` (the stale-badge sample, `main/write-stale-demo`
+  :17-25), which appears in neither the command list nor the `main` description in CLAUDE.md.
 
 ### 6. Landing-page loose ends
 
-Added in `0a83cde`, three small things:
+Added in `0a83cde`. Two of the original three remain (the third is under *Resolved
+2026-08-09*):
 
-- `pages/home` (:314) builds `"/images/" + filename` by hand while `server/image-url`
-  (:75) exists for the same job — though the latter takes a `base-url` the pages don't
-  have, so sharing needs a small split rather than a straight call.
-- The page embeds `<img src="/images/<hash>.png">`. If the 10-minute cache happens to
-  roll over between the HTML response and the image fetch, `image-response` 404s and the
+- `pages/screen-card` (:659) builds `"/images/" + id + "/" + filename` by hand while
+  `server/image-url` (:126-127) exists for the same job — though the latter takes a
+  `base-url` the pages don't have, so sharing needs a small split rather than a straight
+  call.
+- The page embeds `<img src="/images/<id>/<hash>.png">`. If the 10-minute cache happens to
+  roll over between the HTML response and the image fetch, `bytes-for` 404s and the
   browser shows a broken image. The device recovers from this by re-polling; a browser
-  does not. A stable `/images/latest.png` alias, or inlining the bytes, would close it.
-- `GET /` calls `current-image`, so any crawler that hits the root on a cold cache pays
-  for a live SMHI fetch and a full render.
+  does not. A stable `/images/<id>/latest.png` alias, or inlining the bytes, would close
+  it. Note the archive fallback added in `87d6ddd` does *not* cover this: it fires when
+  there is no cache entry at all, not when the entry changes underneath a live page.
 
-### 7. `/status` reads today's device log twice
+### 7. The device page reads today's log twice
 
-`pages/status` (:195-196) reads the selected day, then reads today's file again for the
+`pages/status` (:508-509) reads the selected day, then reads today's file again for the
 summary cards whenever you are viewing an older day. Correct, just wasteful — and the
-second read is invisible at the call site.
+second read is invisible at the call site. (Viewing *today*, the common case, already
+reuses the first read.)
 
 ## Cleanup
 
 ### 8. Dead code
 
-- `smhi/upcoming` (:144) — no callers anywhere.
+- `smhi/upcoming` (:231) — no callers anywhere.
 - `image/draw-wrapped-text` (:92) — no callers.
 - `image/floyd-steinberg` (:261) — no callers; it is a deliberate library primitive for
   photo/gradient dithering, but it also duplicates `->1-bit`'s greyscale loop line for
@@ -143,14 +159,12 @@ The babashka migration from the old logback device logs to the per-date layout
 (`6f76b85`, July 2026) has been run and is done, but still sits in the repo root.
 Delete it, or move it under `dev/`.
 
-### 10. `ISSUES.md` and `KNOWN-ISSUES.md` are easy to confuse
+### 10. A resolved entry below describes code that no longer exists
 
-Both files opened with the heading `# Known issues` until this file was retitled. The
-filenames are still near-identical for two documents with quite different jobs (upstream
-and device problems vs. this repo's code). Worth renaming one on disk — `DEVICE-ISSUES.md`
-would say what `ISSUES.md` actually holds.
+*(The filename half of this entry — `ISSUES.md` vs `KNOWN-ISSUES.md` — is done; see
+Resolved 2026-08-09.)*
 
-Note also that this file's *Resolved #5* below describes `core/draw-series-labels` and
+This file's *Resolved #5* below describes `core/draw-series-labels` and
 `draw-extremum-label`, which no longer exist: that design was superseded twice over (see
 Resolved 2026-07-27). The entry is kept as a record of what happened at the time, not as a
 description of the code.
@@ -158,15 +172,17 @@ description of the code.
 ### 11. The label checker prints the wrong season name
 
 `dev/label_collisions.clj` (:131) builds its dataset label with `(:name s)`, but the
-season maps use `:label`. All four demo seasons therefore report as `"demo "`, so a
-failure tells you a season broke without telling you which one. One-word fix.
+season maps use `:label` (`demo.clj` :14, :19, :24, :29). All four demo seasons therefore
+report as `"demo "`, so a failure tells you a season broke without telling you which one.
+One-word fix.
 
 ### 12. `pixel-font` is derived at draw time in eight places
 
-`core` caches `legend-font` (:122) as a `def` but calls `img/pixel-font` inline at :307,
-:349, :370, :406, :426, :471, :473 and :475 — five of which are the identical
-`(img/pixel-font :regular 16)`, the very font `legend-font` already holds. Each call runs
-`Font/.deriveFont`. Two or three cached `def`s would cover every use.
+`core` caches `legend-font` (:147) as a `def` but calls `img/pixel-font` inline at :353,
+:395, :416, :452, :472, :517, :519 and :521 — five of which (:353, :395, :452, :519, :521)
+are the identical `(img/pixel-font :regular 16)`, the very font `legend-font` already
+holds. Each call runs `Font/.deriveFont`. Two or three cached `def`s would cover every
+use.
 
 ### 13. `fill-string` leaves a 5px stroke on the Graphics2D
 
@@ -182,18 +198,18 @@ save/restore discipline, would make that safe rather than merely lucky.
 
 ### 14. The mm label's number format depends on the JVM's locale
 
-`core/precip-mm-labels` (:369) uses `(format "%.1fmm" …)`, which follows the default
+`core/precip-mm-labels` (:415) uses `(format "%.1fmm" …)`, which follows the default
 locale: `1.5mm` on an English JVM, `1,5mm` on a Swedish one. A comma is arguably *right*
 for a Swedish screen, but right now it is an environment property rather than a decision,
-and the rendered screen differs between a dev machine and the Pi. `server.pages` pins
-`Locale/US` explicitly for the battery voltage, so the codebase is inconsistent with
+and the rendered screen differs between a dev machine and the Pi. `server.pages` (:538)
+pins `Locale/US` explicitly for the battery voltage, so the codebase is inconsistent with
 itself. Pick one and pass it explicitly.
 
 ### 15. "Moln (%)" labels a series that is not a percentage
 
-The legend in `core/forecast-screen` says `Moln (%)` while the strip's thickness encodes
-SMHI's `cloud_area_fraction` in octas (0-8). It is the only unit on the screen that names
-something it does not show.
+The legend in `core/forecast-screen` (:529) says `Moln (%)` while the strip's thickness
+encodes SMHI's `cloud_area_fraction` (`smhi.clj`:124) in octas (0-8). It is the only unit
+on the screen that names something it does not show.
 
 ## Minor notes
 
@@ -206,6 +222,38 @@ something it does not show.
   `--demo` season renders are the de-facto regression tool. `clojure -M:check-labels`
   covers the one part that can be checked mechanically: that no temp/wind chart label is
   drawn onto a dot or another label. Everything else is still eyes-on-a-PNG.
+
+## Resolved (2026-08-09)
+
+### 10 (first half) — `ISSUES.md` renamed to `DEVICE-ISSUES.md`
+
+The two filenames were near-identical for two documents with quite different jobs.
+`git mv ISSUES.md DEVICE-ISSUES.md`, with its heading retitled to match and all nine
+references updated (four in CLAUDE.md, five in `src/`).
+
+Renaming rather than *merging* the two was deliberate, and the reason is worth keeping:
+`DEVICE-ISSUES.md` is cited **by number from source docstrings** (`server.clj` "That cost
+a real display an evening (DEVICE-ISSUES.md #2)", plus CLAUDE.md's #2 and #5), while
+nothing in `src/` cites this file at all. The device notes are reference documentation
+that code points at to explain its own shape; this file is a worklist. They also have
+opposite lifecycles — entries leave here when fixed, and stay there *because* they're
+resolved, the firmware traps being permanent facts about the hardware. Merging would have
+forced a renumber across both files' 1–5 ranges and broken those citations, which are
+exactly the kind that rot unnoticed.
+
+### 6 (third bullet) — `GET /` paid for a live render
+
+`/` called `current-image` per registered display, so a crawler hitting the root on a cold
+cache triggered a live SMHI fetch and a full render for each one. Resolved by
+`render/cached-entry` (`render.clj`:91), a peek that returns the cache entry or `nil` and
+never regenerates — its docstring names this case. `87d6ddd` then added the archive
+fallback behind it, so the page still shows something after a restart rather than going
+blank for up to 15 minutes.
+
+Note the sub-resource is a separate question and is *not* covered: the `<img>` src still
+points at `/images/<id>/…`, which does call `current-image`. A crawler that fetches the
+page's images can still trigger a render. What changed is that fetching the HTML alone no
+longer does — which is what the entry described.
 
 ## Resolved (2026-07-27)
 

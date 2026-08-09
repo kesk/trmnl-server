@@ -131,8 +131,8 @@
 (defn- forecast-quality
   "Maps render/cache-status to a human label and pill class for the Forecast card.
    A live :failed-at means SMHI is currently failing us and the device is being served
-   the stale-badged image (see ISSUES.md); the failure count is what distinguishes a
-   single blip from an outage worth looking into. How long it's been going on is left
+   the stale-badged image (see DEVICE-ISSUES.md); the failure count is what distinguishes
+   a single blip from an outage worth looking into. How long it's been going on is left
    to the card's value — the timestamp of the last render that did succeed."
   [status now]
   (let [{:keys [generated-at failed-at failures]} status]

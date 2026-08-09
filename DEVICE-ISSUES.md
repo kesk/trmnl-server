@@ -1,9 +1,14 @@
-# Known issues
+# Device, firmware and upstream issues
 
 Problems seen in production that live on the device/firmware or upstream-API side,
 not in this repo's rendering logic — recorded for follow-up, not because anything
 needs fixing in this codebase beyond the mitigations already applied. (Weaknesses in
 *our own* code belong in `KNOWN-ISSUES.md` instead.)
+
+Most entries here are **resolved, and kept anyway**: the firmware behaviours they
+document are permanent facts about the hardware, and several are cited by number from
+docstrings in `src/` to explain why a piece of code is shaped the way it is. So the
+numbering is load-bearing — add new entries at the bottom rather than renumbering.
 
 ## 1. SMHI intermittently answers with HTML instead of JSON
 
