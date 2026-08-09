@@ -261,7 +261,7 @@
    Never answer 404 here, whatever the MAC. The firmware reads the HTTP status without
    parsing the body and treats 404 as MAC_NOT_REGISTERED: it paints a logo, stores a
    15-minute sleep, and calls goToSleep() *inside that branch*, so it never reaches
-   /api/display at all. That cost a real display an evening (ISSUES.md #2).
+   /api/display at all. That cost a real display an evening (DEVICE-ISSUES.md #2).
 
    `status` in the body is load-bearing too: parseResponse_apiSetup bails unless it is
    exactly 200, and the firmware only persists api_key/friendly_id on that path. Omitting

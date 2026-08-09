@@ -113,10 +113,12 @@ without eyes.
 
 Two docs sit alongside this one: **`KNOWN-ISSUES.md`** is the backlog of weaknesses in this
 repo's own code (duplication, dead code, stale docstrings — each with file/line and a
-suggested fix), plus a log of what's been resolved and why; **`ISSUES.md`** covers
+suggested fix), plus a log of what's been resolved and why; **`DEVICE-ISSUES.md`** covers
 device/firmware and upstream-API problems seen in production, which are not this codebase's
 bugs. Check the former before starting a cleanup — the thing you noticed is probably already
-written up there.
+written up there. The latter is mostly *resolved* entries kept as a permanent record of how
+the firmware behaves, and several are cited by number from docstrings in `src/`, so its
+numbering is load-bearing: append rather than renumber.
 The only build step is the uberjar target in `build.clj` (via `tools.build`), used solely to
 produce a self-contained jar for deployment. Deployment itself (`deploy.clj`) is a babashka
 script that shells out to `clojure -T:build uber` rather than requiring `build.clj` in-process,
@@ -174,8 +176,8 @@ version, and 3.6x the entire screen composition).
   :precip-chance :precip-mm :cloud-cover}` map. A non-2xx status, or a body that
   won't parse, throws `ex-info` with `{:url :status :body}` (the body truncated to a
   whitespace-collapsed 200-char snippet) rather than letting SMHI's HTML error pages
-  reach the JSON reader as a bare `unexpected character: <` — see ISSUES.md, this is
-  a failure that recurs. Which is also why `fetch-raw-forecast` retries: 3 attempts,
+  reach the JSON reader as a bare `unexpected character: <` — see DEVICE-ISSUES.md, this
+  is a failure that recurs. Which is also why `fetch-raw-forecast` retries: 3 attempts,
   1s then 2s apart, but only for the transient shapes (`retryable?` — network/timeout,
   429, 5xx, or an unparseable 2xx), never for a plain 4xx, and never past a 15s total
   budget so a hung SMHI can't hold a device poll open for three 10s timeouts. Short
@@ -370,8 +372,8 @@ version, and 3.6x the entire screen composition).
   device has *stored*, which it only ever learns from `/api/setup`. So a display that was
   paired before — under an older scheme here, or with trmnl.com — goes on showing its old
   id while `/` shows the derived one, and the read-and-click handshake breaks. A soft reset
-  on the device clears it; see ISSUES.md #5, and the WARN `provision!` logs when a display
-  turns up already holding credentials.
+  on the device clears it; see DEVICE-ISSUES.md #5, and the WARN `provision!` logs when a
+  display turns up already holding credentials.
 
   **Both of those statuses are fields in the JSON body, and the HTTP status must be 200.**
   `fetchApiDisplay` checks the HTTP code before reading anything and accepts only 200, 301
@@ -395,9 +397,9 @@ version, and 3.6x the entire screen composition).
   **Never answer 404 from `/api/setup`**, whatever the MAC. The firmware reads the HTTP
   status without parsing the body and treats 404 as `MAC_NOT_REGISTERED`: it paints a bare
   logo, stores a 15-minute sleep, and calls `goToSleep()` *inside that branch*, so
-  `downloadAndShow()` never runs. That cost a real display an evening — see ISSUES.md #2,
-  which also records the earlier claim (that `bl.cpp` "runs `downloadAndShow` unconditionally
-  after `getDeviceCredentials`") being simply wrong.
+  `downloadAndShow()` never runs. That cost a real display an evening — see
+  DEVICE-ISSUES.md #2, which also records the earlier claim (that `bl.cpp` "runs
+  `downloadAndShow` unconditionally after `getDeviceCredentials`") being simply wrong.
 
   This replaced a scheme where the server rendered an 800x480 screen showing the display's
   **MAC**, for a human to copy into an onboarding form. Three things were wrong with it and

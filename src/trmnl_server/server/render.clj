@@ -23,8 +23,8 @@
 
 ;; How long a failed regeneration suppresses the next attempt. Without it the failed
 ;; entry keeps its old (already expired) :generated-at, so *every* request retries the
-;; fetch — and during the first outage in ISSUES.md the device was retrying every ~2s,
-;; which is the most plausible way we'd trip an SMHI rate limit while it's already
+;; fetch — and during the first outage in DEVICE-ISSUES.md the device was retrying every
+;; ~2s, which is the most plausible way we'd trip an SMHI rate limit while it's already
 ;; unwell. One attempt a minute is still well inside the device's 15-minute poll cycle,
 ;; so a recovered SMHI shows up on the next poll either way.
 (def ^:private failure-cooldown-ms (* 60 1000))

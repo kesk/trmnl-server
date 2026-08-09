@@ -34,8 +34,8 @@
    letting the JSON reader speak for them: SMHI answers an outage, a rate-limit or a
    moved endpoint with an HTML page, and handing that straight to `json/read-str`
    surfaces as `JSON error (unexpected character): <`, which says nothing about what
-   actually went wrong (see ISSUES.md). With the status and a snippet of the body in
-   the exception, the log line names the real failure, and a caller can tell a
+   actually went wrong (see DEVICE-ISSUES.md). With the status and a snippet of the
+   body in the exception, the log line names the real failure, and a caller can tell a
    retryable 5xx/429 from a 404 that means the API moved again — as pmp3g → snow1g
    did on 2026-03-31."
   [location]
@@ -75,10 +75,10 @@
 (defn- retryable?
   "Whether a failed fetch is worth another attempt. Retryable: a network or timeout
    error (no response at all), a 429, a 5xx, or a 2xx whose body wouldn't parse — the
-   transient shapes behind every episode in ISSUES.md. Not retryable: any other 4xx,
-   which means our URL is wrong rather than SMHI being unwell, and a 404 in particular
-   most likely means the API moved again (pmp3g → snow1g). Anything else propagates
-   immediately — a bug here shouldn't be tried three times."
+   transient shapes behind every episode in DEVICE-ISSUES.md. Not retryable: any other
+   4xx, which means our URL is wrong rather than SMHI being unwell, and a 404 in
+   particular most likely means the API moved again (pmp3g → snow1g). Anything else
+   propagates immediately — a bug here shouldn't be tried three times."
   [e]
   (if-let [status (:status (ex-data e))]
     (or (= 429 status) (<= 500 status 599) (<= 200 status 299))
