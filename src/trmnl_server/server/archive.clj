@@ -25,15 +25,21 @@
 
 (def ^:private retention-ms (* 24 60 60 1000))
 
+(defn root
+  "The archive root every device's subdirectory sits under: relative to the process's
+   working directory (the systemd unit's WorkingDirectory in prod, so
+   /home/seb/trmnl-server/archive/) unless ARCHIVE_DIR overrides it. Public because
+   server.aliases hangs the readable symlinks here, beside the id-named directories."
+  ^File []
+  (io/file (or (System/getenv "ARCHIVE_DIR") "archive")))
+
 (defn dir
   "Where --serve stows a rolling copy of one device's rendered screens: a subdirectory
-   named for that device's :id under the archive root, which is relative to the process's
-   working directory (the systemd unit's WorkingDirectory in prod, so
-   /home/seb/trmnl-server/archive/hallway/…) unless ARCHIVE_DIR overrides it —
-   mirroring how logs/ is placed. Distinct from out/, which stays reserved for the
-   batch-render modes."
+   named for that device's :id under the archive root above (so
+   /home/seb/trmnl-server/archive/hallway/… in prod), mirroring how logs/ is placed.
+   Distinct from out/, which stays reserved for the batch-render modes."
   ^File [device-id]
-  (io/file (or (System/getenv "ARCHIVE_DIR") "archive") device-id))
+  (io/file (root) device-id))
 
 (def ^:private timestamp-format
   (DateTimeFormatter/ofPattern "yyyyMMdd-HHmmss"))

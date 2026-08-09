@@ -161,7 +161,8 @@
                       "now stored salted and hashed in $ADMIN_PASSWORD_HASH. Run "
                       "`bb set-password.clj` to convert it.")))
         (log/warn (str "No $ADMIN_PASSWORD_HASH — / and every /devices/ page are open to anyone "
-                    "who can reach this server. Run `bb set-password.clj` to require a login."))))))
+                    "who can reach this server, including the forms that register a display and "
+                    "move an existing one. Run `bb set-password.clj` to require a login."))))))
 
 (defn enabled?
   "Whether a password is configured at all — including one that's configured wrongly, which

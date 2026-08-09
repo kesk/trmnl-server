@@ -1,8 +1,14 @@
 (ns trmnl-server.server.pages
   "The human-facing HTML pages — / (the index of displays), /devices/<id> (one display's
-   health dashboard), /devices/<id>/archive (its screen gallery) and /login (the admin
-   password form that gates the other three) — built with hiccup2.core, which
-   auto-escapes string content so there's no hand-rolled escaping here.
+   health dashboard), /devices/<id>/archive (its screen gallery), the two registry forms
+   (/devices/new and /devices/<id>/edit) and /login (the admin password form that gates
+   all of the above) — built with hiccup2.core, which auto-escapes string content so
+   there's no hand-rolled escaping here.
+
+   The forms are the only pages that *ask* for something rather than report it, and they
+   are why the password matters: everything else here is read-only telemetry, but these
+   two write devices.edn (through server.devices, which validates and persists — nothing
+   here does either).
 
    **Links are built from a device's :id, text from its :name.** The id is the stable
    identity that survives a rename (see server.devices); the name is the label, and these
@@ -23,8 +29,9 @@
 
    Each page fn returns an HTML *string*, not a Ring response: HTTP is server's
    business, so these can be called straight from the REPL. Their CSS lives in
-   resources/css/ rather than inline string blobs — base.css is the shared shell,
-   with archive.css and home.css layered on top for those two pages.
+   resources/css/ rather than inline string blobs — base.css is the shared shell, with
+   archive.css, home.css, login.css and form.css layered on top for the pages that need
+   more than it.
 
    These pages are in **English**, unlike the screen they show: the e-ink render is
    Swedish throughout (Temp/Vind/Moln/Regnrisk, weekday abbreviations, \"Uppdaterad\"),
@@ -32,6 +39,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [hiccup2.core :as h]
+            [trmnl-server.core :as core]
             [trmnl-server.server.archive :as archive]
             [trmnl-server.server.auth :as auth]
             [trmnl-server.server.devices :as devices]
@@ -60,6 +68,7 @@
 (def ^:private archive-css (css "base.css" "archive.css"))
 (def ^:private home-css (css "base.css" "home.css"))
 (def ^:private login-css (css "base.css" "login.css"))
+(def ^:private form-css (css "base.css" "form.css"))
 
 (defn- page
   "Wraps page-specific body hiccup in the shared HTML shell (doctype, head, the given
@@ -205,19 +214,42 @@
        [:span.day.sel item]
        [:a.day {:href (href-for item)} item]))])
 
+(defn- waiting-list
+  "Displays that have provisioned themselves and are waiting to be configured, as links
+   into the configure form. Each shows the **id** the display is printing on its own
+   screen — that's the whole handshake: you read six characters off the panel and click
+   the matching row.
+
+   A MAC appears nowhere here, which is a tightening rather than a compromise. The old
+   version of this list showed MACs because the MAC was the only handle a display had
+   before it existed in the registry; now it has an id from its first request. That
+   matters because a MAC is enough to collect a configured display's token from
+   /api/setup, so the fewer places it appears, the better."
+  [entries now]
+  [:div.unreg-list
+   (for [{:keys [id last-seen]} entries]
+     [:a.unreg-item {:href (device-path id "configure")}
+      [:span.mono id]
+      [:span.unreg-seen "seen " (ago-str last-seen now)]])])
+
 (defn- no-devices
-  "What every page shows when devices.edn is missing or empty. Lists any MACs that have
-   polled, since that's exactly what you need to write the file — a device you've just
-   plugged in announces itself here rather than only in the log."
+  "What / shows before any display has been configured. Anything already polling is
+   offered for configuration, which is the whole first run: plug the display in, wait for
+   the id to appear on its screen, click it here. The file instructions stay for the case
+   where nothing has polled yet and there's nothing to click."
   [title css-text]
   (page title css-text
     (list
-      [:h1 "No devices registered"]
-      [:p.empty "Create a devices.edn (see devices.example.edn) and restart the server."]
-      (when-let [macs (seq (devices/unknown-macs))]
+      [:h1 "No displays configured"]
+      (if-let [waiting (seq (devices/provisional-list))]
         (list
-          [:div.h "Seen polling"]
-          [:pre.reg (str/join "\n" (map :mac macs))])))))
+          [:p.empty (if (= 1 (count waiting))
+                      "A display is waiting to be configured. Click the id it's showing:"
+                      "These displays are waiting to be configured. Click the id one is showing:")]
+          (waiting-list waiting (System/currentTimeMillis)))
+        [:p.empty (str "No display has polled this server yet. Point one at it and it will "
+                    "show an id on its screen, which will appear here — or write a "
+                    "devices.edn by hand (see devices.example.edn) and restart.")]))))
 
 (defn- logout-form
   "The way out of a session. A POST, not a link: a GET /logout would let a link
@@ -237,21 +269,150 @@
   [auth-state]
   (case auth-state
     :open [:span.pill.pill-watch
-           {:title "No $ADMIN_PASSWORD_HASH is set, so these pages are open to anyone who can reach this server."}
+           {:title (str "No $ADMIN_PASSWORD_HASH is set, so these pages are open to anyone who can "
+                     "reach this server — including the forms that register a display and change "
+                     "where an existing one's forecast comes from.")}
            "auth disabled"]
     :lan  [:span.pill.pill-unknown
            {:title "$ADMIN_TRUST_LAN exempts the home network from the login. Reaching this page from the internet requires a password."}
            "LAN · no login required"]
     (logout-form)))
 
-;; A registered display's page used to end with a list of *un*registered MACs seen
-;; polling. It's gone: core/unregistered-screen puts a device's own MAC on the device, in
-;; 48px type, which is both a better answer to "what do I paste into devices.edn" and one
-;; you get by looking at the display you just plugged in. The list also had nothing to do
-;; with the display whose page it was on — it was server-wide, so it appeared identically
-;; on every one. devices/unknown-macs itself stays: no-devices still lists them for the
-;; first-run case (no registry at all, so no device page to visit), seen-unknown? gates
-;; the unregistered-screen render, and the first sighting of a MAC is still logged.
+;; A configured display's page carries no list of the ones waiting to be configured. That
+;; list is server-wide rather than about any one display, so it appeared identically on
+;; every device page while belonging to none of them; / is the page you're on when you plug
+;; something in, and it's the only place it belongs.
+
+;; --- The registry forms -----------------------------------------------------------------
+
+(defn- field
+  "One labelled input. The presentational attrs are passed to the <input> as they are, so a
+   field says for itself what it accepts (inputmode, step, required) — which gets a phone to
+   offer the right keyboard and the browser to catch an empty box before a round trip.
+   That's a convenience and never a check: devices/entry-problems is what actually decides,
+   and it sees every submission whatever the browser thought."
+  [{:keys [name label value hint] :as attrs}]
+  [:label.field
+   [:span.fl label]
+   [:input (merge {:name name :value value}
+             (select-keys attrs [:inputmode :step :placeholder :autofocus :required]))]
+   (when hint [:span.fh hint])])
+
+(defn- form-errors
+  "Why the last submission wasn't saved, listed rather than summarised: they're one per
+   field, and a form that reports only the first sends you round the loop once per mistake."
+  [errors]
+  (when (seq errors)
+    [:div.errors
+     [:p "Couldn't save this display:"]
+     [:ul (for [e errors] [:li e])]]))
+
+(defn- location-fields
+  "The :lat/:lon pair, shared by both forms — where this display's forecast is fetched for,
+   and the only field a human has to look up. Free decimal degrees rather than a map or a
+   place search: SMHI takes a point, and a point is what devices.edn has always held."
+  [values]
+  (list
+    [:div.pair
+     (field {:name        "lat"
+             :label       "Latitude"
+             :value       (get values "lat")
+             :inputmode   "decimal"
+             :step        "any"
+             :placeholder "57.7089"})
+     (field {:name        "lon"
+             :label       "Longitude"
+             :value       (get values "lon")
+             :inputmode   "decimal"
+             :step        "any"
+             :placeholder "11.9746"})]
+    [:p.fh.pair-hint "Decimal degrees. Copy them out of a map — right-click a spot in "
+     "Google Maps and the first line of the menu is the pair."]))
+
+(defn- hours-field [values]
+  (field {:name        "hours"
+          :label       "Hours (optional)"
+          :value       (get values "hours")
+          :inputmode   "numeric"
+          :placeholder "23"
+          :hint        "How many hourly points to plot. Blank uses the server default."}))
+
+(def ^:private location-defaults
+  "What the configure form starts with before it has been submitted: the coordinates core
+   renders when nobody says otherwise. Not a guess about where this display will hang —
+   just a filled-in field that shows the expected shape, and one that's right if the
+   display is going up in the same town as the rest."
+  {"lat" (str (:lat core/default-forecast-location))
+   "lon" (str (:lon core/default-forecast-location))})
+
+(defn configure-device
+  "The configure form at /devices/<id>/configure, for a display that has provisioned itself
+   and is showing its id on its own screen. `waiting` is the provisional entry the router
+   resolved that id to. `values` is nil on a first visit and whatever was submitted when
+   re-rendering after a rejection; `errors` being non-nil is also what suppresses the
+   defaults, so a field somebody deliberately cleared doesn't silently refill itself
+   between the complaint and the correction.
+
+   It asks for two things — what to call this display and where it is — and that is the
+   whole form. The id and the token already exist: the display was issued both at first
+   contact and has been using them ever since, so there is nothing here to choose and, more
+   to the point, nothing here that could hand it a credential it can't learn (see
+   devices/configure!). The MAC isn't shown either, on the same rule that keeps it off
+   every other page."
+  [waiting values errors]
+  (let [values (if (or errors values) values location-defaults)]
+    (page "trmnl-server · configure a display" form-css
+      (list
+        (crumbs [["trmnl-server" "/"]] "configure a display")
+        [:form.form {:method "post" :action (device-path (:id waiting) "configure")}
+         (form-errors errors)
+         [:div.static [:span.fl "Showing id"] [:span.mono (:id waiting)]]
+         (field {:name        "name"
+                 :label       "Name"
+                 :value       (get values "name")
+                 :required    true
+                 :autofocus   true
+                 :placeholder "Hallway"
+                 :hint        "The label these pages show. Change it whenever you like."})
+         (location-fields values)
+         (hours-field values)
+         [:button {:type "submit"} "Configure display"]
+         [:p.fh "The display picks up its first forecast within a few seconds."]]))))
+
+(defn edit-device
+  "The edit form at /devices/<id>/edit, for the fields that are safe to change on a display
+   that already exists: its label and where its forecast comes from. `values` is nil on a
+   first visit, when the form is filled from the entry itself.
+
+   Its :id is shown as text rather than a field — see devices/update! for why it can't
+   change, and devices/generate-id for why there was never anything to type. This is the
+   only page that shows one at all, since it's the one place the URL in the address bar
+   needs explaining. Its MAC isn't shown even as text: a registered device's MAC is the one
+   credential /api/setup accepts on its own, so it stays off these pages even behind the
+   password."
+  [device values errors]
+  (let [id     (:id device)
+        label  (:name device)
+        values (or values {"name"  (:name device)
+                           "lat"   (str (:lat device))
+                           "lon"   (str (:lon device))
+                           "hours" (some-> (:hours device) str)})]
+    (page (str "trmnl-server · " label " · edit") form-css
+      (list
+        (crumbs [["trmnl-server" "/"] [label (device-path id)]] "edit")
+        [:form.form {:method "post" :action (device-path id "edit")}
+         (form-errors errors)
+         [:div.static [:span.fl "Id"] [:span.mono id]]
+         (field {:name      "name"
+                 :label     "Name"
+                 :value     (get values "name")
+                 :required  true
+                 :autofocus true})
+         (location-fields values)
+         (hours-field values)
+         [:button {:type "submit"} "Save"]
+         [:p.fh (str "Saving re-renders this display's screen from the new location; it "
+                  "reaches the panel on its next poll.")]]))))
 
 ;; --- The device page --------------------------------------------------------------------
 
@@ -365,6 +526,7 @@
         [:div.top
          (crumbs [["trmnl-server" "/"]] label)
          [:div.top-nav
+          [:a.top-link {:href (device-path id "edit")} "Edit"]
           [:a.top-link {:href (device-path id "archive")} "Archived screens →"]
           (session-chrome auth-state)]]
         [:section.group
@@ -519,9 +681,16 @@
 (defn home
   "The landing page: an index of every registered display, each showing the screen it's
    being served right now and linking into its own page. `auth-state` is how the viewer
-   got past the gate — see session-chrome."
+   got past the gate — see session-chrome.
+
+   Under that index sit the displays that have provisioned themselves and are waiting to be
+   configured, each showing the id it is printing on its own screen. That belongs here and
+   only here: it is server-wide rather than about any one display (which is why the device
+   pages carry no copy of it), and this is the page you are on when you plug a new display
+   in."
   [auth-state]
-  (let [all-devices (devices/all)]
+  (let [all-devices (devices/all)
+        waiting     (seq (devices/provisional-list))]
     (if (seq all-devices)
       (page "trmnl-server" home-css
         (list
@@ -529,7 +698,14 @@
            [:h1 "trmnl-server"]
            [:div.top-nav (session-chrome auth-state)]]
           [:p.tag "Weather forecast screens for TRMNL e-ink displays"]
-          [:div.screens (map screen-card all-devices)]))
+          [:div.screens (map screen-card all-devices)]
+          (when waiting
+            [:section.unreg
+             [:div.sec "Waiting to be configured"]
+             [:p.tag (if (= 1 (count waiting))
+                       "A display is polling this server and showing this id on its screen. Click it to say what it is and where."
+                       "These displays are polling this server and showing these ids on their screens. Click one to say what it is and where.")]
+             (waiting-list waiting (System/currentTimeMillis))])))
       (no-devices "trmnl-server" home-css))))
 
 ;; --- /login -----------------------------------------------------------------------------

@@ -1,24 +1,41 @@
 ;; Device registry — copy to devices.edn and edit. Read once at startup, so restart
-;; the service after changing it. Override the path with $DEVICES_FILE.
+;; the service after changing it by hand. Override the path with $DEVICES_FILE.
+;;
+;; Writing this file by hand is the fallback, not the usual route. Point a display at the
+;; server and it provisions itself: it is issued an :id and a :token on its first request,
+;; prints that id on its own screen, and appears on / under "Waiting to be configured".
+;; Clicking it opens a form asking only what to call it and where it is, and that writes the
+;; entry here. The display starts showing forecasts within seconds — no restart, and no
+;; token to invent. The same pages can move or rename it later.
+;;
+;; Two consequences: the server rewrites this file in full when it does, so comments added
+;; below don't survive, and on a live server this file — not the copy on your laptop — is
+;; the authoritative one.
 ;;
 ;; Keyed by the device's MAC address, which the TRMNL firmware sends as the `ID`
-;; header on every request. Case doesn't matter. Don't know the MAC yet? Point the
-;; device at this server: it will show its own MAC on its own screen, ready to copy
-;; in here.
+;; header on every request. Case doesn't matter.
 ;;
 ;;   :id     required, [a-z0-9-]+, unique. The display's permanent identity: it's the
 ;;           URL segment (/images/<id>/…, /devices/<id>/…) and the directory name
 ;;           (archive/<id>/, logs/<id>/), so it's validated strictly at load. Pick one
 ;;           and never change it — changing an :id moves that display's archive and
 ;;           telemetry directories and breaks every existing link to it. Rename the
-;;           :name instead; that's what it's for.
+;;           :name instead; that's what it's for. A display that provisions itself is
+;;           given one derived from its MAC (e.g. "k9jx8v"), which is the id it prints on
+;;           its own screen — so don't rewrite those. Writing this file by hand, pick
+;;           whatever you like: a readable id is nicer in `ls archive/`, it just has to be
+;;           one you will never want to change.
 ;;   :name   required. The label shown on the web pages, and nothing else — free-form,
 ;;           so "Hallway" or "Pappas kök" are both fine. Change it whenever you like.
 ;;   :lat    required, decimal degrees.
 ;;   :lon    required, decimal degrees.
-;;   :token  required. Handed to the device by /api/setup as its api_key, and
-;;           checked against the Access-Token header on every later request.
-;;           Any long random string will do: `head -c 24 /dev/urandom | base64`
+;;   :token  required. Handed to the device by /api/setup as its api_key, and checked
+;;           against the Access-Token header on every later request. Issued once, at the
+;;           display's first contact, and never rotated — the firmware only asks for a
+;;           token when it has none, so a display given a second one can never learn it and
+;;           is locked out until its credentials are wiped. Changing this by hand has
+;;           exactly that effect. Any long random string will do for a new entry:
+;;           `head -c 24 /dev/urandom | base64`
 ;;   :hours  optional. How many hourly points to render; falls back to
 ;;           $FORECAST_HOURS, then to core/default-forecast-hours (23).
 

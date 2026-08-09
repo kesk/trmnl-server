@@ -33,9 +33,12 @@ clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 
 # Serve live forecast screens to real TRMNL OG devices over HTTP (see
 # trmnl-server.server below). Listens on $PORT or 8080. Each display's location comes
-# from the device registry, devices.edn ($DEVICES_FILE) — copy devices.example.edn and
-# fill in one entry per device before this does anything useful; without a registry the
-# server starts but refuses every poll. $FORECAST_HOURS (default 23) is the server-wide
+# from the device registry, devices.edn ($DEVICES_FILE). You don't have to write that file
+# by hand any more: a display that polls provisions itself, shows an id on its own screen and
+# is listed on / — clicking it opens the form that says what it is and where (see the registry
+# forms under trmnl-server.server below). That writes the file and takes effect without a
+# restart. Hand-editing still works and still needs one. $ID_SALT_FILE (default id-salt)
+# holds the key those ids are derived from. $FORECAST_HOURS (default 23) is the server-wide
 # fallback for entries that don't set :hours. $ADMIN_PASSWORD_HASH is the login for the human
 # pages (/ and /devices/<id>[/archive]); unset — the usual case when running from source — leaves
 # them open and says so at startup. $ADMIN_TRUST_LAN=true exempts the home network from
@@ -64,7 +67,10 @@ bb deploy.clj
 # Same, but also push the local devices.edn to the Pi. NOT the default: the local copy
 # is a dev registry with placeholder MACs, and clobbering the real one would point both
 # displays at the wrong forecasts. Without the flag, deploy only warns if the Pi has no
-# registry at all.
+# registry at all. Since displays now provision themselves and are configured through the
+# web pages — which write the registry *on the Pi*, with tokens issued there — the Pi's copy is the
+# authoritative one, so this refuses outright when the target already has a registry.
+# It's for seeding a target that hasn't got one; --force overrides it.
 bb deploy.clj --devices
 
 # Deploy to the *test* instance instead: a second, independent service on the same Pi
@@ -119,8 +125,8 @@ this is otherwise a `deps.edn`-only exploratory project (no Leiningen).
 
 ## Architecture
 
-Thirteen namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
-`demo`, `labels`, `core`, `main`); `server` and the six `server.*` ones under it are
+Fourteen namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
+`demo`, `labels`, `core`, `main`); `server` and the seven `server.*` ones under it are
 the serving path, which only `--serve` exercises.
 
 **The server is multi-device.** One Pi serves several TRMNL displays, each with its own
@@ -250,8 +256,43 @@ version, and 3.6x the entire screen composition).
   serving each archived PNG (or its `.edn` sidecar) off disk — all three behind the admin
   password (`GET`/`POST /login`, `POST /logout`, see `server.auth`).
 
+  **Displays are configured from the web**, which is the one place this server writes
+  anything a human typed: `GET`/`POST /devices/<id>/configure` fills in the `:name` and
+  `:lat`/`:lon` of a display that is already polling and waiting (they're listed at the
+  bottom of `/`, each showing the id it is printing on its own screen), and
+  `GET`/`POST /devices/<id>/edit` changes those same fields afterwards. Both write
+  `devices.edn` through `server.devices` and swap the in-memory registry, so **no restart
+  is involved** — a provisional display polls every 5 seconds, so it picks up its first
+  forecast within seconds of the form being submitted. An edit calls `render/forget!` —
+  the render cache is keyed by `:id` and knows nothing of the location that produced its
+  entry, so a display moved to another town would otherwise be served the old one's
+  forecast for the rest of the TTL.
+
+  **The configure form issues nothing.** The `:id` and the `:token` already exist — the
+  display was handed both at first contact and has been using them since — and
+  `devices/configure!` carries them across unchanged. That is deliberate and load-bearing:
+  the previous design minted a token when a human registered a display, and since the
+  firmware only calls `/api/setup` when it has *no* stored key, any display that had ever
+  been paired could never learn the new one. It presented the old token forever and was
+  refused forever. Nothing reachable from a browser mints a token now.
+
+  The password is still what makes any of this legitimate, and the ordering matters: the
+  registry was deliberately read-only for as long as these pages were open to anyone who
+  could reach the server (see `server.devices`), because a write endpoint behind no
+  authentication is not a thing to build. The two POSTs carry a **same-origin check**
+  (`same-origin?`) on top of the session, because the session isn't always the thing
+  standing in the way: under `$ADMIN_TRUST_LAN` a LAN request needs no cookie at all, so
+  without it a page open in a browser on the home network could configure a display. A
+  missing `Origin` is allowed through — that's a non-browser client, which has no ambient
+  credentials to borrow. What is deliberately *not* offered is deleting a display, changing
+  an `:id`, or rotating a token: each of those strands or moves something on disk
+  (`archive/<id>/`, `logs/<id>/`, a display's stored credentials), so they remain a hand
+  edit and a restart. Deleting is now recoverable, though — a display removed from the file
+  re-provisions itself with the same derived id and the token it still holds, so it comes
+  back rather than needing its credentials wiped.
+
   **The display is a path segment, not a `?device=` filter.** It identifies which pages
-  these *are*, so an unregistered id is a 404 from the router (`device-page-response`
+  these *are*, so an unknown id is a 404 from the router (`device-page-response`
   resolves it once and hands the entry to the page fn) rather than a fallback inside each
   page — the old query form silently rendered the *first* display's data at a URL that had
   asked for another's. `?day=` on the device page stays a query parameter, because it
@@ -308,36 +349,62 @@ version, and 3.6x the entire screen composition).
   place is **`ring/ring-codec`** — see `server.auth` below.
 
   **Device identity and auth.** Every device route resolves the firmware's `ID` header
-  (the MAC) through `server.devices`; `with-device` then checks the `Access-Token`
-  header against that device's registered `:token` and 401s on a mismatch. An
-  unrecognised MAC is recorded (logged once per MAC, not once per poll, because the
-  endpoint is internet-reachable). **How a new display gets registered is by reading its
-  MAC off its own screen** — see the next paragraph. The device pages used to carry a
-  copy-pasteable list of unregistered MACs as well; that's gone, since the on-screen MAC
-  answers the same question better and the list was server-wide, so it appeared
-  identically on every display's page while belonging to none of them. The record itself
-  stays: `seen-unknown?` gates the unregistered-screen render, and `/` still lists them in
-  the first-run case, where there's no registry and so no device page to visit.
+  (the MAC) through `server.devices`. A *configured* display's `Access-Token` is checked
+  against its registered `:token` and a mismatch is a 401; a display that hasn't been
+  configured yet is provisioned instead, and whatever token it presents is adopted (see
+  below). A MAC-shaped `ID` is required throughout — anything else is a 404, which is what
+  keeps an internet-reachable pair of routes from being filled with invented identifiers.
 
-  **An unregistered device is shown its own MAC.** Rather than 404ing `/api/display` and
-  leaving the panel on a firmware error, the server answers 200 with
-  `core/unregistered-screen` — the MAC in 48px type, plus the origin the device reached
-  us on. The MAC is the one thing needed to register a display and the one thing that's
-  otherwise awkward to obtain: it isn't printed on the case. This works because the
-  firmware reaches `/api/display` even when `/api/setup` has just 404'd (`bl.cpp` runs
-  `downloadAndShow` unconditionally after `getDeviceCredentials`), so the screen lands on
-  the next wake; `refresh_rate` is 5 min rather than 15, since somebody is usually
-  standing in front of it.
+  **A display provisions itself on first contact.** `/api/setup` never refuses a
+  MAC-shaped `ID`: it derives an `:id`, mints a token, hands both back with `status: 200`,
+  and the display stores them permanently and starts polling. `/api/display` then answers
+  `"status": 202` until somebody configures it. That is the firmware's own "known but not
+  claimed" signal — it paints its Friendly ID screen from the id and `message` it got at
+  setup, and drops its sleep to `SLEEP_TIME_WHILE_NOT_CONNECTED` (5s), so the id sits on
+  the panel and the first forecast lands seconds after the form is submitted. **We render
+  nothing for any of this**; the screen is composed on the device.
 
-  The image comes from `/images/unregistered-<hash8>.png`, content-hashed for the same
-  reason the forecast filenames are but with sharper consequences: the firmware decides
-  whether to download by asking whether that filename already exists in its own SPIFFS
-  (`checkCurrentFileName`), never by asking us. A constant name would pin every device to
-  the first version of this screen it ever cached, so a later fix to the wording or the
-  font would silently never arrive. The MAC is resolved off the `ID` header the firmware
-  also sends on image fetches (`buildImageHeaders`) — so it never appears in a URL — and
-  only a MAC that has actually polled (`devices/seen-unknown?`) can trigger a render,
-  which is what keeps an unauthenticated route from drawing 800x480 images on demand.
+  Two things about that screen are the firmware's and not ours: its text is hardcoded to
+  "Please visit trmnl.com/start with Friendly ID &lt;id&gt;" (the `message` we send at
+  `/api/setup` is passed to that case and never used), and the id it prints is whatever the
+  device has *stored*, which it only ever learns from `/api/setup`. So a display that was
+  paired before — under an older scheme here, or with trmnl.com — goes on showing its old
+  id while `/` shows the derived one, and the read-and-click handshake breaks. A soft reset
+  on the device clears it; see ISSUES.md #5, and the WARN `provision!` logs when a display
+  turns up already holding credentials.
+
+  **Both of those statuses are fields in the JSON body, and the HTTP status must be 200.**
+  `fetchApiDisplay` checks the HTTP code before reading anything and accepts only 200, 301
+  and 429 — anything else is `HTTPS_RESPONSE_CODE_INVALID`, which paints `WIFI_INTERNAL_ERROR`
+  ("WiFi connected, but API connection cannot be established"). Only past that gate does
+  `bl.cpp` parse the payload and switch on `request_status = apiResponse.status`. So a real
+  HTTP 202 never reaches the 202 branch it was meant to trigger — measured on a real display,
+  which sat on that error screen. The transport says "I answered"; the body says what the
+  answer was. `/api/setup` has the identical split (`parseResponse_apiSetup` requires body
+  `status` 200), and it is the same trap twice.
+
+  `image_url` in the setup response is fetched and stored by the firmware as a *logo*
+  (`downloadSetupImage` → `writeImageToFile("/logo.png", …)`), not shown as a screen, so
+  what it has to do is resolve — a failed fetch paints `API_IMAGE_DOWNLOAD_ERROR`. We point
+  it at `/images/setup-logo.png` (the bundled SMHI wordmark). Note the firmware then draws
+  the screen with `storedLogoOrDefault`, which reads flash and never reads that file back,
+  so the visible logo is TRMNL's; ours is a bet on a future firmware. The one thing we do
+  control on that screen is `message`, which carries the address to configure the display
+  at.
+
+  **Never answer 404 from `/api/setup`**, whatever the MAC. The firmware reads the HTTP
+  status without parsing the body and treats 404 as `MAC_NOT_REGISTERED`: it paints a bare
+  logo, stores a 15-minute sleep, and calls `goToSleep()` *inside that branch*, so
+  `downloadAndShow()` never runs. That cost a real display an evening — see ISSUES.md #2,
+  which also records the earlier claim (that `bl.cpp` "runs `downloadAndShow` unconditionally
+  after `getDeviceCredentials`") being simply wrong.
+
+  This replaced a scheme where the server rendered an 800x480 screen showing the display's
+  **MAC**, for a human to copy into an onboarding form. Three things were wrong with it and
+  are worth not rebuilding: it needed `/api/setup` to fail in a very particular way to be
+  reachable at all; the MAC is the one credential `/api/setup` accepts on its own, so the
+  scheme's whole premise was to publish one on a wall; and registering minted a *fresh*
+  token, which locks out any display that already holds one (see `server.devices`).
 
   `/api/setup` is the one route authenticated by MAC alone, because it's
   precisely the request a device makes *before* it has a token. Its response **must**
@@ -362,17 +429,25 @@ version, and 3.6x the entire screen composition).
   The human pages (`/`, everything under `/devices/`, and the archived files there) sit
   behind **one admin password and a signed session cookie** — `server.auth`, wired in at
   `handler` via `gated`. Which is what being internet-reachable bought: they were
-  deliberately open before, on the grounds that they expose only read-only telemetry, and
-  that reasoning still holds as the *fallback* (no `$ADMIN_PASSWORD_HASH` → no gate, a startup
-  warning, and an "auth disabled" pill on `/status`), but a login is cheaper than
-  Cloudflare Access and doesn't need the device routes carved out of a hostname policy.
+  deliberately open before, on the grounds that they exposed only read-only telemetry, and
+  a login was still cheaper than Cloudflare Access and didn't need the device routes carved
+  out of a hostname policy. **That "read-only" premise is now gone** — the registry forms
+  write `devices.edn` — which is why the gate had to come first and the forms second, and
+  why the no-password fallback (no `$ADMIN_PASSWORD_HASH` → no gate, a startup warning, an
+  "auth disabled" pill) means more than it used to: it now leaves the forms open as well,
+  so someone reaching the server could point the hallway display at another town. It stays
+  a legitimate state — running from source has no password and the forms have to work
+  there, and a LAN-only deployment with no tunnel was the original setup — but "auth
+  disabled" on a machine anyone else can reach is now worth acting on rather than noting.
   The device API is what makes this a two-scheme server rather than a one-scheme one:
   `/api/*`, `/images/*` and `/health` **must stay outside the gate**, because a display
   cannot do an interactive login — they authenticate by registered MAC + `Access-Token`
-  instead. What the pages still deliberately don't show is a **registered device's MAC**
-  (only the unregistered ones, which are worth nothing without an entry in the file) —
-  that matters because `/api/setup` hands out a token on presentation of a registered MAC
-  alone, so it stays out of reach even for someone who gets past the login.
+  instead. What the pages deliberately **never** show is a device's **MAC** — not even for
+  a display waiting to be configured, which is listed by its derived `:id` instead. That
+  matters because `/api/setup` hands out a token on presentation of a MAC alone, so it stays
+  out of reach even for someone who gets past the login. The old onboarding flow did print
+  unregistered MACs, on the grounds that one without a registry entry was worth nothing;
+  provisioning removed the need and the exception with it.
 
   The traversal guards live here, in the
   namespace the untrusted URI arrives in: `archive-file-response` constrains the name to a
@@ -381,28 +456,109 @@ version, and 3.6x the entire screen composition).
   registry — whose `:id`s are themselves validated to `[a-z0-9-]+`
   at load. So no route can be walked out of its directory.
 
-  The work behind the routes is six namespaces under `trmnl-server.server.*`, none of
+  The work behind the routes is seven namespaces under `trmnl-server.server.*`, none of
   which know about HTTP:
 
 - **`trmnl-server.server.devices`** — the device registry, and the only namespace that
-  knows a MAC address from a display. Read once at startup from `devices.edn`
-  (`$DEVICES_FILE`) into an atom: MAC → `{:id :name :lat :lon :token :hours?}`. Editing it
-  means restarting the service, which is a deliberate ceiling — a household's worth of
-  displays doesn't justify a mutable store or an admin UI. A *missing* file is a
-  legitimate first-run state (empty registry, warning logged, `/status` still loads); a
-  *malformed* one throws and takes the service down with it, on the grounds that a
-  display silently served the wrong town's weather is the worse outcome.
+  knows a MAC address from a display. A display is in one of **three states**, and only the
+  last is on disk:
 
-  `:id` is validated against `[a-z0-9-]+` **at load**, and that one check is what
-  makes everything downstream safe: the id is a URL segment (`/images/<id>/…` and
-  every human page under `/devices/<id>/…`) and a directory name (`archive/<id>/`,
-  `logs/<id>/`), none of
-  which then need their own sanitising. `:name` gets no such rule — it's a free-form
-  label that reaches only hiccup, which escapes it — so the two clashing is a `WARN`
-  while two clashing `:id`s refuse to load. Also tracks MACs that polled without being
-  registered (capped, and only if they look like MACs — the endpoint is public): that's
-  what gates the unregistered-screen render and what `/` lists when the registry is
-  empty.
+  - **unknown** — never seen, or long gone.
+  - **provisional** — has an `:id` and a `:token` and is polling, but nobody has said what
+    it is or where. Held in the in-memory `provisional` atom, capped at 5 with a 30-minute
+    TTL on the last sighting.
+  - **configured** — an entry in `devices.edn`: MAC → `{:id :name :lat :lon :token :hours?}`.
+
+  Read at startup from `devices.edn` (`$DEVICES_FILE`) into an atom. A *missing* file is an
+  ordinary state now rather than a warning — a server that has never been configured still
+  provisions whatever polls it and offers it on `/`; a *malformed* one throws and takes the
+  service down with it, on the grounds that a display silently served the wrong town's
+  weather is the worse outcome.
+
+  **The `:id` is derived from the MAC**, as six characters of `HMAC-SHA256(salt, MAC)`
+  mapped through an alphabet with the look-alikes (`0/o`, `1/l/i`) removed. Derived rather
+  than stored because the device never tells us its id — `buildDisplayHeaders` sends the MAC
+  and the token and nothing else — so an id kept only in memory would be lost on restart
+  while the display went on printing it. Recomputing always agrees with the screen, which is
+  the whole handshake. It also means a display removed from the file and re-provisioned gets
+  its *old* directories back rather than orphaning them.
+
+  Keyed by a salt (`id-salt`, `$ID_SALT_FILE`, 16 bytes, created on first run) because a
+  bare MAC hash is brute-forceable — a known OUI leaves ~16M candidates — and ids are
+  visible on the ungated `/images/<id>/…` route, so recovering a MAC from one would hand
+  over a display's token. Two consequences: the live and test instances have separate salts
+  and so disagree about ids for the same display, and losing `id-salt` re-ids every
+  *unconfigured* display (configured ones carry their id in the file). Deriving from the MAC
+  is not what the `:id`/`:name` split forbids — that rule is about deriving an id from a
+  mutable *label*; a MAC is immutable hardware identity, so there is no rename to be
+  confused by.
+
+  **A token is minted once per MAC, by `provision!`, and never rotated.** `generate-token`
+  (`SecureRandom`, 24 bytes, URL-safe base64) is called from exactly one place — a MAC's
+  first `/api/setup` — and nothing reachable from a browser calls it at all. When an
+  unconfigured MAC presents an `Access-Token`, that token is *adopted*: a provisional
+  display re-teaches the server its own credential after a restart, and nothing is protected
+  before configuration anyway. Once configured, the check is strict again.
+
+  `configure!` is what writes the file, carrying the provisional `:id` and `:token` across
+  untouched; `update!` changes `:name`/`:lat`/`:lon`/`:hours` afterwards. Both return
+  `{:device …}` or `{:errors [msg …]}` — bad input is an ordinary answer to a form, not an
+  exception — and both validate through the *same* `entry-problems` that `load!` throws on,
+  which is what stops a form accepting an entry the next restart would refuse. (Provisional
+  entries never reach the file, so `entry-problems` still requires every field; there is no
+  half-configured shape on disk.)
+
+  The whole file is rewritten on each change (so hand-written comments don't survive) and
+  the atom is replaced, in that order: a failed write leaves memory and disk still agreeing.
+  The write is atomic (temp file in the same directory, `ATOMIC_MOVE` over the old one) and
+  owner-only — `Files/createTempFile`'s POSIX permissions carry over the rename — which both
+  files written here want: one holds every display's token, the other the id salt. Mutations
+  hold a lock so two submissions can't interleave a read-modify-write. The output is
+  *generated to look hand-written* — fixed key order, aligned values, entries sorted by
+  `:id` — because it is still a file meant to be opened and edited, and a diff of two
+  server-written versions should show only what changed.
+
+  `:id` is validated against `[a-z0-9-]+` **at load**, and that one check is what makes
+  everything downstream safe: the id is a URL segment (`/images/<id>/…` and every human page
+  under `/devices/<id>/…`) and a directory name (`archive/<id>/`, `logs/<id>/`), none of
+  which then need their own sanitising. `:name` gets no such rule — it's a free-form label
+  that reaches only hiccup, which escapes it — so the two clashing is a `WARN` while two
+  clashing `:id`s refuse to load. A derived id can't collide in practice (31⁶ ≈ 887M) and
+  can't be retried if it did, since it's a function rather than a draw; `configure!` refuses
+  the clash and a hand-written `:id` remains the way out.
+
+- **`trmnl-server.server.aliases`** — readable symlinks beside the id-named directories:
+  `archive/Köket -> k9jx8v`, and the same under `logs/`. It exists because a web-registered
+  display's `:id` is generated, which is right for a permanent identifier and useless to
+  someone reading a directory listing over ssh. A symlink squares that circle: the id keeps
+  naming the thing, and the name — free to change — names a pointer that is simply recreated
+  on a rename. **That's why deriving this from `:name` is safe when deriving an `:id` from it
+  isn't**: a link is disposable, so it can follow a rename that a directory full of history
+  can't.
+
+  This is the **one place a `:name` reaches the filesystem**, which cuts against the rule
+  that makes every other path safe (only `:id` is validated, at load, so nothing downstream
+  sanitises anything). So `link-name` does that job explicitly and conservatively: runs of
+  anything outside letters/digits/dot/dash/underscore collapse to a dash, leading dots and
+  dashes are stripped — which disposes of `.`, `..` and hidden files by turning them into
+  nothing — accents are kept (`Köket` stays `Köket`, these filesystems are UTF-8), and the
+  result is capped at 64 chars. A name that reduces to another display's `:id`, or to its
+  own, gets no link at all; those comparisons are **case-insensitive**, because one of the
+  two filesystems involved is — a case-sensitive test gives a pointless `Hallway -> hallway`
+  on the Pi's ext4 and a `FileAlreadyExistsException` on APFS. Two displays reducing to the
+  same link name is a `WARN` and one link, matching the registry's existing stance on
+  duplicate `:name`s.
+
+  Only symlinks whose target is a **plain sibling name** are ever deleted (`ours?`), so no
+  amount of misbehaviour here can remove a directory holding a display's archive, or a link
+  somebody else put there. A link whose target is no longer a registered display is
+  deliberately **kept**: after a display is removed from `devices.edn` by hand, that link is
+  the only thing on disk still explaining what the generated-id directory was. It yields the
+  moment a live display wants that name, so keeping it can't block anything. `sync!` is
+  idempotent and runs from `server`'s `sync-aliases!` at startup (which also picks up a
+  rename made by hand in the file) and after every registry change. Best-effort throughout:
+  a filesystem that won't do symlinks costs a `WARN` and nothing else, since no part of
+  serving a screen depends on these.
 
 - **`trmnl-server.server.auth`** — the admin password gate on the human pages. One
   password, no users, **stored salted and hashed**: `$ADMIN_PASSWORD_HASH` holds a
@@ -537,7 +693,7 @@ version, and 3.6x the entire screen composition).
   so a crawler hitting the landing page can't trigger a live fetch and a full render
   per registered display.
 
-- **`trmnl-server.server.pages`** — the four human-facing HTML pages, built with
+- **`trmnl-server.server.pages`** — the six human-facing HTML pages, built with
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
   there's no hand-rolled `escape-html`) via a shared `page` layout helper. Each page fn
   returns an HTML *string*, not a Ring response — HTTP is `server`'s business, so
@@ -557,13 +713,29 @@ version, and 3.6x the entire screen composition).
   namespace constructs one. **This is the only namespace that reads a device's `:name`**,
   and the rule throughout is: hrefs from `:id` (via `device-path`), visible text from
   `:name`. hiccup's escaping is what makes the second half safe now that a label is
-  free-form — verified with a `<script>` tag as a device name. `/login` is the fourth — the password form `server.auth` gates
-  the other three with, plus the "Log out" control and the "auth disabled" pill they
-  carry in return. Their
-  CSS lives in `resources/css/{base,archive,home,login}.css` (slurped at load through
+  free-form — verified with a `<script>` tag as a device name, which is also what makes
+  the *forms* safe, since a rejected submission is re-rendered with what was typed in the
+  `value` attributes. `/` also carries the list of displays **waiting to be configured**,
+  and only it does: that list is server-wide rather than about any one display, which is why
+  the device pages carry no copy of it, and `/` is the page you're on when you plug
+  something in. Each row shows the `:id` the display is printing on its own screen — read
+  six characters off the panel, click the matching row — and never its MAC.
+  `/login` is the password form `server.auth` gates the rest with, plus the "Log out"
+  control and the "auth disabled" pill they carry in return. `configure-device` and
+  `edit-device` are the two registry forms — the only pages here that ask for something
+  rather than report it. Both ask for the same two things (what to call this display, where
+  it is); `configure-device` is the one a provisional display gets, and it issues nothing. They share a `field` helper and take `values`/`errors`, so a
+  refused submission comes back with every box still holding what was typed (`errors`
+  being non-nil is also what suppresses the prefilled defaults, so a box somebody
+  deliberately cleared doesn't silently refill itself); the *validation* is
+  `devices/entry-problems`, never here. The edit form shows the display's `:id` as
+  static text and its MAC not at all — a MAC is the one credential `/api/setup` accepts on
+  its own, so the rule that keeps it off these pages holds even on the page that edits the
+  entry it belongs to. Their
+  CSS lives in `resources/css/{base,archive,home,login,form}.css` (slurped at load through
   `io/resource`, so it resolves from the uberjar too) rather than inline string
-  blobs — `base.css` is the shared shell, with `archive.css`, `home.css` and
-  `login.css` layered on top for those three pages. The `/status` page also shows the **deployed commit** via
+  blobs — `base.css` is the shared shell, with `archive.css`, `home.css`,
+  `login.css` and `form.css` layered on top for the pages that need more than it. The `/status` page also shows the **deployed commit** via
   `deployed-version`, read once at load from a bundled `version.edn` that
   `build.clj`'s uber task bakes in (`git rev-parse --short HEAD`, plus a `-dirty`
   suffix when the tree isn't clean, and a build timestamp). Running from source
