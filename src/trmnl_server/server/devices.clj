@@ -301,9 +301,22 @@
    A missing registry is a legitimate state, and more obviously so now: a server that has
    never been configured still provisions whatever polls it, lists it on /, and works the
    moment somebody fills in the form. A *malformed* one throws and takes the service down
-   with it — see validate-entry!."
+   with it — see validate-entry!.
+
+   The salt is loaded here so that a first run creates it while somebody is watching the
+   log, but a failure is not fatal. The registry is what the configured displays on the
+   wall depend on; the salt only decides what to call a display nobody has configured yet,
+   so an unwritable directory should cost the next provisioning attempt (salt-bytes retries
+   there) and not every display's forecast. Failing hard is reserved for a malformed
+   registry, where carrying on means serving the wrong town's weather."
   []
-  (load-salt!)
+  (try
+    (load-salt!)
+    (catch Exception e
+      (log/error e (str "Could not read or create the device-id salt at "
+                     (.getPath (salt-file))
+                     " — configured displays are unaffected, but no new display can be"
+                     " provisioned until this is fixed."))))
   (let [f (registry-file)]
     (if (.isFile f)
       (let [devices (parse (edn/read-string (slurp f)))]
