@@ -579,33 +579,3 @@
   "Draws `text` horizontally centred on the panel, with its baseline at y."
   [canvas text y & {:keys [font]}]
   (img/draw-text canvas text (/ (- img/og-width (img/text-width canvas text :font font)) 2) y :font font))
-
-(defn unregistered-screen
-  "The screen served to a device whose MAC isn't in devices.edn: its own MAC
-   address, large, so it can be read off the display and pasted into the
-   registry.
-
-   This exists because the MAC is the one thing you need to register a device and
-   the one thing you can't get at — it isn't printed on the case, and the
-   alternative is watching the device page for it to appear. The firmware reaches
-   /api/display even when /api/setup has just 404'd (bl.cpp calls
-   downloadAndShow unconditionally after getDeviceCredentials), so an
-   unregistered device will fetch and show this on every wake.
-
-   `server-url` is the origin the device reached us on, echoed back so a display
-   pointed at the wrong instance says so itself.
-
-   Every size here is a multiple of 16, like the rest of the project: PixelOperator
-   is drawn on a 16px grid, and an off-grid size interpolates between grid steps —
-   on a 1-bit panel that shows up as stems one pixel wide in some glyphs and two in
-   others."
-  [mac server-url]
-  (let [canvas (img/blank-canvas)]
-    (draw-logo canvas (/ (- img/og-width logo-w) 2) 40)
-    (draw-centered canvas "Skärmen är inte registrerad" 155 :font (img/pixel-font :regular 32))
-    (draw-centered canvas (or mac "okänd MAC-adress") 250 :font (img/pixel-font :bold 48))
-    (img/draw-line canvas 120 285 680 285)
-    (draw-centered canvas "Lägg till MAC-adressen i devices.edn och" 330 :font (img/pixel-font :regular 16))
-    (draw-centered canvas "starta om servern" 354 :font (img/pixel-font :regular 16))
-    (draw-centered canvas (or server-url "") 430 :font (img/pixel-font :regular 16))
-    canvas))

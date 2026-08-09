@@ -5,6 +5,7 @@
 /archive/
 /scratch/
 /devices.edn
+/id-salt
 /admin.env
 *.jar
 .nrepl-port

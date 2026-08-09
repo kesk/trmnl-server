@@ -26,16 +26,24 @@
    authentication schemes stay disjoint: /api/*, /images/* and /health never see the
    session gate.
 
+   Two of those pages are forms rather than reports: /devices/new registers a display that
+   has polled without an entry, and /devices/<id>/edit changes where an existing one's
+   forecast comes from. They are the only routes here that write anything, so they carry a
+   second check on top of the session — see same-origin? — and they are the reason the
+   registry is no longer read-only at runtime (server.devices).
+
    The work behind the routes lives in the six server.* namespaces: devices (the
    registry), render (the screens and their caches), archive (the rolling 24h disk
    archive), telemetry (what the devices report about themselves), auth (the admin
-   password gate), and pages (the HTML)."
+   password gate), aliases (the readable symlinks beside the id-named directories on
+   disk), and pages (the HTML)."
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [org.httpkit.server :as httpkit]
             [ring.util.codec :as codec]
+            [trmnl-server.server.aliases :as aliases]
             [trmnl-server.server.archive :as archive]
             [trmnl-server.server.auth :as auth]
             [trmnl-server.server.devices :as devices]
@@ -141,141 +149,185 @@
        :model           (s "model")
        :received-at     (System/currentTimeMillis)})))
 
-(defn- authorized?
-  "Whether a request carries the device's own token. The firmware sends it as
-   Access-Token on every request after collecting it from /api/setup."
-  [device request]
-  (= (:token device) (get-in request [:headers "access-token"])))
-
-(def ^:private unregistered-refresh-seconds
-  "How soon an unregistered device comes back. Shorter than the normal 15 minutes so
-   that adding it to devices.edn and restarting shows up on the display promptly — this
-   is the one situation where somebody is standing in front of it waiting."
-  300)
-
-(defn- note-unregistered!
-  "Records the MAC of a device we don't have in the registry. That record is what lets
-   unregistered-image-response render a screen for it (devices/seen-unknown?), and what
-   the first-run / page lists when there's no registry at all; the ordinary way to read a
-   new display's MAC is off the display itself, which unregistered-display-response puts
-   it on. Logged the first time only: /api/display is reachable from the internet and a
-   scanner shouldn't be able to fill the log by varying its ID."
+(defn- mac-header
+  "The MAC the firmware puts in `ID` on every request, of every kind."
   [request]
-  (let [mac (get-in request [:headers "id"])]
-    (when (devices/note-unknown! mac)
-      (log/warn (str "Request from unregistered device " (pr-str mac) " — add it to devices.edn")))
-    mac))
+  (get-in request [:headers "id"]))
 
-(defn- unregistered-response
-  "Reply to an unregistered device on a route that has nothing to offer it."
+(defn- token-header [request]
+  (get-in request [:headers "access-token"]))
+
+(defn- provision!
+  "Provisions (or re-provisions) whichever display is asking, and returns what to tell it.
+   nil when the `ID` header isn't MAC-shaped, which is a caller's cue to refuse — these
+   routes take no password.
+
+   Logs the first sighting only. A display waiting to be configured polls every 5 seconds,
+   so logging each one would bury everything else in the file within the hour.
+
+   **Which route provisioned it is the interesting part**, and worth the two branches. Via
+   /api/setup the display had no credentials, asked for some, and stored the `friendly_id`
+   we just handed it — so the id on its screen is the one below. Via any other route it
+   already had credentials, which means it will never ask again (`bl.cpp` only calls
+   getDeviceCredentials when the key is missing) and may still be showing a `friendly_id`
+   from an earlier pairing — with this server under an older scheme, or with trmnl.com.
+   Then the id on the panel and the id on `/` disagree and the whole read-it-and-click-it
+   handshake quietly breaks, which is exactly what happened the first time this shipped."
   [request]
-  (note-unregistered! request)
-  (text-response 404 "unknown device\n"))
+  (let [mac   (mac-header request)
+        known (devices/provisional-by-mac mac)
+        entry (devices/provision! mac (token-header request))]
+    (when (and entry (not known))
+      (if (= "/api/setup" (:uri request))
+        (log/info (str "Provisioned " (:id entry) " for " (:mac entry)
+                    " — waiting to be configured"))
+        (log/warn (str "Provisioned " (:id entry) " for " (:mac entry) " from "
+                    (:uri request) " — it arrived with credentials already, so its screen"
+                    " may still show a friendly id from an earlier pairing. A soft reset"
+                    " on the device clears that and makes the two agree."))))
+    entry))
 
-(defn- unregistered-display-response
-  "What an unregistered device gets from /api/display: a normal 200 pointing at a screen
-   showing its own MAC, rather than a bare 404 that leaves it displaying a firmware
-   error.
+(defn- setup-logo-url [base]
+  (str base "/images/setup-logo.png"))
 
-   The MAC is the one thing needed to register a device and the one thing that's hard to
-   come by — it isn't on the case, and the alternative is watching the device page for it. The
-   firmware reaches this route even when /api/setup has just 404'd (bl.cpp runs
-   downloadAndShow unconditionally after getDeviceCredentials), so the screen shows up on
-   the next wake."
-  [request fallback-base]
-  (let [mac      (note-unregistered! request)
-        base     (base-url request fallback-base)
-        filename (:filename (render/unregistered-entry mac base))]
-    (json-response {:filename          filename
-                    :image_url         (str base "/images/" filename)
-                    :image_url_timeout 0
-                    :refresh_rate      unregistered-refresh-seconds
-                    :reset_firmware    false
-                    :update_firmware   false
-                    :firmware_url      nil})))
+(defn- provisional-display-response
+  "What /api/display tells a display nobody has configured yet: HTTP **200**, carrying
+   `\"status\": 202` in the body.
 
-(defn- unregistered-image-response
-  "Serves the unregistered-device screen for whichever MAC is asking. The firmware sends
-   its ID on the image fetch too (buildImageHeaders), so the MAC never has to appear in
-   the URL — and only a MAC that has actually polled gets a render, which is what keeps
-   this unauthenticated route from being a way to make the Pi draw 800x480 images on
-   demand."
-  [uri request fallback-base]
-  (let [mac       (get-in request [:headers "id"])
-        requested (subs uri (count "/images/"))]
-    (if (devices/seen-unknown? mac)
-      (let [{:keys [bytes filename]} (render/unregistered-entry mac (base-url request fallback-base))]
-        ;; Same contract as bytes-for: serve only the bytes whose hash the caller asked
-        ;; for, so a device holding a stale filename re-polls instead of being handed
-        ;; something that doesn't match what it was promised.
-        (if (= requested filename) (png-response bytes) {:status 404}))
-      {:status 404})))
+   **The 202 is the body's field, not the HTTP status**, and the difference is the whole
+   thing. `fetchApiDisplay` (api-client/display.cpp) tests the HTTP code *before* it reads
+   anything, and accepts only 200, 301 and 429:
+
+     if (httpCode < 0 || !(httpCode == HTTP_CODE_OK || … )) → HTTPS_RESPONSE_CODE_INVALID
+
+   which paints WIFI_INTERNAL_ERROR — \"WiFi connected, but API connection cannot be
+   established\". Only once past that does bl.cpp parse the payload and switch on
+   `request_status = apiResponse.status`, where 202 means \"known but not claimed\". Sending
+   a real HTTP 202 therefore never reaches the branch it was meant to trigger. This is the
+   same shape as /api/setup, whose `status` is likewise a body field — the transport says
+   \"I answered\", the body says what the answer was.
+
+   What the 202 branch then does is exactly what onboarding wants: it paints the Friendly ID
+   screen — the id we handed out at /api/setup, plus the message we sent with it — and drops
+   the sleep to SLEEP_TIME_WHILE_NOT_CONNECTED, 5 seconds. So the id sits on the panel until
+   somebody configures the display, and the first forecast lands seconds after they do. We
+   render nothing for any of it; the screen is composed on the device."
+  [request]
+  (if-let [entry (provision! request)]
+    (json-response {:status  202
+                    :id      (:id entry)
+                    :message "Waiting to be configured."})
+    (text-response 404 "unknown device\n")))
 
 (defn- with-device
-  "Resolves the request's `ID` header to a registered device, checks its Access-Token,
-   and calls `f` with the device. Unknown MAC → 404 (and recorded, see note-unregistered!);
-   wrong or missing token → 401. Every device route except /api/setup goes through here —
-   setup is the one request a device makes before it has a token."
-  [request f]
+  "Resolves the request's `ID` header to a *configured* display, checks its Access-Token,
+   and calls `f` with it. Wrong or missing token → 401; a MAC that isn't configured → nil
+   from `f`'s point of view, so the caller decides (each route wants something different
+   for a display that is only provisional)."
+  [request f not-configured]
   (if-let [device (devices/for-request request)]
-    (if (authorized? device request)
+    (if (= (:token device) (token-header request))
       (f device)
       (do
         (log/warn (str "Rejected " (:uri request) " for " (:id device) " — bad Access-Token"))
         (text-response 401 "bad access token\n")))
-    (unregistered-response request)))
+    (not-configured)))
 
 (defn- display-response
-  "The main device poll. An unregistered MAC gets a screen showing its own MAC rather
-   than a 404 — see unregistered-display-response; everything else goes through the
-   normal token check."
+  "The main device poll. A configured display gets its forecast; anything else is
+   provisioned and told to wait — see provisional-display-response."
   [request fallback-base]
-  (if-not (devices/for-request request)
-    (unregistered-display-response request fallback-base)
-    (with-device request
-      (fn [device]
-        (when-let [status (parse-display-headers (:headers request))]
-          (telemetry/record-poll! (:id device) status))
-        (let [filename (render/serve-filename (render/current-image device))]
-          (json-response {:filename          filename
-                          :image_url         (image-url (base-url request fallback-base) (:id device) filename)
-                          :image_url_timeout 0
-                          :refresh_rate      refresh-rate-seconds
-                          :reset_firmware    false
-                          :update_firmware   false
-                          :firmware_url      nil}))))))
+  (with-device request
+    (fn [device]
+      (when-let [status (parse-display-headers (:headers request))]
+        (telemetry/record-poll! (:id device) status))
+      (let [filename (render/serve-filename (render/current-image device))]
+        (json-response {:filename          filename
+                        :image_url         (image-url (base-url request fallback-base) (:id device) filename)
+                        :image_url_timeout 0
+                        :refresh_rate      refresh-rate-seconds
+                        :reset_firmware    false
+                        :update_firmware   false
+                        :firmware_url      nil})))
+    #(provisional-display-response request)))
 
 (defn- setup-response
-  "First-boot registration. Authenticated by MAC alone — this is the request a device
-   makes precisely because it has no token yet, so there is nothing else to check it
-   with; being in devices.edn is what entitles it to collect one.
+  "First contact. Authenticated by MAC alone — this is the request a display makes
+   precisely because it has no token yet — and it **always succeeds** for a MAC-shaped ID:
+   an unknown one is provisioned on the spot and handed the credentials it needs to start
+   polling, which is what makes a display usable before anybody has told the server
+   anything about it.
 
-   `status` is load-bearing: parseResponse_apiSetup bails unless it is exactly 200, and
-   the firmware only persists api_key/friendly_id on that path. Omitting it (as this
-   server used to) means the device silently never stores its credentials and re-runs
-   setup on every wake.
+   Never answer 404 here, whatever the MAC. The firmware reads the HTTP status without
+   parsing the body and treats 404 as MAC_NOT_REGISTERED: it paints a logo, stores a
+   15-minute sleep, and calls goToSleep() *inside that branch*, so it never reaches
+   /api/display at all. That cost a real display an evening (ISSUES.md #2).
 
-   `friendly_id` is the device's :id rather than its :name, because the firmware writes
-   it to its preferences once, here, and never asks again — so it wants the identifier
-   that doesn't change, not the label that's free to."
+   `status` in the body is load-bearing too: parseResponse_apiSetup bails unless it is
+   exactly 200, and the firmware only persists api_key/friendly_id on that path. Omitting
+   it (as this server once did) leaves the device re-running setup on every wake, forever
+   tokenless.
+
+   `friendly_id` is the display's :id — the firmware writes it to its preferences once,
+   here, never asks again, and prints it on the Friendly ID screen. That is the string
+   somebody reads off the panel and clicks on `/`, which is why it has to be the identifier
+   that never changes.
+
+   `image_url` is fetched and stored as the device's logo, not shown as a screen (see
+   downloadSetupImage), but it has to resolve: a failed fetch paints API_IMAGE_DOWNLOAD_ERROR.
+   `message` is the one line we get to put under the id on that screen, so it carries the
+   address to configure the display at."
   [request fallback-base]
-  (if-let [device (devices/for-request request)]
-    (let [filename (render/serve-filename (render/current-image device))]
-      (log/info (str "Setup: issued token to " (:id device) " (" (:mac device) ")"))
-      (json-response {:status      200
-                      :api_key     (:token device)
-                      :friendly_id (:id device)
-                      :image_url   (image-url (base-url request fallback-base) (:id device) filename)
-                      :message     "Welcome to trmnl-server"}))
-    (unregistered-response request)))
+  (let [base (base-url request fallback-base)]
+    (if-let [device (devices/for-request request)]
+      (do
+        (log/info (str "Setup: re-issued its token to " (:id device) " (" (:mac device) ")"))
+        (json-response {:status      200
+                        :api_key     (:token device)
+                        :friendly_id (:id device)
+                        :image_url   (setup-logo-url base)
+                        :message     (str "SMHI forecast · " base)}))
+      (if-let [entry (provision! request)]
+        (json-response {:status      200
+                        :api_key     (:token entry)
+                        :friendly_id (:id entry)
+                        :image_url   (setup-logo-url base)
+                        :message     (str "Configure at " base)})
+        (text-response 404 "unknown device\n")))))
 
-(defn- log-response [request]
+(defn- log-response
+  "Device telemetry. Accepted from a display that is only provisional as well as a
+   configured one — a display that is failing to get past onboarding is exactly when its
+   own log is worth having, and it files under the same :id it will keep afterwards."
+  [request]
   (with-device request
     (fn [device]
       (telemetry/append-log! (:id device) (slurp (:body request)))
-      {:status 204})))
+      {:status 204})
+    (fn []
+      (if-let [entry (provision! request)]
+        (do
+          (telemetry/append-log! (:id entry) (slurp (:body request)))
+          {:status 204})
+        (text-response 404 "unknown device\n")))))
 
 ;; --- File routes ------------------------------------------------------------------------
+
+(defn- setup-logo-response
+  "The image /api/setup points a display at. The firmware downloads it, writes it to its
+   own filesystem as a logo, and paints its Friendly ID screen — so what this actually has
+   to do is exist and be a valid image: a failed fetch shows API_IMAGE_DOWNLOAD_ERROR
+   instead. (The screen itself is drawn with the firmware's built-in logo, not this one —
+   `storedLogoOrDefault` reads from flash and never reads the downloaded file back — so
+   sending the SMHI wordmark is a bet on a future firmware rather than something visible
+   today.)
+
+   Ungated and unauthenticated, like the other /images routes: it's one small static file,
+   the same for every caller."
+  []
+  (if-let [logo (io/resource "smhi-logo.png")]
+    (png-response (io/input-stream logo))
+    {:status 404}))
 
 (defn- image-response
   "Serves one device's currently cached PNG: /images/<id>/forecast-<hash>.png. The
@@ -393,6 +445,134 @@
 (defn- logout-response [request]
   (redirect "/login" (auth/logout-cookie request)))
 
+;; --- The registry forms -----------------------------------------------------------------
+
+(defn- same-origin?
+  "Whether a state-changing POST came from this server's own pages.
+
+   Browsers send `Origin` on every POST, cross-site ones included, so comparing it against
+   the origin we were reached on is enough to stop a form on someone else's page from
+   submitting here with the viewer's ambient credentials. That matters most in the
+   $ADMIN_TRUST_LAN case, which is precisely where the session gate isn't standing in the
+   way: a LAN request needs no cookie, so without this a page in a browser on the home
+   network could register a display. A missing Origin is let through — that's a non-browser
+   client (curl, a script), which has no ambient credentials to be borrowed in the first
+   place, and which can present the password itself if the gate is on.
+
+   Both sides of the comparison come from the same request's headers, so a forged Host
+   forges them equally and gains nothing; the attack this stops is a real browser, which
+   sets both honestly."
+  [request]
+  (let [origin (get-in request [:headers "origin"])]
+    (or (nil? origin) (= origin (base-url request nil)))))
+
+(defn- registry-post
+  "Runs a registry-mutating POST behind both gates it needs: the admin session, and the
+   same-origin check the session alone doesn't cover."
+  [request f]
+  (gated request #(if (same-origin? request)
+                    (f)
+                    (do (log/warn (str "Refused a cross-origin POST to " (:uri request)))
+                      (text-response 403 "bad origin\n")))))
+
+(defn- sync-aliases!
+  "Refreshes the readable symlinks beside the id-named archive/ and logs/ directories (see
+   server.aliases). Called here rather than from server.devices, because this is where the
+   registry and the two storage roots are known to the same namespace — devices has no
+   business knowing where a screen or a log file is kept. Run after every registry change
+   and once at startup, which also picks up any rename made by hand in the file."
+  []
+  (let [entries (devices/all)]
+    (aliases/sync! (archive/root) entries)
+    (aliases/sync! (telemetry/root) entries)))
+
+(defn- form-field
+  "One submitted form value as a string, or nil. Repeated keys decode to a vector (see
+   auth/form-params), so this takes the first — a hand-written POST with two lat fields
+   reaches the parsers as one value or none, never as a collection."
+  [params k]
+  (let [v (get params k)]
+    (cond
+      (string? v) v
+      (vector? v) (first (filter string? v))
+      :else       nil)))
+
+(defn- form-values
+  "The whole submission as a map of plain strings, which is both what the registry fns are
+   given (after parsing) and what the form is re-rendered with when it's refused — so what
+   somebody typed survives the round trip rather than being blanked by their own typo."
+  [body]
+  (let [params (auth/form-params body)]
+    (into {} (map (fn [k] [k (form-field params k)])) ["name" "lat" "lon" "hours"])))
+
+(defn- form-number
+  "A submitted number field: parsed, blank → nil, unparseable → the string itself. Handing
+   the raw string on is deliberate — devices/entry-problems then rejects it as 'must be
+   numbers', where turning it into nil would report a field somebody clearly filled in as
+   missing, or worse, quietly ignore it."
+  [s]
+  (when-let [s (some-> s str/trim not-empty)]
+    (or (parse-double s) s)))
+
+(defn- form-integer
+  "Same, for :hours — where nil genuinely means 'not set' and falls back to the
+   server-wide default."
+  [s]
+  (when-let [s (some-> s str/trim not-empty)]
+    (or (parse-long s) s)))
+
+(defn- attempt
+  "Runs a registry mutation, turning a failed *write* into the same {:errors …} shape the
+   validators produce. devices.edn being unwritable is a real state — a stray $DEVICES_FILE,
+   a directory the service user doesn't own — and the form saying so is more use than a
+   500, since the person reading it is the one who can fix it."
+  [f]
+  (try
+    (f)
+    (catch Exception e
+      (log/error e "Failed to write the device registry")
+      {:errors [(str "Couldn't write the registry file: " (.getMessage e))]})))
+
+(defn- configure-submit
+  "POST /devices/<id>/configure. On success the display is serving forecasts within a few
+   seconds — it's already polling every 5 seconds waiting for exactly this — so this lands
+   on its own page, which is where you'd go next to watch it arrive.
+
+   Neither an id nor a token is passed on: both already exist and belong to the display,
+   and devices/configure! carries them over untouched. That is the whole point of the
+   redesign, so there is deliberately no way to reach a token-issuing path from here."
+  [waiting request]
+  (let [values (form-values (some-> (:body request) slurp))
+        result (attempt #(devices/configure! (:id waiting)
+                           {:name  (get values "name")
+                            :lat   (form-number (get values "lat"))
+                            :lon   (form-number (get values "lon"))
+                            :hours (form-integer (get values "hours"))}))]
+    (if-let [errors (:errors result)]
+      (assoc (html-response (pages/configure-device waiting values errors)) :status 400)
+      (do
+        (sync-aliases!)
+        (redirect (str "/devices/" (:id (:device result))))))))
+
+(defn- edit-submit
+  "POST /devices/<id>/edit. Drops the display's cached screen on success: the cache is
+   keyed by :id and knows nothing about the location that produced it, so an edited entry
+   would otherwise keep serving — and archiving — the old town's forecast."
+  [device request]
+  (let [values (form-values (some-> (:body request) slurp))
+        result (attempt #(devices/update! (:id device)
+                           {:name  (get values "name")
+                            :lat   (form-number (get values "lat"))
+                            :lon   (form-number (get values "lon"))
+                            :hours (form-integer (get values "hours"))}))]
+    (if-let [errors (:errors result)]
+      (assoc (html-response (pages/edit-device device values errors)) :status 400)
+      (do
+        (render/forget! (:id device))
+        ;; A rename is the case this exists for: the old link has to go and a new one appear.
+        (sync-aliases!)
+        (redirect (str "/devices/" (:id device)))))))
+
 ;; --- Routing ----------------------------------------------------------------------------
 
 (defn- device-page-response
@@ -400,16 +580,25 @@
    display's own page rather than a /status leaf under it), /devices/<id>/archive, and
    /devices/<id>/archive/<file>.
 
-   The id is resolved through the registry here, once, and the page fns are handed the
-   entry itself — so an unregistered id is a 404 at the door rather than something each
-   page has to fall back from. Anything else under /devices/ is a 404 too, which is what
-   keeps this from being a prefix that quietly accepts whatever it's given."
+   The id is resolved here, once, and the page fns are handed the entry itself — so an
+   unknown id is a 404 at the door rather than something each page has to fall back from.
+   Anything else under /devices/ is a 404 too, which is what keeps this from being a prefix
+   that quietly accepts whatever it's given.
+
+   An id resolves in one of two places, and which one decides what exists at that path: a
+   *configured* display has a dashboard, an archive and an edit form, while one that is only
+   provisional has exactly one page — the configure form. Neither set overlaps, so
+   /devices/<id> is a 404 for a display that hasn't been configured yet, and
+   /devices/<id>/configure is a 404 for one that has."
   [uri request]
   (let [[_ device-id sub file] (path-segments uri)]
     (if-let [device (and device-id (devices/by-id device-id))]
       (cond
         (nil? sub)
         (html-response (pages/status device (query-param request "day") (auth-state request)))
+
+        (and (= sub "edit") (nil? file))
+        (html-response (pages/edit-device device nil nil))
 
         (and (= sub "archive") (nil? file))
         (html-response (pages/gallery device))
@@ -418,25 +607,47 @@
         (archive-file-response device file)
 
         :else {:status 404})
-      {:status 404})))
+      (if-let [waiting (and device-id (= sub "configure") (nil? file)
+                         (devices/provisional-by-id device-id))]
+        (html-response (pages/configure-device waiting nil nil))
+        {:status 404}))))
+
+(defn- device-post-response
+  "The two POSTs under /devices/<id>: configuring a display that is waiting, and editing one
+   that is already configured. Resolved the same way the GETs are, so an unknown id is the
+   same 404 here as there."
+  [uri request]
+  (let [[_ device-id sub file] (path-segments uri)]
+    (cond
+      (nil? device-id) {:status 404}
+
+      (and (= sub "edit") (nil? file))
+      (if-let [device (devices/by-id device-id)]
+        (edit-submit device request)
+        {:status 404})
+
+      (and (= sub "configure") (nil? file))
+      (if-let [waiting (devices/provisional-by-id device-id)]
+        (configure-submit waiting request)
+        {:status 404})
+
+      :else {:status 404})))
 
 (defn- handler [fallback-base]
   (fn [{:keys [request-method uri] :as request}]
-    (let [get? (= :get request-method)]
+    (let [get?  (= :get request-method)
+          post? (= :post request-method)]
       (cond
         ;; Device API and health check: never gated by the admin session — a display
         ;; can't log in, and authenticates by registered MAC + Access-Token instead.
         (and get? (= uri "/health"))                  (text-response 200 "ok\n")
         (and get? (= uri "/api/display"))             (display-response request fallback-base)
         (and get? (= uri "/api/setup"))               (setup-response request fallback-base)
-        (and (= :post request-method)
-          (= uri "/api/log"))                         (log-response request)
+        (and post? (= uri "/api/log"))                (log-response request)
         ;; The admin session: the form is the one human page that can't be gated.
         (and get? (= uri "/login"))                   (login-page request)
-        (and (= :post request-method)
-          (= uri "/login"))                           (login-submit request)
-        (and (= :post request-method)
-          (= uri "/logout"))                          (logout-response request)
+        (and post? (= uri "/login"))                  (login-submit request)
+        (and post? (= uri "/logout"))                 (logout-response request)
         ;; Human pages, behind that session. Two of them: the index, and everything
         ;; per-display under /devices/<id>/….
         (and get? (= uri "/"))                        (gated request #(html-response (pages/home (auth-state request))))
@@ -447,13 +658,15 @@
         ;; response is a constant, so it discloses nothing that a login would protect.
         (and get? (#{"/devices" "/devices/"} uri))    (redirect "/")
         (and get? (str/starts-with? uri "/devices/")) (gated request #(device-page-response uri request))
+        (and post? (str/starts-with? uri "/devices/"))
+        (registry-post request #(device-post-response uri request))
         ;; /images/* is the display's own fetch, so it stays outside the session gate —
         ;; and the gated pages embed the same URLs, which the browser then loads with no
         ;; cookie of interest. What's reachable there is one rendered screen per device,
-        ;; named by a content hash the cache has to be holding right now.
-        (and get? (str/starts-with? uri (str "/images/" render/unregistered-prefix)))
-        (unregistered-image-response uri request fallback-base)
-        (and get? (str/starts-with? uri "/images/"))  (image-response uri)
+        ;; named by a content hash the cache has to be holding right now, plus the one
+        ;; static logo /api/setup hands out.
+        (and get? (= uri "/images/setup-logo.png")) (setup-logo-response)
+        (and get? (str/starts-with? uri "/images/")) (image-response uri)
         :else                                         {:status 404}))))
 
 (defn- lan-ip
@@ -478,6 +691,7 @@
     (devices/load!)
     (auth/load!)
     (telemetry/load-wake-history! (map :id (devices/all)))
+    (sync-aliases!)
     (httpkit/run-server (handler base-url) {:port port})
     (log/info (str "TRMNL server listening on " base-url))
     (log/info "Point your TRMNL OG's custom server URL to the above.")))

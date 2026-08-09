@@ -24,3 +24,16 @@
 /* Placeholder for a registered device that hasn't rendered yet — 5:3 is the panel's
    own 800x480, so the card doesn't resize once a real screen arrives. */
 .noshot{aspect-ratio:5/3;display:flex;align-items:center;justify-content:center;border:.5px dashed var(--bd);border-radius:6px;color:var(--muted);font-size:13px}
+/* Displays that have polled without an entry in devices.edn, each one a link into the
+   onboarding form. Deliberately small next to the screen cards above: this is a footnote
+   that is empty almost always, and a prompt only on the day you plug something in. */
+.unreg{margin-top:30px}
+.unreg .tag{margin:0 0 12px}
+.unreg-list{display:flex;flex-wrap:wrap;gap:9px}
+.unreg-item{
+  display:flex;align-items:baseline;gap:11px;text-decoration:none;color:var(--fg);
+  background:var(--card);border:.5px solid var(--bd);border-radius:10px;padding:9px 13px;
+}
+.unreg-item:hover{border-color:var(--muted)}
+.unreg-item .mono{font-size:13px}
+.unreg-seen{font-size:12px;color:var(--muted)}

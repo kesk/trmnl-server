@@ -1,0 +1,38 @@
+/* /devices/new and /devices/<id>/edit — the two registry forms, layered over base.css.
+   One narrow column of labelled fields: these are read top to bottom and filled in once,
+   so nothing here is a grid. Sized to the .login column's sibling rather than the
+   dashboards' .wrap, for the same reason — a text field 1120px wide is a text field
+   nobody can see the start and end of at once. */
+.form{max-width:420px}
+.field{display:block;margin:0 0 15px}
+/* Same 11px caps as a card's .k: a field label and a card label name the same things
+   (Name, Latitude), and the forms sit one click from the dashboard that shows them. */
+.fl{display:block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
+.field input{
+  font:inherit;width:100%;padding:9px 11px;border-radius:8px;
+  border:.5px solid var(--bd);background:var(--card);color:var(--fg);
+}
+.field input:focus{outline:none;border-color:var(--muted)}
+/* Pinned rather than left to the browser: a placeholder here shows the *shape* of the
+   value ("hallway", "57.7089"), so it sits next to fields that are genuinely filled in
+   and has to read as the fainter of the two in both themes. */
+.field input::placeholder{color:var(--muted)}
+/* Browser-side validation, styled only once the field has been touched: :invalid alone
+   would paint every required field red before anything has been typed into it. */
+.field input:not(:placeholder-shown):invalid{border-color:var(--err-fg)}
+.fh{display:block;font-size:12px;color:var(--muted);margin:5px 0 0}
+/* Latitude and longitude are one value in two boxes — side by side, with their shared
+   hint under the pair rather than repeated beneath each. */
+.pair{display:flex;gap:12px}
+.pair .field{flex:1}
+.pair-hint{margin-top:-9px;margin-bottom:15px}
+.static{margin:0 0 15px}
+.static .mono{font-size:14px}
+.form button{
+  font:inherit;font-weight:500;padding:9px 16px;border:0;border-radius:8px;
+  background:var(--fg);color:var(--bg);cursor:pointer;
+}
+.errors{background:var(--err-bg);color:var(--err-fg);border-radius:10px;padding:11px 13px;margin:0 0 20px;font-size:13px}
+.errors p{margin:0;font-weight:500}
+.errors ul{margin:6px 0 0;padding-left:18px}
+.errors li{margin:3px 0}

@@ -14,7 +14,10 @@
 ;; The device registry (devices.edn) is *not* shipped by default: the local copy is a
 ;; development one with placeholder MAC addresses, and overwriting a real registry
 ;; on every deploy would point displays at the wrong forecasts. Pass --devices to
-;; push it deliberately.
+;; push it deliberately — and note that --devices now refuses when the target already
+;; has a registry, because that file is the authoritative one: displays are onboarded
+;; and edited through the web pages, so it holds entries this machine has never seen,
+;; with server-generated tokens that exist nowhere else. --force overrides.
 
 (require '[babashka.process :refer [shell]]
          '[babashka.fs :as fs])
@@ -25,6 +28,7 @@
 
 (def args (set *command-line-args*))
 (def push-devices? (contains? args "--devices"))
+(def force? (contains? args "--force"))
 
 (def target
   (if (contains? args "--test")
@@ -47,27 +51,43 @@
 (println "Copy jar")
 (shell "scp" jar-path (str host ":" remote-dir "/trmnl-server.jar"))
 
+(defn remote-registry? []
+  (zero? (:exit (shell {:continue true}
+                  "ssh" host (str "test -f " remote-dir "/devices.edn")))))
+
 (if push-devices?
   (do
     (when-not (fs/exists? devices-path)
       (println (str "No " devices-path " to push")) (System/exit 1))
+    ;; The remote registry is the authoritative one — displays are registered and edited
+    ;; through the web pages, which write that file, and their tokens are generated there.
+    ;; Pushing over it unregisters every display added since the local copy was made, and
+    ;; the tokens can't be recovered from this end. So --devices is now for seeding a
+    ;; target that hasn't got one.
+    (when (and (remote-registry?) (not force?))
+      (println (str "Refusing --devices: " host ":" remote-dir "/devices.edn already exists."))
+      (println "      That file is the one the web pages write, so it may hold displays")
+      (println "      (and tokens) that only exist there. Copy it here first, or pass")
+      (println "      --force to overwrite it.")
+      (System/exit 1))
     (println "Copy device registry")
     (shell "scp" devices-path (str host ":" remote-dir "/devices.edn")))
   ;; Not pushing: at least make it obvious when the target has no registry at all, since
   ;; the server will start but refuse every device poll. On a fresh --test deploy that is
-  ;; the *intended* state — it's how a device announces its MAC on /status.
-  (when-not (zero? (:exit (shell {:continue true}
-                            "ssh" host (str "test -f " remote-dir "/devices.edn"))))
+  ;; the *intended* state — the display announces its MAC on its own screen and on /, where
+  ;; it can be registered by clicking it.
+  (when-not (remote-registry?)
     (println "NOTE: no devices.edn on" host (str remote-dir " — every device poll will be rejected"))
-    (println "      until one exists. Unregistered MACs are listed on /status.")))
+    (println "      until one exists. Plug a display in and register it from / .")))
 
 ;; Same shape as the devices.edn note above, and for the same reason: the admin password
 ;; lives only on the Pi (deploy never ships it), so the only thing this end can usefully
 ;; do is notice when the target hasn't got one.
 (when-not (zero? (:exit (shell {:continue true}
                           "ssh" host (str "test -f " remote-dir "/admin.env"))))
-  (println "NOTE: no admin.env on" host (str remote-dir " — /, /status and /archive will be"))
-  (println "      open to anyone who can reach the server. Fix with: bb set-password.clj"
+  (println "NOTE: no admin.env on" host (str remote-dir " — / and every /devices/ page will"))
+  (println "      be open to anyone who can reach the server, including the forms that")
+  (println "      register and edit displays. Fix with: bb set-password.clj"
     (if (contains? args "--test") "--test" "")))
 
 (println "Copy service file")

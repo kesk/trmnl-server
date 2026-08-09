@@ -78,8 +78,6 @@ h1{font-size:20px;font-weight:500;margin:0 0 18px}
 .day{font-size:12px;color:var(--muted);text-decoration:none;border:.5px solid var(--bd);border-radius:7px;padding:3px 9px;white-space:nowrap}
 a.day:hover{color:var(--fg);border-color:var(--muted)}
 .day.sel{color:var(--fg);border-color:var(--muted);background:var(--card)}
-/* Copy-pasteable MAC list for a device that polled but isn't in devices.edn. */
-.reg{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);border:.5px solid var(--bd);border-radius:10px;padding:11px 13px;overflow-x:auto;margin:0 0 22px}
 .tw{overflow-x:auto;border:.5px solid var(--bd);border-radius:10px}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{text-align:left;padding:8px 11px;white-space:nowrap}

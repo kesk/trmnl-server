@@ -41,12 +41,19 @@
 
 (def ^:private log-name-re #"device-(\d{4}-\d{2}-\d{2})\.log")
 
+(defn root
+  "The root every device's telemetry directory sits under: $DEVICE_LOG_DIR, else logs/
+   relative to the process's working dir (the systemd unit's WorkingDirectory in prod).
+   Public because server.aliases hangs the readable symlinks here, beside the id-named
+   directories."
+  ^File []
+  (io/file (or (System/getenv "DEVICE_LOG_DIR") "logs")))
+
 (defn dir
   "Directory one device's telemetry lives in: a subdirectory named for its :id under
-   $DEVICE_LOG_DIR, else logs/ relative to the process's working dir (the systemd
-   unit's WorkingDirectory in prod)."
+   the root above."
   ^File [device-id]
-  (io/file (or (System/getenv "DEVICE_LOG_DIR") "logs") device-id))
+  (io/file (root) device-id))
 
 (defn today-utc-date
   "Today's UTC calendar date as a yyyy-MM-dd string — the day a just-received row files
