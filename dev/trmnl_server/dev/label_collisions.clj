@@ -22,12 +22,17 @@
             [trmnl-server.image :as img])
   (:import [java.util Random]))
 
-;; The chart box and keep-out band forecast-screen renders with, and the
-;; footprint draw-dot gives a labelled point. Restated here rather than read out
-;; of core on purpose: this is the check, so it should fail loudly if core's idea
-;; of any of them drifts, instead of quietly agreeing with the new value.
-(def ^:private chart-box [40 172 720 155])
-(def ^:private keep-out [[0 335 800 440]])
+;; The chart box and keep-out rects forecast-screen renders with, read out of
+;; core. These were restated here for a while, on the theory that a copy would
+;; fail loudly if core's idea of them drifted. It drifted and nothing failed: the
+;; check quietly moved to a chart 14px taller than the real one, with the cloud
+;; band missing from its keep-out entirely. A check that plots into its own box
+;; isn't checking the screen that ships, so there is one definition now
+;; (core/screen-geometry) and this reads it.
+(def ^:private chart-box (:chart-box core/screen-geometry))
+(def ^:private keep-out (:keep-out core/screen-geometry))
+;; The footprint draw-dot gives a labelled point. Still a local constant: it's a
+;; property of image/draw-dot's radius plus halo, which core doesn't name either.
 (def ^:private dot-clearance 7)
 
 (defn- dot-rect [[x y]]
@@ -60,9 +65,18 @@
 
    Not a failure: a halo keeps such a label legible, and on a crowded enough
    chart every candidate position crosses something, so the placer takes the
-   least bad one. Reported as a number to watch — it should stay at 0 for the
-   demo seasons, the archive, and every fixture but calm-hour, where the wind
-   minimum sits on the chart floor and there is genuinely nowhere clean."
+   least bad one. Reported as a number to watch — it stays at 0 for the demo
+   seasons and the rain-test day, and at 1 for two fixtures: calm-hour, where the
+   wind minimum sits on the chart floor and there is genuinely nowhere clean, and
+   flat-start, where both series run flat and close together at the left edge so
+   the first-point labels have to crowd. A real forecast can do it too —
+   flat-start came off the archive.
+
+   flat-start reads as 0 under the geometry this checker used to invent for
+   itself, which is what the drift was hiding: on the real box its last wind
+   label lies across the temperature line for 40 columns, against a tolerance of
+   8. The generated-day total roughly doubles for the same reason. Nothing about
+   the placement changed — this is the first honest count."
   [canvas points]
   (let [{:keys [labels temp-layout wind-layout]}
         (apply core/chart-labels canvas points (concat chart-box [:keep-out keep-out]))]
@@ -128,7 +142,7 @@
         seed      (System/currentTimeMillis)
         rng       (Random. seed)
         datasets  (concat
-                    (for [s demo/seasons] [(str "demo " (:name s)) (demo/season-points s core/default-forecast-hours)])
+                    (for [s demo/seasons] [(str "demo " (:label s)) (demo/season-points s core/default-forecast-hours)])
                     [["demo rain-test" (demo/rain-test-points core/default-forecast-hours)]]
                     (edn-datasets "dev/fixtures")
                     (edn-datasets "archive")

@@ -496,6 +496,53 @@
   (let [fc (smhi/forecast location)]
     (with-meta (take hours fc) (meta fc))))
 
+(def screen-geometry
+  "Where forecast-screen puts the cloud strip, the temp/wind chart and the precip
+   strip, and — derived from those — the `:chart-box` combined-chart plots into
+   and the `:keep-out` rects its labels have to stay off.
+
+   Lifted out of forecast-screen's `let` because it has a second reader:
+   dev/label_collisions.clj checks the placement this geometry produces, and it
+   can only check the chart that ships if it plots into the same box. It used to
+   restate these numbers instead, on the theory that a copy would fail loudly
+   when core's drifted. It drifted; the copy quietly checked a chart nothing
+   renders, missing the cloud band entirely and understating labels-across-a-line
+   by ~45%. One definition, two readers."
+  (let [cloud-y     136
+        cloud-max-w 40.0
+        precip-y    355
+        precip-h    85]
+    {:cloud-y     cloud-y
+     :cloud-max-w cloud-max-w
+     :precip-y    precip-y
+     :precip-h    precip-h
+     ;; Top edge sits just under the cloud band. The axis padding in nice-bounds
+     ;; is what makes that safe: it guarantees the extreme value lands a unit or
+     ;; more inside the box, so no dot (with its 3px halo ring) ever reaches up
+     ;; over the strip.
+     ;; Bottom edge runs right up to the precip band, reclaiming the dead strip
+     ;; that used to sit between the box and the titles. Same padding argument as
+     ;; the top edge: no dot reaches the box edge, so nothing collides with the
+     ;; band. What it does cost is label room *below* the box -- a label is ~16px
+     ;; tall and there is no longer 16px between box bottom and band, so a low
+     ;; minimum near the bottom now places its label beside or above its dot
+     ;; instead. That's a placement the label code already handles; it's
+     ;; check-labels, not inspection, that confirms it stays collision-free.
+     :chart-box   [40 158 720 176]
+     :keep-out    [;; The cloud strip is centered on cloud-y and can reach half
+                   ;; its max width either side (116..156). Fenced off like the
+                   ;; precip band below, because the chart box starts just under
+                   ;; it: without this a high label would sit on the
+                   ;; checkerboard, and check-labels would never see it -- that
+                   ;; check only knows about the rects it's handed.
+                   [0 (- cloud-y (/ cloud-max-w 2)) img/og-width (+ cloud-y (/ cloud-max-w 2))]
+                   ;; precip-bar-chart's "Regn (0-Xmm)" title sits at (- precip-y
+                   ;; 6), so its ink starts a little above that: fence off
+                   ;; everything from there down, across the full panel width,
+                   ;; and combined-chart will place a low label beside its dot
+                   ;; rather than on top of the titles or bars.
+                   [0 (- precip-y 20) img/og-width (+ precip-y precip-h)]]}))
+
 (defn forecast-screen
   ([] (forecast-screen (live-points default-forecast-hours default-forecast-location)
         default-forecast-location))
@@ -528,21 +575,8 @@
         ["Vind (m/s)" {:dash [6.0 5.0]}]
         ["Moln (%)" {:width 14.0 :paint (img/checkerboard-paint)}]])
 
-     (let [cloud-y     136
-           cloud-max-w 40.0
-           ;; The strip is centered on cloud-y and can reach half its max width
-           ;; either side (116..156). Fenced off like precip-band below, because
-           ;; the chart box now starts just under it: without this a high label
-           ;; would sit on the checkerboard, and check-labels would never see it
-           ;; -- that check only knows about the rects it's handed.
-           cloud-band  [0 (- cloud-y (/ cloud-max-w 2)) img/og-width (+ cloud-y (/ cloud-max-w 2))]
-           precip-y    355
-           precip-h    85
-           ;; precip-bar-chart's "Regn (0-Xmm)" title sits at (- precip-y 6), so
-           ;; its ink starts a little above that: fence off everything from there
-           ;; down, across the full panel width, and combined-chart will place a
-           ;; low label beside its dot rather than on top of the titles or bars.
-           precip-band [0 (- precip-y 20) img/og-width (+ precip-y precip-h)]]
+     (let [{:keys [cloud-y cloud-max-w precip-y precip-h chart-box keep-out]} screen-geometry
+           [chart-x chart-y chart-w chart-h]                                  chart-box]
        (rain-background canvas points 40 cloud-y (+ precip-y precip-h) 720)
        (cloud-cover-strip canvas points 40 cloud-y 720 :max-width cloud-max-w)
        ;; Bolts sit *inside* the strip, centered on it (27x35 including halo, so
@@ -551,19 +585,10 @@
        ;; and the gap under the strip is the chart's now. A thundery hour is an
        ;; overcast one, so there's always strip to carve.
        (thunder-flashes canvas points 40 cloud-y 720)
-       ;; Top edge sits just under the cloud band. The axis padding in
-       ;; nice-bounds is what makes that safe: it guarantees the extreme value
-       ;; lands a unit or more inside the box, so no dot (with its 3px halo ring)
-       ;; ever reaches up over the strip.
-       ;; Bottom edge runs right up to precip-band, reclaiming the dead strip
-       ;; that used to sit between the box and the titles. Same padding argument
-       ;; as the top edge: no dot reaches the box edge, so nothing collides with
-       ;; the band. What it does cost is label room *below* the box -- a label is
-       ;; ~16px tall and there is no longer 16px between box bottom and band, so
-       ;; a low minimum near the bottom now places its label beside or above its
-       ;; dot instead. That's a placement the label code already handles; it's
-       ;; check-labels, not inspection, that confirms it stays collision-free.
-       (combined-chart canvas points 40 158 720 176 :keep-out [cloud-band precip-band])
+       ;; Box and keep-out rects both come from screen-geometry above, which is
+       ;; where the reasoning behind their edges lives -- and which is the copy
+       ;; check-labels reads, so it checks this chart and not one of its own.
+       (combined-chart canvas points chart-x chart-y chart-w chart-h :keep-out keep-out)
        ;; Three z-layers in the precip strip: bars, then the (XOR) probability
        ;; line over them, then the mm labels on top -- so the line stays visible
        ;; through a tall bar while each label's halo still masks the line where

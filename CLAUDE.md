@@ -232,7 +232,14 @@ version, and 3.6x the entire screen composition).
   layout/chart logic lives (e.g. `combined-chart`, `nice-bounds` for
   rounding axis extents, and `chart-labels`, the domain half of the labelling: which
   values get labelled, how they read, and what they have to stay off — the geometry that
-  turns that into positions is `labels` above). `default-forecast-hours`/`default-forecast-location` are
+  turns that into positions is `labels` above). Where those things sit on the panel is
+  `screen-geometry`: one map holding the cloud/precip strip positions plus the
+  `:chart-box` and `:keep-out` rects derived from them. It's a `def` rather than
+  `let` bindings inside `forecast-screen` because `clojure -M:check-labels` reads it —
+  the checker used to restate the box and bands, they drifted, and it spent a while
+  quietly checking a chart that isn't rendered anywhere (see the resolved entry in
+  KNOWN-ISSUES.md). Change the layout here and the check follows.
+  `default-forecast-hours`/`default-forecast-location` are
   the single source of truth for "prognosis length" and "where" — callers override
   them via `--hours`/`--lat`/`--lon` (main) rather than hardcoding a point count or
   coordinates themselves. The server no longer reaches for
