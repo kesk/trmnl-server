@@ -252,10 +252,12 @@ version, and 3.6x the entire screen composition).
   polls when pointed at a custom server: `GET /api/display` (the main poll, returns
   JSON with an `image_url`/`filename`/`refresh_rate`), `GET /api/setup` (first-boot
   registration), `POST /api/log` (device telemetry, replied to with `204`), and
-  `GET /images/<id>/*` (serves the cached PNG bytes). Plus `GET /health` (a bare
+  `GET /images/<id>/*` (serves the rendered PNG bytes, and notes when the fetch is the
+  display's own — that's where `/` learns what is on each panel). Plus `GET /health` (a bare
   200 for `deploy.clj`'s post-restart check — `/api/display` can't serve that job any
   more, since it now 404s a caller it doesn't recognise) and three human-facing pages:
-  `GET /` (the index — a card per registered display showing its latest screen, each
+  `GET /` (the index — a card per registered display showing the screen it last
+  downloaded, each
   one linking into that display's status page, which links back),
   `GET /devices/<id>` (per-device battery/firmware/awake-trend/deployed-commit/
   forecast-health/device-log dashboard — the display's *own* page, not a `/status` leaf
@@ -698,9 +700,28 @@ version, and 3.6x the entire screen composition).
   reports that bookkeeping (last success, last failure, consecutive failures) to
   `/status`'s Forecast card, deliberately without calling `current-image` — looking
   at the status page shouldn't fetch SMHI, least of all to regenerate what it's
-  reporting on. `cached-entry` is the same idea for `/`: a peek that never regenerates,
-  so a crawler hitting the landing page can't trigger a live fetch and a full render
-  per registered display.
+  reporting on.
+
+  **The cache is not what `/` shows.** Beside it sits a second, smaller record — the
+  screen each display actually *downloaded* (`mark-fetched!`/`fetched-entry`, a copy of
+  the PNG bytes plus a timestamp, ~15 KB per display). The cache answers "what would we
+  serve if asked right now"; that one answers "what is on the panel", and with a 10-minute
+  TTL against a 15-minute poll the two disagree for a third of every cycle. It's filled
+  only from `server`'s `/images/<id>/…` route, and only for a request carrying the
+  display's own `ID` + `Access-Token` (the firmware's `buildImageHeaders`), so a browser
+  loading `/` doesn't record itself as the display. Deliberately **in memory only**: it is
+  a claim about a panel in another room, and after a restart we don't know what's on it —
+  `/` says so rather than guessing (which is what the archive fallback there used to do).
+  `forget!` leaves it alone for the same reason: moving a display to another town doesn't
+  reach through to the glass, so the old town's screen really is still up there until the
+  next poll.
+
+  `bytes-for` searches both, which is what makes that page work — the filename `/` embeds
+  is a hash of pixels the cache may already have replaced. It **never regenerates**, and
+  couldn't usefully: a new render gets a new hash (the "Uppdaterad HH:mm" stamp guarantees
+  it), so it would still miss the filename asked for, having fetched SMHI to find out. That
+  is what a browser hit used to do here, one live fetch and a full render per card, and it
+  404'd anyway — see the resolved entry in KNOWN-ISSUES.md.
 
 - **`trmnl-server.server.pages`** — the six human-facing HTML pages, built with
   **`hiccup`** (`hiccup2.core`, which auto-escapes string content, so
@@ -712,9 +733,13 @@ version, and 3.6x the entire screen composition).
   so re-doing it here would mean a second answer to the same question — and it's that
   split that lets them drop the fallback they used to need. Neither carries a device
   picker (see the routing note above). `/` is the index of all of
-  them: one card per display showing the screen it's being served right now, the whole
+  them: one card per display showing the screen that display **last downloaded** — what is
+  on the panel, not what we would render for it now (see `render/fetched-entry` above) —
+  the whole
   card a link into that display's status page — so it doubles as the switcher, and both
-  per-display pages link back. Its grid is `auto-fit` with the width cap on the
+  per-display pages link back. A display that hasn't fetched anything since the server
+  started gets a placeholder saying so, which is also what every card shows for the first
+  minutes after a restart. Its grid is `auto-fit` with the width cap on the
   *card* rather than the track (a `minmax(…,560px)` track would need 1136px before it
   made a second column, and the two displays would stack for good inside the 1120px
   `.wrap`). `device-path` builds every per-display URL, so the shape is written down once;

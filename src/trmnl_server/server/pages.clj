@@ -631,52 +631,49 @@
 ;; --- / ----------------------------------------------------------------------------------
 
 (defn- screen-card
-  "One device's latest screen on the landing page — the whole card is the link into that
+  "One device's screen on the landing page — the whole card is the link into that
    display's own page, so the index doubles as the device picker.
 
-   Never regenerates: / is the page a crawler or a passer-by lands on, and a visit
-   shouldn't turn into a live SMHI fetch and a full render per registered device. So it
-   takes the last screen from wherever one already exists, in order:
+   Shows what the display **downloaded**, not what we would render for it now. Those are
+   different pictures for most of every cycle: the render cache turns over every 10
+   minutes and the display only collects a screen every 15, so the cached entry is
+   routinely a screen no panel has ever shown — and, since a render's filename is a hash
+   of its pixels, embedding it meant the browser asking for bytes that had already been
+   replaced and getting a 404 back. A card showing a broken image about a third of the
+   time was the visible half of that; the other half was each visit triggering a live SMHI
+   fetch and a full render per display.
 
-     1. the render cache, which is what the device is being served *right now*;
-     2. failing that, the newest file in the device's archive.
+   Never regenerates, then, and no longer needs to: / is the page a crawler or a
+   passer-by lands on. render/mark-fetched! is what fills this in, from the display's own
+   image request.
 
-   The fallback exists because the cache is in memory and dies with the process, so
-   without it every deploy left this page showing placeholders until each display's next
-   poll — up to 15 minutes of looking like nothing works. The archived copy is a real
-   render (only successful ones are written) and, right after a restart, is also what the
-   display itself is still showing, since the device holds the last image it downloaded.
-   Its mtime is when that render happened, so the caption stays true either way.
-
-   Only when both are empty has this display genuinely never rendered — which is a
-   question for its own page, hence the card is still a link."
+   That record is in memory, so a restart empties it and every card falls back to the
+   placeholder until each display next polls — up to 15 minutes. Deliberate: the claim
+   this card makes is about a panel in another room, and after a restart we no longer know
+   what is on it. Saying so is better than showing a render nobody has seen. (An archived
+   PNG used to fill the gap here, which is why the archive fallback is gone.)"
   [device]
-  (let [id       (:id device)
-        label    (:name device)
-        entry    (render/cached-entry device)
-        archived (when-not entry (first (archive/entries id)))
-        [src at] (cond
-                   entry    [(str "/images/" id "/" (render/serve-filename entry))
-                             (:generated-at entry)]
-                   archived [(str (device-path id "archive") "/" (.getName ^File archived))
-                             (.lastModified ^File archived)])]
+  (let [id    (:id device)
+        label (:name device)
+        entry (render/fetched-entry device)]
     [:a.screen {:href (device-path id)}
      [:div.screen-name label]
-     (if src
+     (if entry
        (list
          [:img {:loading "lazy"
-                :src     src
-                :alt     (str "Latest rendered forecast screen for " label)}]
-         ;; "Updated", not the screen's own Swedish "Uppdaterad": these pages are English
-         ;; throughout, and the two timestamps mean different things anyway — the one
-         ;; painted into the image is when the forecast was rendered for the *device*.
-         [:p.caption (str "Updated " (format-millis at))])
+                :src     (str "/images/" id "/" (:filename entry))
+                :alt     (str "The forecast screen " label " is showing")}]
+         ;; "Fetched", not "Updated": this is when the display collected the screen, which
+         ;; is also the last moment we know anything about what it is showing. Neither is
+         ;; the Swedish "Uppdaterad" painted into the image — that one is when the forecast
+         ;; behind those pixels was rendered.
+         [:p.caption (str "Fetched " (format-millis (:fetched-at entry)))])
        (list
          [:div.noshot "No screen yet"]
-         ;; Not "waiting for its first poll": with the archive fallback above, reaching
-         ;; here means nothing has ever rendered for this display — which a poll alone
-         ;; doesn't fix if the renders are failing.
-         [:p.caption "Nothing rendered for this display yet."]))]))
+         ;; Covers both "never polled" and "hasn't polled since the last restart", which
+         ;; look identical from here and are told apart on the display's own page — hence
+         ;; the card is still a link.
+         [:p.caption "Waiting for this display to fetch a screen."]))]))
 
 (defn home
   "The landing page: an index of every registered display, each showing the screen it's

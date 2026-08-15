@@ -329,16 +329,38 @@
     (png-response (io/input-stream logo))
     {:status 404}))
 
+(defn- display-fetch?
+  "Whether this image request is the display collecting its own screen, rather than a
+   browser loading the landing page. The firmware attaches ID and Access-Token to the image
+   fetch — but only when the image URL string-prefixes the base URL it was handed, which is
+   why base-url has to come out exactly right (see base-url above).
+
+   Both halves are checked: `ID` alone would let anyone who learned a MAC restamp another
+   display's fetch time. A mismatch isn't rejected, though — the bytes are public either
+   way, and 401ing an image fetch would break the <img> tags on / for no gain."
+  [request device]
+  (let [caller (devices/for-request request)]
+    (and caller
+      (= (:id caller) (:id device))
+      (= (:token device) (token-header request)))))
+
 (defn- image-response
-  "Serves one device's currently cached PNG: /images/<id>/forecast-<hash>.png. The
-   device segment has to be a registered display's :id and the filename has to match a hash
-   the cache is actually holding (render/bytes-for compares rather than reads), so
-   neither segment can name anything off-list."
-  [uri]
-  (let [[_ device-id filename] (path-segments uri)]
+  "Serves one device's rendered PNG: /images/<id>/forecast-<hash>.png. The device segment
+   has to be a registered display's :id and the filename has to match a hash we're actually
+   holding (render/bytes-for compares rather than reads), so neither segment can name
+   anything off-list.
+
+   A fetch by the display itself is recorded, which is where / gets the screen it shows —
+   that page reports what is on the panel, and this route is the only place that becomes
+   true."
+  [request]
+  (let [[_ device-id filename] (path-segments (:uri request))]
     (if-let [device (and device-id filename (devices/by-id device-id))]
-      (if-let [bytes (render/bytes-for (render/current-image device) filename)]
-        (png-response bytes)
+      (if-let [bytes (render/bytes-for device filename)]
+        (do
+          (when (display-fetch? request device)
+            (render/mark-fetched! device-id filename bytes))
+          (png-response bytes))
         {:status 404})
       {:status 404})))
 
@@ -663,10 +685,10 @@
         ;; /images/* is the display's own fetch, so it stays outside the session gate —
         ;; and the gated pages embed the same URLs, which the browser then loads with no
         ;; cookie of interest. What's reachable there is one rendered screen per device,
-        ;; named by a content hash the cache has to be holding right now, plus the one
-        ;; static logo /api/setup hands out.
+        ;; named by a content hash we have to be holding right now — the live render or the
+        ;; copy the display downloaded — plus the one static logo /api/setup hands out.
         (and get? (= uri "/images/setup-logo.png")) (setup-logo-response)
-        (and get? (str/starts-with? uri "/images/")) (image-response uri)
+        (and get? (str/starts-with? uri "/images/")) (image-response request)
         :else                                         {:status 404}))))
 
 (defn- lan-ip
