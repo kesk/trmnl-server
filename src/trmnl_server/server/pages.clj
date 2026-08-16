@@ -298,6 +298,19 @@
              (select-keys attrs [:inputmode :step :placeholder :autofocus :required]))]
    (when hint [:span.fh hint])])
 
+(defn- select-field
+  "One labelled <select>: the fixed-choice counterpart to field, for a value that has a
+   right shape rather than a free range. Same .field/.fl/.fh skeleton, so the two sit in
+   one column without the form having to know which kind it is asking for. `options` are
+   [value text] pairs; `value` is the string that should come back selected."
+  [{:keys [name label value hint options]}]
+  [:label.field
+   [:span.fl label]
+   [:select {:name name}
+    (for [[v text] options]
+      [:option (cond-> {:value v} (= v value) (assoc :selected true)) text])]
+   (when hint [:span.fh hint])])
+
 (defn- form-errors
   "Why the last submission wasn't saved, listed rather than summarised: they're one per
    field, and a form that reports only the first sends you round the loop once per mistake."
@@ -329,13 +342,33 @@
     [:p.fh.pair-hint "Decimal degrees. Copy them out of a map — right-click a spot in "
      "Google Maps and the first line of the menu is the pair."]))
 
-(defn- hours-field [values]
-  (field {:name        "hours"
-          :label       "Hours (optional)"
-          :value       (get values "hours")
-          :inputmode   "numeric"
-          :placeholder "23"
-          :hint        "How many hourly points to plot. Blank uses the server default."}))
+(defn- hours-field
+  "The :hours choice, as a list rather than a box. core/even-label-hours is a short set of
+   counts and every other number gives an hour axis whose labels don't land evenly, so the
+   free number field mostly offered ways to get that subtly wrong — 24 above all, being the
+   obvious thing to type and one short of right. Blank stays first and is still the usual
+   answer.
+
+   A value that is none of them — a hand edit, or anything saved while this was a text box —
+   is kept as a choice of its own rather than dropped. A <select> with no matching option
+   selects its *first* one instead, so without this, opening the edit form on a display set
+   to 24 and pressing Save would quietly reset it to the server default. Keeping it is also
+   the honest thing: entry-problems accepts it, so the form shouldn't pretend it can't exist."
+  [values]
+  (let [current  (or (some-> (get values "hours") str/trim not-empty) "")
+        standard (map str core/even-label-hours)
+        choices  (cond-> standard
+                   (and (seq current) (not (some #{current} standard)))
+                   (concat [current]))]
+    (select-field
+      {:name    "hours"
+       :label   "Hours (optional)"
+       :value   current
+       :options (cons ["" "Server default"] (map #(vector % %) choices))
+       :hint    (str "How many hourly points to plot; blank uses the server default. These are "
+                  "the counts whose hour-axis labels come out evenly spaced. Past about a day "
+                  "SMHI's series may coarsen to 3-hour steps, which this chart would still "
+                  "plot at hourly spacing — look at the axis before settling on a long one.")})))
 
 (def ^:private location-defaults
   "What the configure form starts with before it has been submitted: the coordinates core

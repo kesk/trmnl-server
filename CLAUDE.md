@@ -242,7 +242,20 @@ version, and 3.6x the entire screen composition).
   `default-forecast-hours`/`default-forecast-location` are
   the single source of truth for "prognosis length" and "where" — callers override
   them via `--hours`/`--lat`/`--lon` (main) rather than hardcoding a point count or
-  coordinates themselves. The server no longer reaches for
+  coordinates themselves. **`even-label-hours`** is the rule behind that 23 rather
+  than the value: the point counts `hour-axis-labels` can label at even spacing, i.e.
+  those where `(hours - 1)` divides by `(dec axis-label-count)` — `[12 23 34 45 56]`,
+  derived from the label count so the two can't drift. 24 is the instructive near
+  miss (ten 2-hour gaps and one 3-hour one). It's what the registry forms offer in
+  their Hours dropdown and **not** a validation rule: `entry-problems` still takes
+  any positive integer, and `--hours`/`$FORECAST_HOURS` are unconstrained. Note also
+  that every x-coordinate on the screen comes from a point's *index* (`idx->x`,
+  five copies of the same linear expression), so the chart assumes points are evenly
+  spaced **in time** — safe at 23, but if SMHI's series coarsens to 3-hour steps past
+  a day, a long count would plot those at the same pitch as hourly ones. Verify the
+  breakpoint against the live API before relying on 45 or 56.
+
+  The server no longer reaches for
   `default-forecast-location` at all: every display's coordinates are required fields
   of its `devices.edn` entry. `$FORECAST_HOURS` survives as the server-wide fallback
   for an entry that omits `:hours`.
@@ -733,7 +746,16 @@ version, and 3.6x the entire screen composition).
   control and the "auth disabled" pill they carry in return. `configure-device` and
   `edit-device` are the two registry forms — the only pages here that ask for something
   rather than report it. Both ask for the same two things (what to call this display, where
-  it is); `configure-device` is the one a provisional display gets, and it issues nothing. They share a `field` helper and take `values`/`errors`, so a
+  it is, plus an optional forecast length); `configure-device` is the one a provisional
+  display gets, and it issues nothing. They share a `field` helper — and a `select-field`
+  one, used by exactly one field: **Hours is a dropdown, not a number box**, offering blank
+  ("server default") plus `core/even-label-hours`, because every other count gives a
+  visibly uneven hour axis and a free box mostly invited typing `24`. It still isn't a
+  check (`entry-problems` accepts any positive integer, and a hand-written `devices.edn`
+  may say anything), which is why a current value that *isn't* one of the offered counts is
+  kept as an option of its own: a `<select>` with no matching option selects its **first**,
+  so dropping it would mean opening the edit form on a display set to 24 and pressing Save
+  silently reset it to the default. Both take `values`/`errors`, so a
   refused submission comes back with every box still holding what was typed (`errors`
   being non-nil is also what suppresses the prefilled defaults, so a box somebody
   deliberately cleared doesn't silently refill itself); the *validation* is

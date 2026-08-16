@@ -8,11 +8,18 @@
 /* Same 11px caps as a card's .k: a field label and a card label name the same things
    (Name, Latitude), and the forms sit one click from the dashboard that shows them. */
 .fl{display:block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
-.field input{
+.field input,.field select{
   font:inherit;width:100%;padding:9px 11px;border-radius:8px;
   border:.5px solid var(--bd);background:var(--card);color:var(--fg);
 }
-.field input:focus{outline:none;border-color:var(--muted)}
+/* The Hours field is a <select> (see pages/hours-field) sitting directly under two text
+   boxes, so it has to read as the same object as them rather than whatever the platform
+   draws by default: same box, and an explicit height, since padding alone leaves a select
+   shorter than an input in Safari. The arrow is deliberately left to the browser — it's
+   what says "this one is a list" — which is what base.css's color-scheme is for, since
+   that arrow and the popup list are drawn by the UA and not by anything here. */
+.field select{height:38px;-webkit-appearance:menulist;appearance:menulist}
+.field input:focus,.field select:focus{outline:none;border-color:var(--muted)}
 /* Pinned rather than left to the browser: a placeholder here shows the *shape* of the
    value ("hallway", "57.7089"), so it sits next to fields that are genuinely filled in
    and has to read as the fainter of the two in both themes. */
