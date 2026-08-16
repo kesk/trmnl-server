@@ -78,19 +78,13 @@ Three separate things, all the same class — prose that outlived what it descri
 
 ### 5. Landing-page loose ends
 
-Added in `0a83cde`. Two of the original three remain (the third is under *Resolved
-2026-08-09*):
+Added in `0a83cde`. One of the original three remains (the others are under *Resolved
+2026-08-09* and *Resolved 2026-08-15*):
 
-- `pages/screen-card` (:659) builds `"/images/" + id + "/" + filename` by hand while
+- `pages/screen-card` builds `"/images/" + id + "/" + filename` by hand while
   `server/image-url` (:126-127) exists for the same job — though the latter takes a
   `base-url` the pages don't have, so sharing needs a small split rather than a straight
   call.
-- The page embeds `<img src="/images/<id>/<hash>.png">`. If the 10-minute cache happens to
-  roll over between the HTML response and the image fetch, `bytes-for` 404s and the
-  browser shows a broken image. The device recovers from this by re-polling; a browser
-  does not. A stable `/images/<id>/latest.png` alias, or inlining the bytes, would close
-  it. Note the archive fallback added in `87d6ddd` does *not* cover this: it fires when
-  there is no cache entry at all, not when the entry changes underneath a live page.
 
 ### 6. The device page reads today's log twice
 
@@ -172,6 +166,53 @@ on the screen that names something it does not show.
   covers the one part that can be checked mechanically: that no temp/wind chart label is
   drawn onto a dot or another label. Everything else is still eyes-on-a-PNG.
 
+## Resolved (2026-08-15)
+
+### `/` showed a screen no display had ever shown, and 404'd a third of the time
+
+Two entries closed at once, because they were the same mistake seen from both ends: the
+*Landing-page loose ends* bullet about the cache rolling over under a live page, and the
+caveat left on *`GET /` paid for a live render* below (that the `<img>` sub-resource still
+called `current-image`).
+
+`screen-card` embedded `<img src="/images/<id>/<hash>.png">` built from the **render
+cache**, and the filename is a hash of the pixels. The cache TTL is 10 minutes and the
+device polls every 15, so for 5 minutes in every 15 the page's own image request arrived on
+an expired entry, `image-response` regenerated, the new render got a new hash — the
+"Uppdaterad HH:mm" stamp guarantees it — and `bytes-for` correctly refused to serve bytes
+under a filename that no longer named them. Broken image, roughly a third of visits, self-
+healing on reload (the broken load is what refreshed the cache). The regeneration was also
+pure loss: it fetched SMHI and rendered a full screen only to 404 anyway, since a fresh
+render can never match the hash being asked for.
+
+The framing was the actual bug. `/` was showing "what we would serve if asked now", which
+is not a thing anyone wants to look at — the display collects a screen every 15 minutes and
+shows it until the next one, so the cached entry is routinely a picture no panel has ever
+displayed.
+
+Resolved by recording what the display **downloads**: `render/mark-fetched!` +
+`fetched-entry`, filled from the `/images/<id>/…` route and only for a request carrying the
+device's own `ID` + `Access-Token` (the firmware's `buildImageHeaders` attaches both —
+confirmed in `../trmnl-firmware`), so a browser loading the page can't record itself as the
+display. `bytes-for` now takes a device and searches the cache *and* that copy, and never
+regenerates; `image-response` therefore no longer calls `current-image` at all, which is
+what closes the sub-resource caveat. `/` reads `fetched-entry`, captions it "Fetched HH:mm",
+and falls back to a placeholder.
+
+Two deliberate consequences. The record is **in-memory only**, so a restart blanks every
+card until each display next polls (up to 15 min) — it is a claim about a panel in another
+room, and after a restart it isn't one we can make; saying so beats showing a render nobody
+has seen. That is also why the archive fallback from `87d6ddd` is **gone**: it existed to
+paper over exactly this gap, with a file that was only ever an approximation of what the
+device held. And `render/forget!` deliberately does *not* clear it — editing a registry
+entry doesn't change what is on the glass.
+
+Verified offline (the route no longer touches the network, so the whole path is testable
+without SMHI): placeholder before any fetch; the embedded filename serves 200; a browser
+fetch and a wrong-token fetch both leave `:fetched-at` untouched while the display's own
+fetch updates it; a cache rollover underneath a live page still serves the fetched copy;
+and an unknown filename still 404s.
+
 ## Resolved (2026-08-09)
 
 *(Headings here name the entry rather than its number: the open list renumbers whenever
@@ -238,6 +279,10 @@ Note the sub-resource is a separate question and is *not* covered: the `<img>` s
 points at `/images/<id>/…`, which does call `current-image`. A crawler that fetches the
 page's images can still trigger a render. What changed is that fetching the HTML alone no
 longer does — which is what the entry described.
+
+*(That caveat is closed as of 2026-08-15 — see the entry above. `image-response` no longer
+calls `current-image`, so nothing reachable from a browser regenerates. `cached-entry` is
+now private and no longer the landing page's source; the page reads `fetched-entry`.)*
 
 ## Resolved (2026-07-27)
 

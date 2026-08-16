@@ -4,6 +4,12 @@
    minutes. The served bytes never touch disk (out/ stays reserved for the batch-render
    modes) — the only thing written out is the rolling archive copy, via server.archive.
 
+   Alongside the cache sits a second, smaller record: the screen each display actually
+   downloaded (mark-fetched!/fetched-entry). The cache answers \"what would we serve if
+   asked right now\"; that one answers \"what is on the panel\", which the landing page
+   needs and the cache can't tell it — a 10-minute cache against a 15-minute poll means
+   the two disagree for a third of every cycle.
+
    Everything here is per *device*: each registered display has its own cache entry, its
    own regeneration lock, and its own archive subdirectory, keyed by the device's :id
    (see server.devices). Two displays therefore fetch SMHI independently even if they
@@ -31,6 +37,17 @@
 
 ;; Device :id -> cache entry. One entry per registered display.
 (defonce ^:private cache (atom {}))
+
+;; Device :id -> the screen that display actually downloaded: {:filename :bytes :fetched-at}.
+;; A copy of the bytes rather than a pointer into `cache`, because the whole point is that it
+;; outlives the cache entry it came from — a display goes on showing what it fetched for the
+;; full 15 minutes until its next poll, long after the 10-minute cache entry that produced it
+;; has expired and been replaced. ~15 KB per display, and nothing else is retained (not the
+;; BufferedImage the render cache holds).
+;;
+;; Deliberately in memory only: it describes what is on a panel *right now*, and after a
+;; restart we don't know that any more. The landing page says so rather than guessing.
+(defonce ^:private fetched (atom {}))
 
 ;; Device :id -> lock object, created on demand by lock-for.
 (defonce ^:private locks (atom {}))
@@ -88,13 +105,35 @@
   [entry]
   (and entry (or (fresh? entry) (cooling-down? entry))))
 
-(defn cached-entry
-  "The device's cache entry if it has one, without ever regenerating. For callers who
-   want to show the last screen rather than guarantee a current one — notably the
-   landing page, which is public and shouldn't turn a crawler's visit into a live SMHI
-   fetch and a full render. nil before the device's first successful render."
+(defn- cached-entry
+  "The device's cache entry if it has one, without ever regenerating — for the callers
+   here that want to look at the cache rather than guarantee a current screen (bytes-for
+   and cache-status). nil before the device's first successful render.
+
+   Private because nothing outside this namespace should be asking: the pages want
+   fetched-entry (what the display is showing) and the device wants current-image (a
+   screen guaranteed fresh), and a peek at the cache is neither of those."
   [device]
   (get @cache (:id device)))
+
+(defn mark-fetched!
+  "Records that the display itself just downloaded these bytes under this filename — the
+   screen now on its panel. Called from the /images/<id>/… route, and only for a request
+   carrying the device's own credentials (the firmware attaches ID + Access-Token to the
+   image fetch, see buildImageHeaders), so a browser loading the landing page doesn't
+   record itself as the display and restamp the time."
+  [device-id filename bytes]
+  (swap! fetched assoc device-id {:filename   filename
+                                  :bytes      bytes
+                                  :fetched-at (System/currentTimeMillis)}))
+
+(defn fetched-entry
+  "The screen this display last downloaded, or nil if it hasn't downloaded one since the
+   server started. What the landing page shows: the render cache answers \"what would we
+   serve if asked right now\", which is a different question from \"what is on the wall\" —
+   it turns over every 10 minutes while the display only collects a screen every 15."
+  [device]
+  (get @fetched (:id device)))
 
 (defn forget!
   "Drops a device's cached screen, so the next request renders from scratch. Called when
@@ -102,7 +141,11 @@
    display that has just been moved to another town would otherwise keep being served the
    old one's forecast for the rest of cache-ttl-ms — and the archive would keep collecting
    it. Nothing else in the entry is worth keeping either; the whole point of an edit is
-   that the render is now wrong."
+   that the render is now wrong.
+
+   Deliberately leaves `fetched` alone: that isn't a prediction of what we'd render, it's a
+   record of what the display downloaded, and an edit here doesn't reach through to the
+   panel — the old town's screen really is still on it until the display next polls."
   [device-id]
   (swap! cache dissoc device-id))
 
@@ -187,13 +230,27 @@
   (or (:stale-filename entry) (:filename entry)))
 
 (defn bytes-for
-  "The PNG bytes matching `filename` in the given cache entry, or nil when it names
-   neither the fresh nor the stale image. Serving only the bytes whose content hash
-   matches the requested filename means a cache rollover between the device's
-   /api/display poll and its image fetch 404s (prompting a re-poll) instead of silently
-   serving mismatched bytes."
-  [entry filename]
-  (condp = filename
-    (:stale-filename entry) (:stale-bytes entry)
-    (:filename entry)       (:bytes entry)
-    nil))
+  "The PNG bytes this device can be served under `filename`, or nil when nothing we're
+   holding has that content hash. Serving only bytes whose hash matches the requested
+   filename means a cache rollover between the device's /api/display poll and its image
+   fetch 404s (prompting a re-poll) instead of silently serving mismatched bytes.
+
+   Two places are searched, and the second is what makes the landing page work: the live
+   cache entry (fresh or stale-badged), then the copy the display last downloaded. The
+   cache turns over every 10 minutes and the display only polls every 15, so for a third
+   of every cycle the screen on the panel is no longer the screen in the cache — and the
+   page that embeds it would 404 without this.
+
+   Deliberately never regenerates. It couldn't help if it did: a new render gets a new
+   content hash (the header's per-render \"Uppdaterad HH:mm\" stamp guarantees the pixels
+   differ), so it would still fail to match the filename asked for, having fetched SMHI to
+   find that out. That is what a browser hit used to do here — one live fetch and a full
+   render per card — and it 404'd anyway."
+  [device filename]
+  (letfn [(match [entry]
+            (condp = filename
+              (:stale-filename entry) (:stale-bytes entry)
+              (:filename entry)       (:bytes entry)
+              nil))]
+    (or (match (cached-entry device))
+      (match (fetched-entry device)))))
