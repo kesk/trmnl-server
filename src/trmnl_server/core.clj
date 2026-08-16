@@ -474,12 +474,35 @@
       (let [boundary-x (idx->x (first b))]
         (img/draw-dashed-line canvas boundary-x top boundary-x bottom)))))
 
+(def even-label-hours
+  "Point counts hour-axis-labels can label at perfectly even spacing: those where
+   (hours - 1) divides by (dec axis-label-count), so its labels land on exact
+   multiples of the step instead of rounding to a stutter. 24 points is the
+   instructive near miss — it gives ten 2-hour gaps and one 3-hour one, which reads
+   as a hiccup in an otherwise regular axis.
+
+   Derived from axis-label-count rather than written out, so the two can't drift:
+   this is the list the registry forms offer for :hours, and changing the label
+   count changes what they offer. Half a day to a bit over two. The floor is forced
+   — below 12 there'd be fewer points than labels, and hour-axis-labels' `distinct`
+   would silently drop some. The ceiling is a judgement: across the 720px chart, 56
+   points already puts each precip bar in a ~13px slot (720/n) against 23's ~31px,
+   so it's where the strip stops reading as bars. Nothing breaks past it; the list
+   just stops offering.
+
+   NOT a validation rule. entry-problems still takes any positive integer, --hours
+   and FORECAST_HOURS are unconstrained, and a hand-written devices.edn may say
+   anything — an uneven axis is a blemish, not a fault. This only decides what the
+   forms put in front of somebody who has no reason to know the rule."
+  (mapv #(inc (* (dec axis-label-count) %)) (range 1 6)))
+
 (def default-forecast-hours
   "How many hourly points forecast-screen renders when fetching live data or
    generating a demo season, absent an explicit override (e.g. --hours or
-   FORECAST_HOURS). 23 rather than a round 24/48: hour-axis-labels' 12 labels
-   only land at perfectly even pixel spacing when (hours - 1) is a multiple of
-   11, and 23 is the smallest such count above a day."
+   FORECAST_HOURS). 23 rather than a round 24/48 because it's in even-label-hours
+   above and 24 isn't: it's the entry nearest a day, spanning 22 hours from first
+   point to last. (Nearest, not the smallest above one — 23 hourly points is just
+   under a day, and the next entry up is half a day past it.)"
   23)
 
 (def default-forecast-location
