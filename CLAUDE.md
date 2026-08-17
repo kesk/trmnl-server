@@ -244,16 +244,30 @@ version, and 3.6x the entire screen composition).
   them via `--hours`/`--lat`/`--lon` (main) rather than hardcoding a point count or
   coordinates themselves. **`even-label-hours`** is the rule behind that 23 rather
   than the value: the point counts `hour-axis-labels` can label at even spacing, i.e.
-  those where `(hours - 1)` divides by `(dec axis-label-count)` — `[12 23 34 45 56]`,
+  those where `(hours - 1)` divides by `(dec axis-label-count)` — `[12 23 34 45]`,
   derived from the label count so the two can't drift. 24 is the instructive near
   miss (ten 2-hour gaps and one 3-hour one). It's what the registry forms offer in
   their Hours dropdown and **not** a validation rule: `entry-problems` still takes
-  any positive integer, and `--hours`/`$FORECAST_HOURS` are unconstrained. Note also
-  that every x-coordinate on the screen comes from a point's *index* (`idx->x`,
-  five copies of the same linear expression), so the chart assumes points are evenly
-  spaced **in time** — safe at 23, but if SMHI's series coarsens to 3-hour steps past
-  a day, a long count would plot those at the same pitch as hourly ones. Verify the
-  breakpoint against the live API before relying on 45 or 56.
+  any positive integer, and `--hours`/`$FORECAST_HOURS` are unconstrained.
+
+  **The list stops at 45 for a second reason, and it's SMHI's, not the label
+  arithmetic's.** Every x-coordinate on the screen comes from a point's *index*
+  (`idx->x`, five copies of the same linear expression), so the chart assumes points
+  are evenly spaced **in time** — and SMHI's point forecast is hourly only for its
+  first stretch before jumping straight to 6-hour steps (not the "eg 3, 6 and 12 h"
+  its docs give as examples), which the chart would go on plotting at hourly pitch.
+  That boundary is anchored to the **calendar, not the run**: it sits at 00:00Z three
+  days out, so the hourly run shrinks by a point an hour through the UTC day and
+  resets at midnight. Measured against `times.json` (2026-08-16): a 14:00Z run gave
+  59 hourly points and the 15:00Z run 58, boundary unmoved at 2026-08-19T00:00Z —
+  i.e. `73 - H` points for UTC hour `H`, from 73 at midnight down to 50 by 23:00Z. So
+  45 clears the worst case by five, while 56 (the next count the label rule allows)
+  would overrun it from 18:00Z **every day**. Check `times.json` rather than a single
+  forecast before raising this — a spot check in the morning shows 56 working fine:
+
+  ```bash
+  curl -s 'https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1/times.json'
+  ```
 
   The server no longer reaches for
   `default-forecast-location` at all: every display's coordinates are required fields

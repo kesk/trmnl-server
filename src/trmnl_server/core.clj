@@ -483,18 +483,36 @@
 
    Derived from axis-label-count rather than written out, so the two can't drift:
    this is the list the registry forms offer for :hours, and changing the label
-   count changes what they offer. Half a day to a bit over two. The floor is forced
+   count changes what they offer. Half a day to just under two. The floor is forced
    — below 12 there'd be fewer points than labels, and hour-axis-labels' `distinct`
-   would silently drop some. The ceiling is a judgement: across the 720px chart, 56
-   points already puts each precip bar in a ~13px slot (720/n) against 23's ~31px,
-   so it's where the strip stops reading as bars. Nothing breaks past it; the list
-   just stops offering.
+   would silently drop some.
+
+   The ceiling is forced too, by SMHI rather than by us, and 45 is the last count
+   that clears it. The point forecast is hourly only for its first stretch and then
+   jumps straight to 6-hour steps, which this chart would still plot at hourly
+   pitch — a silently wrong axis, not a blemish. That boundary is **anchored to the
+   calendar, not to the run**: it sits at 00:00Z three days out, so the hourly run
+   shrinks by a point an hour through the UTC day and resets at midnight. Measured
+   against times.json (2026-08-16): a 14:00Z run gave 59 hourly points, the 15:00Z
+   run 58, with the boundary unmoved at 2026-08-19T00:00Z — i.e. 73 - H points for
+   UTC hour H, so 73 at midnight down to 50 by 23:00Z. 45 is inside that worst case
+   with five to spare; 56 would overrun it from 18:00Z every day, which is why the
+   list stops at 45 rather than at the 56 the label arithmetic allows. Check
+   times.json before raising this, not a single forecast — a spot check in the
+   morning shows 56 working fine.
+
+   (Readability agrees, for whatever that's worth as a second opinion: across the
+   720px chart, 56 points would put each precip bar in a ~13px slot (720/n) against
+   23's ~31px, about where the strip stops reading as bars.)
 
    NOT a validation rule. entry-problems still takes any positive integer, --hours
    and FORECAST_HOURS are unconstrained, and a hand-written devices.edn may say
-   anything — an uneven axis is a blemish, not a fault. This only decides what the
-   forms put in front of somebody who has no reason to know the rule."
-  (mapv #(inc (* (dec axis-label-count) %)) (range 1 6)))
+   anything. This only decides what the forms put in front of somebody who has no
+   reason to know either rule. That it stays a suggestion is a judgement about who
+   is typing: an uneven axis really is only a blemish, and someone hand-editing the
+   file or passing --hours is close enough to this docstring to be trusted with the
+   6-hour boundary too — where a number box on a web form is not."
+  (mapv #(inc (* (dec axis-label-count) %)) (range 1 5)))
 
 (def default-forecast-hours
   "How many hourly points forecast-screen renders when fetching live data or

@@ -366,9 +366,9 @@
        :value   current
        :options (cons ["" "Server default"] (map #(vector % %) choices))
        :hint    (str "How many hourly points to plot; blank uses the server default. These are "
-                  "the counts whose hour-axis labels come out evenly spaced. Past about a day "
-                  "SMHI's series may coarsen to 3-hour steps, which this chart would still "
-                  "plot at hourly spacing — look at the axis before settling on a long one.")})))
+                  "the counts whose hour-axis labels come out evenly spaced, and that stay "
+                  "inside the stretch SMHI actually reports hourly — past it the series jumps "
+                  "to 6-hour steps, which this chart would still plot at hourly spacing.")})))
 
 (def ^:private location-defaults
   "What the configure form starts with before it has been submitted: the coordinates core
