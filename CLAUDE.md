@@ -202,8 +202,8 @@ version, and 3.6x the entire screen composition).
   that would have to become per-device fields if that ever changed, rather than a knob
   nobody would set (see the entry in KNOWN-ISSUES.md). The locale matters beyond weekday
   names — `core`'s mm labels format through it too, so the decimal separator is a decision
-  rather than a property of whichever machine renders the screen. `forecast` additionally carries the response's
-  top-level `referenceTime` (the SMHI forecast run's issuance time) as `:reference-time`
+  rather than a property of whichever machine renders the screen. `forecast` additionally
+  carries the response's top-level `referenceTime` (the SMHI forecast run's issuance time) as `:reference-time`
   **metadata on the returned seq** — data the point maps don't need but a caller may want
   to tag a render with. Because plain seq ops (`take`) drop metadata, `core/live-points`
   re-attaches it when truncating; the server uses it only to stamp the archive filename.
