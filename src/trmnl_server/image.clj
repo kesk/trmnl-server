@@ -53,11 +53,17 @@
         gv      (.createGlyphVector (.getFont graphics) frc text)
         outline (.getOutline gv (float x) (float y))]
     (when halo-color
-      (let [text-color (.getColor graphics)]
+      (let [text-color (.getColor graphics)
+            prev       (.getStroke graphics)]
         (.setColor graphics halo-color)
         (.setStroke graphics (BasicStroke. halo-width BasicStroke/CAP_ROUND BasicStroke/JOIN_ROUND))
         (.draw graphics outline)
-        (.setColor graphics text-color)))
+        (.setColor graphics text-color)
+        ;; Restored, not left set: the canvas threads one mutable Graphics2D, so a stroke
+        ;; left behind here is picked up by the next stroking call anywhere. Never observed
+        ;; to bite -- the line fns all reset to 1.0, so one of them has always run in
+        ;; between -- which is exactly the kind of luck worth not depending on.
+        (.setStroke graphics prev)))
     (.fill graphics outline)))
 
 (defn draw-text
@@ -109,12 +115,34 @@
 (defn draw-rect
   ":paint accepts any java.awt.Paint (a Color for solid fill, or e.g.
    checkerboard-paint/stipple-paint for a dithered fill) and takes priority
-   over :color when both are given."
-  [{:keys [^Graphics2D graphics]} x y w h & {:keys [fill? color paint] :or {color Color/BLACK}}]
+   over :color when both are given.
+
+   An unfilled rect sets its own stroke (:stroke-width, default 1.0) and puts back
+   what was there, rather than inheriting whatever the last caller happened to
+   leave on the shared Graphics2D. Outline width is the whole visual point of an
+   unfilled rect, so it shouldn't depend on draw order -- the mm label's 1px plaque
+   border came out 1px only because a dashed-line call sat between it and the
+   nearest haloed label, and would have quietly become 5px if either moved.
+
+   :arc rounds the corners, as the *diameter* of the corner arc (Java2D's own
+   convention), so :arc 6 is a 3px radius. Antialiasing is off canvas-wide, so the
+   curve lands as a hard pixel step rather than a soft one -- which is the only
+   thing that would read correctly after ->1-bit anyway. Pass the same :arc to the
+   fill and the outline of a plaque, or the square fill's corners poke out past the
+   rounded border."
+  [{:keys [^Graphics2D graphics]} x y w h & {:keys [fill? color paint stroke-width arc]
+                                             :or   {color Color/BLACK stroke-width 1.0}}]
   (.setPaint graphics (or paint color))
   (if fill?
-    (.fillRect graphics x y w h)
-    (.drawRect graphics x y w h)))
+    (if arc
+      (.fillRoundRect graphics x y w h arc arc)
+      (.fillRect graphics x y w h))
+    (let [prev (.getStroke graphics)]
+      (.setStroke graphics (BasicStroke. (float stroke-width)))
+      (if arc
+        (.drawRoundRect graphics x y w h arc arc)
+        (.drawRect graphics x y w h))
+      (.setStroke graphics prev))))
 
 (defn load-image
   "Loads a raster image (e.g. PNG) from the classpath, for compositing onto

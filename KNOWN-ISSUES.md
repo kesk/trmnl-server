@@ -129,11 +129,8 @@ use.
 
 ### 11. `fill-string` leaves a 5px stroke on the Graphics2D
 
-`image/fill-string` (:58) sets a `BasicStroke` for the halo and never restores it, unlike
-`draw-polyline`, `draw-variable-line` and `draw-dashed-line`, which all reset to 1.0.
-Latent today because `draw-rect` and `draw-polygon` are only ever called with
-`:fill? true`, but the first `:fill? false` call after a haloed label will draw a 5px
-round-joined outline with no warning.
+*(Fixed — see Resolved 2026-08-19. The deeper point below still stands for colour and
+font, which remain order-dependent global state on the shared `Graphics2D`.)*
 
 The deeper point: the canvas map threads a mutable `Graphics2D` whose colour, font and
 stroke are order-dependent global state. A `with-stroke`-style helper, or a consistent
@@ -165,6 +162,37 @@ on the screen that names something it does not show.
   `--demo` season renders are the de-facto regression tool. `clojure -M:check-labels`
   covers the one part that can be checked mechanically: that no temp/wind chart label is
   drawn onto a dot or another label. Everything else is still eyes-on-a-PNG.
+
+## Resolved (2026-08-19)
+
+### The mm label was illegible where it mattered most, and the stroke leak was real
+
+Two things, found together because the second blocked the fix for the first.
+
+`core/precip-mm-labels` drew its "1,2mm" on a `:halo? true` label. A halo strokes the
+*glyph outlines*, so it clears a margin around each character's edge but not the gap
+*between* characters — and `precip-probability-line` peaks at the wettest hour almost by
+definition, which is exactly the hour that label sits above. So a dash survived in the gap
+beside the decimal separator and read as a stray mark on the number, on every rainy screen
+the display has ever shown (confirmed at 23 points, the deployed default, not just at long
+counts). It now draws a white plaque over `image/text-box`'s ink bounds and outlines it 1px
+black, so the label reads as a tile on top of the chart instead of a hole knocked in it.
+
+`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#11*
+above said — it now restores what it borrows. But the prediction that "the first
+`:fill? false` call after a haloed label will draw a 5px outline" turned out **not** to
+fire for this one: measured, the plaque's border came out 1px even with the leak still in
+place, because `precip-probability-line`'s dashed pass resets the stroke between the last
+haloed label and the plaque. So the leak was latent for a second reason nobody had written
+down, and the border's width was riding on draw order. `image/draw-rect` now sets its own
+stroke for unfilled rects (`:stroke-width`, default 1.0) and restores the previous one —
+verified by poisoning the canvas with a 9px ambient stroke and still measuring a 1px
+border. Outline width is the whole point of an unfilled rect; it shouldn't be a function
+of what ran before it.
+
+Worth noting what caught this: nothing mechanical did. `clojure -M:check-labels` covers
+only the temp/wind chart's label geometry, so the precip strip has no guard at all — this
+was spotted by eye, in a zoomed crop of a demo render.
 
 ## Resolved (2026-08-15)
 

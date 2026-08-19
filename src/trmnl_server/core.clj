@@ -405,15 +405,75 @@
                   (filter #(pos? (:bar-h %)))
                   (mapv (fn [{:keys [x bar-h]}] [x (- bottom bar-h) bar-w bar-h])))}))
 
+(def ^:private mm-label-pad
+  "Clear pixels between an mm label's ink and the inside of its plaque border.
+   Wide enough that the plaque reads as a deliberate gap in the dashed
+   probability line rather than a nick taken out of it, tight enough that it
+   doesn't swallow the bar top underneath. An exact pixel count, not an
+   approximate one -- see precip-mm-labels for why that needs saying."
+  3)
+
+(def ^:private mm-label-arc
+  "Corner rounding on the mm label's plaque, as Java2D's arc *diameter* -- so this
+   is a 2px radius, which on an un-antialiased 1-bit surface costs one pixel off
+   each corner. Enough to stop the tile reading as a hard-edged cut-out, small
+   enough that it still reads as a rectangle at arm's length, which is the only
+   distance this screen is ever looked at from."
+  4)
+
 (defn precip-mm-labels
   "Draws the wettest-per-day mm labels from precip-bar-chart's returned specs.
-   Split out so it runs AFTER precip-probability-line, letting each label's white
-   halo mask the dashed line where the two overlap (a halo only masks what's
-   drawn before it)."
+   Split out so it runs AFTER precip-probability-line, so what it paints over the
+   dashed line wins (paint order is the only masking a 1-bit surface has).
+
+   Knocked out on a **white plaque, not a halo**. A halo strokes the glyph
+   outlines, so it only clears ~half of fill-string's 5px stroke around each
+   glyph's edge and leaves whatever is behind the label showing through the gaps
+   *between* glyphs. That is where the probability line peaks — it is highest at
+   the wettest hour almost by definition, which is exactly the hour this label
+   sits above — so a dash would survive in the gap beside the decimal separator
+   and read as a stray mark on the number. A filled rect over the text's ink
+   bounds clears the whole footprint in one go, which is what the halo was
+   reaching for and couldn't express.
+
+   The plaque is then outlined 1px black, so its edge is a drawn edge rather than
+   wherever the stipple and the dashed line happen to stop. Without it the cleared
+   rectangle reads as a hole knocked in the chart; with it the label reads as a
+   tile sitting on top, which is what it is. draw-rect sets that 1px itself: this
+   is the codebase's first unfilled rect, and an outline whose width depends on
+   what the previous caller left on the shared Graphics2D is a trap (it measured
+   1px here only because precip-probability-line's dashed pass happens to reset the
+   stroke between the last haloed label and this call)."
   [canvas specs]
   (doseq [{:keys [x top mm]} specs]
-    (img/draw-text canvas (format "%.1fmm" (double mm)) (- x 4) (- top 6)
-      :font (img/pixel-font :bold 16) :halo? true)))
+    (let [text          (format "%.1fmm" (double mm))
+          font          (img/pixel-font :bold 16)
+          bx            (- x 4)
+          by            (- top 6)
+          [x1 _ x2 y2]  (img/text-box canvas text bx by :font font)
+          ;; Vertical extent measured from a digit, not from the whole string. The
+          ;; decimal separator is the only glyph here that drops below the baseline,
+          ;; so sizing the box to the full ink bounds spends a couple of rows on its
+          ;; tail and pushes the digits -- which are what the eye reads as "the
+          ;; text" -- above centre. Centre the digit block instead and let the tail
+          ;; hang into the bottom padding, which is deeper than the tail is long.
+          [_ dy1 _ dy2] (img/text-box canvas "0" bx by :font font)
+          first-px      (fn [v] (long (Math/floor (double v))))
+          ;; Ink bounds are a continuous rect, so the last *pixel* it covers is one
+          ;; short of its ceiling. Rounding both edges instead put the plaque a pixel
+          ;; right of centre -- correct to within a pixel, and a pixel is 6% of the
+          ;; gap at this size.
+          last-px       (fn [v] (dec (long (Math/ceil (double v)))))
+          left          (- (first-px x1) mm-label-pad 1)
+          right         (+ (last-px x2) mm-label-pad 1)
+          top*          (- (first-px dy1) mm-label-pad 1)
+          bottom        (max (+ (last-px dy2) mm-label-pad 1)
+                          (+ (last-px y2) 1))
+          w             (- right left)
+          h             (- bottom top*)]
+      (img/draw-rect canvas left top* w h :fill? true :color Color/WHITE :arc mm-label-arc)
+      (img/draw-rect canvas left top* w h :fill? false :color Color/BLACK :arc mm-label-arc)
+      (img/draw-text canvas text bx by :font font))))
 
 (defn precip-probability-line
   "Overlays probability-of-precipitation as a recessive dashed line across
@@ -589,10 +649,10 @@
        ;; where the reasoning behind their edges lives -- and which is the copy
        ;; check-labels reads, so it checks this chart and not one of its own.
        (combined-chart canvas points chart-x chart-y chart-w chart-h :keep-out keep-out)
-       ;; Three z-layers in the precip strip: bars, then the (XOR) probability
-       ;; line over them, then the mm labels on top -- so the line stays visible
-       ;; through a tall bar while each label's halo still masks the line where
-       ;; they overlap (a halo only masks what's drawn before it).
+       ;; Three z-layers in the precip strip: bars, then the probability line
+       ;; over them, then the mm labels on top -- so the line stays visible
+       ;; through a tall bar while each label's white plaque still clears the
+       ;; line where they overlap (paint order is the only masking there is).
        (let [{:keys [mm-labels bar-rects]} (precip-bar-chart canvas points 40 precip-y 720 precip-h)]
          (precip-probability-line canvas points 40 precip-y 720 precip-h bar-rects)
          (precip-mm-labels canvas mm-labels)))
