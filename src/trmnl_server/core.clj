@@ -97,10 +97,11 @@
 (defn draw-weather-icon
   "Draws SMHI's official icon (bundled as pre-rasterized PNGs under
    resources/icons/, one pair of day/night SVGs per symbol code) for a
-   forecast point inside the size x size box at x,y. Their fills (sun
-   yellow, cloud grays) sit above ->1-bit's threshold and wash to white,
-   leaving just their dark outlines — so the icons need no recoloring to fit
-   the 1-bit pipeline."
+   forecast point inside the size x size box at x,y. The PNGs are already
+   1-bit: their fills carry identity by texture (sun/moon an ordered-dither
+   checkerboard, precip marks a denser dither, cloud body white, outlines
+   solid black), baked in at rasterization time so ->1-bit's threshold is a
+   no-op on them. See CLAUDE.md for the rsvg-convert recipe that builds them."
   [canvas point location x y size]
   (let [image (img/load-image (weather-icon-path (:symbol point) (smhi/night? location (:time point))))]
     (img/draw-image canvas image x y size size)))
@@ -446,7 +447,7 @@
    stroke between the last haloed label and this call)."
   [canvas specs]
   (doseq [{:keys [x top mm]} specs]
-    (let [text          (format "%.1fmm" (double mm))
+    (let [text          (String/format smhi/swedish "%.1fmm" (to-array [(double mm)]))
           font          (img/pixel-font :bold 16)
           bx            (- x 4)
           by            (- top 6)
@@ -544,7 +545,8 @@
 
 (def default-forecast-location
   "Where forecast-screen fetches live data for, absent an explicit override
-   (e.g. --lat/--lon or FORECAST_LAT/FORECAST_LON)."
+   (--lat/--lon). Not a fallback for the server: every display's :lat/:lon is a
+   required field of its devices.edn entry."
   smhi/gothenburg)
 
 (defn live-points
@@ -633,7 +635,7 @@
      (draw-legend-row canvas 40 108 720
        [["Temp (°C)" {}]
         ["Vind (m/s)" {:dash [6.0 5.0]}]
-        ["Moln (%)" {:width 14.0 :paint (img/checkerboard-paint)}]])
+        ["Moln (0-8)" {:width 14.0 :paint (img/checkerboard-paint)}]])
 
      (let [{:keys [cloud-y cloud-max-w precip-y precip-h chart-box keep-out]} screen-geometry
            [chart-x chart-y chart-w chart-h]                                  chart-box]

@@ -21,15 +21,17 @@ clojure -M -m trmnl-server.main
 clojure -M:run
 
 # Render synthetic per-season screens instead of a live fetch — writes
-# out/demo-{winter,spring,summer,autumn}(.png|-1bit.png)
+# out/demo-{winter,spring,summer,autumn}(.png|-1bit.png), plus
+# out/demo-rain-test(.png|-1bit.png) (a chart stress-test day) and
+# out/demo-stale.png (a season's screen wearing the stale-warning badge)
 clojure -M -m trmnl-server.main --demo
 
 # Override where the live forecast is fetched for (default Gothenburg)
 clojure -M -m trmnl-server.main --lat 59.3293 --lon 18.0686
 
-# Serve the live forecast screen over HTTP to a real TRMNL OG device pointed
-# at a custom server. Listens on $PORT or 8080, defaulting to Gothenburg unless
-# $FORECAST_LAT/$FORECAST_LON are set.
+# Serve live forecast screens over HTTP to real TRMNL OG devices pointed at a
+# custom server. Listens on $PORT or 8080. Each display's location comes from
+# the device registry (devices.edn), filled in from the server's own web pages.
 clojure -M -m trmnl-server.main --serve
 # equivalently:
 clojure -M:serve
@@ -58,8 +60,8 @@ bb deploy.clj
 Six namespaces under `src/trmnl_server/`, cleanly separated by concern:
 
 - **`image`** — generic Java2D drawing primitives (text, lines, dots, rects), plus
-  conversions from the RGB working canvas to what an e-ink panel needs: `->1-bit`
-  (hard threshold) and `floyd-steinberg` (error-diffusion dithering).
+  `->1-bit`, the hard threshold that turns the RGB working canvas into what an e-ink
+  panel needs.
 - **`smhi`** — HTTP client for SMHI's public point-forecast API, normalizing raw JSON
   into flat forecast points.
 - **`demo`** — synthetic per-season datasets in the same shape as `smhi/forecast`, so

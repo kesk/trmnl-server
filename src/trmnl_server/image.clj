@@ -1,6 +1,5 @@
 (ns trmnl-server.image
-  (:require [clojure.java.io :as io]
-            [clojure.string :as str])
+  (:require [clojure.java.io :as io])
   (:import [java.awt BasicStroke Color Font Graphics2D RenderingHints TexturePaint]
            [java.awt.font GlyphVector]
            [java.awt.geom Area Rectangle2D Rectangle2D$Double]
@@ -27,7 +26,7 @@
 
 (defn blank-canvas
   "Returns a white RGB canvas map: {:image BufferedImage, :graphics Graphics2D}.
-   Draw on it with the other fns, then convert with ->1-bit or floyd-steinberg."
+   Draw on it with the other fns, then convert with ->1-bit."
   ([] (blank-canvas og-width og-height))
   ([w h]
    (let [image (BufferedImage. w h BufferedImage/TYPE_INT_RGB)
@@ -94,23 +93,6 @@
         y  (int y)]
     [(+ x (Rectangle2D/.getMinX b)) (+ y (Rectangle2D/.getMinY b))
      (+ x (Rectangle2D/.getMaxX b)) (+ y (Rectangle2D/.getMaxY b))]))
-
-(defn draw-wrapped-text
-  "Draws text wrapped to fit within max-width, one line per line-height."
-  [{:keys [^Graphics2D graphics]} text x y max-width line-height & {:keys [font color] :or {color Color/BLACK}}]
-  (when font (.setFont graphics font))
-  (.setColor graphics color)
-  (let [fm    (.getFontMetrics graphics)
-        lines (loop [words (str/split text #"\s+") line "" lines []]
-                (if (empty? words)
-                  (cond-> lines (seq line) (conj line))
-                  (let [word      (first words)
-                        candidate (if (seq line) (str line " " word) word)]
-                    (if (and (seq line) (> (.stringWidth fm candidate) max-width))
-                      (recur words "" (conj lines line))
-                      (recur (rest words) candidate lines)))))]
-    (doseq [[i line] (map-indexed vector lines)]
-      (fill-string graphics line (int x) (int (+ y (* i line-height)))))))
 
 (defn draw-rect
   ":paint accepts any java.awt.Paint (a Color for solid fill, or e.g.
@@ -201,10 +183,10 @@
 (defn checkerboard-paint
   "A 2x2 black/white checkerboard tile, anchored at the device origin — used
    to fill a shape with a regular dither pattern that reads as flat 50% gray.
-   A 1-bit surface can't hold an actual gray value (->1-bit/floyd-steinberg
-   would just threshold it away), but this survives untouched since every
-   pixel is already pure black or white. Anchoring at (0,0) keeps the tile
-   grid-aligned across separately drawn shapes so segments meet seamlessly."
+   A 1-bit surface can't hold an actual gray value (->1-bit would just threshold
+   it away), but this survives untouched since every pixel is already pure black
+   or white. Anchoring at (0,0) keeps the tile grid-aligned across separately
+   drawn shapes so segments meet seamlessly."
   []
   (let [tile (BufferedImage. 2 2 BufferedImage/TYPE_INT_RGB)]
     (doto tile
@@ -285,34 +267,6 @@
               gray (/ (+ (.getRed c) (.getGreen c) (.getBlue c)) 3)]
           (.setRGB bw x y (if (< gray threshold) -16777216 -1)))))
     bw))
-
-(defn floyd-steinberg
-  "Dither an RGB canvas down to 1-bit using Floyd-Steinberg error diffusion.
-   Better than ->1-bit for photos/gradients since it preserves perceived shading."
-  [{:keys [^BufferedImage image]}]
-  (let [w    (.getWidth image)      h (.getHeight image)
-        gray (double-array (* w h))]
-    (dotimes [y h]
-      (dotimes [x w]
-        (let [c (Color. (.getRGB image x y))]
-          (aset gray (+ x (* y w)) (double (/ (+ (.getRed c) (.getGreen c) (.getBlue c)) 3))))))
-    (let [bw (BufferedImage. w h BufferedImage/TYPE_BYTE_BINARY)]
-      (dotimes [y h]
-        (dotimes [x w]
-          (let [i   (+ x (* y w))
-                old (aget gray i)
-                new (if (< old 128.0) 0.0 255.0)
-                err (- old new)]
-            (.setRGB bw x y (if (zero? new) -16777216 -1))
-            (when (< (inc x) w)
-              (aset gray (+ i 1) (+ (aget gray (+ i 1)) (* err (/ 7.0 16)))))
-            (when (and (pos? x) (< (inc y) h))
-              (aset gray (+ i w -1) (+ (aget gray (+ i w -1)) (* err (/ 3.0 16)))))
-            (when (< (inc y) h)
-              (aset gray (+ i w) (+ (aget gray (+ i w)) (* err (/ 5.0 16)))))
-            (when (and (< (inc x) w) (< (inc y) h))
-              (aset gray (+ i w 1) (+ (aget gray (+ i w 1)) (* err (/ 1.0 16))))))))
-      bw)))
 
 (defn save-image [image path]
   (let [file (File. ^String path)

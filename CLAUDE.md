@@ -19,7 +19,10 @@ clojure -M:run
 
 # Render synthetic per-season screens instead of a live fetch — writes
 # out/demo-{winter,spring,summer,autumn}(.png|-1bit.png), plus
-# out/demo-rain-test(.png|-1bit.png), a chart stress-test day (see demo below)
+# out/demo-rain-test(.png|-1bit.png), a chart stress-test day (see demo below),
+# and out/demo-stale.png, one season's screen wearing the stale-warning badge
+# (core/stamp-stale-badge, what a device sees when a render falls back to the
+# last good image — 1-bit only, since the badge is what's being looked at)
 clojure -M -m trmnl-server.main --demo
 
 # Override how many hourly points are fetched/rendered (default 23) —
@@ -160,13 +163,14 @@ version, and 3.6x the entire screen composition).
 
 - **`trmnl-server.image`** — generic Java2D drawing primitives, independent of any
   weather/domain concepts. A "canvas" is a plain map `{:image BufferedImage, :graphics
-  Graphics2D}` threaded through every draw fn (`draw-text`, `draw-wrapped-text`,
-  `draw-line`, `draw-dashed-line`, `draw-polyline`, `draw-dot`, `draw-rect`). Also owns
+  Graphics2D}` threaded through every draw fn (`draw-text`, `draw-line`,
+  `draw-dashed-line`, `draw-polyline`, `draw-dot`, `draw-rect`). Also owns
   `pixel-font`, which derives the bundled PixelOperator bitmap font at a given size —
-  every namespace that draws text goes through it, rather than loading fonts itself. Two
-  conversions turn the RGB working canvas into what the e-ink panel actually needs:
-  `->1-bit` (hard threshold — good for text/UI) and `floyd-steinberg` (error-diffusion
-  dithering — good for photos/gradients). `save-image` infers the output format from
+  every namespace that draws text goes through it, rather than loading fonts itself.
+  `->1-bit` (a hard threshold) turns the RGB working canvas into what the e-ink panel
+  actually needs. A `floyd-steinberg` error-diffusion dither lived here too, unused, for
+  photos and gradients this screen never draws; it was deleted on 2026-08-19 and is one
+  `git show` away if a raster ever wants it. `save-image` infers the output format from
   the file extension. `load-image`/`draw-image` composite a raster (e.g. PNG) resource
   onto the canvas — used for the header's weather icon (see core below).
 
@@ -841,7 +845,8 @@ version, and 3.6x the entire screen composition).
   `main` requires both). Renders
   the live screen by default, one screen per `demo/seasons` entry plus the
   `demo/rain-test-points` stress-test day when invoked with `--demo` (writing both
-  PNG variants of each to `out/`), or starts the HTTP server
+  PNG variants of each to `out/`, plus `out/demo-stale.png` via `write-stale-demo`),
+  or starts the HTTP server
   via `server/start!` when invoked with `--serve`. An optional `--hours N` flag
   overrides `core/default-forecast-hours` for both the live and `--demo` paths.
   An optional `--lat LAT --lon LON` pair overrides `core/default-forecast-location`
@@ -932,7 +937,7 @@ not server diagnostics.
   on for chart "recessiveness" or series identity — those are done here with texture
   instead: dashed vs. solid lines, dot size, hairline dashed gridlines vs. solid data
   lines. Keep that in mind before reaching for `Color` as a distinguishing channel;
-  it will disappear (or invert unpredictably) after `->1-bit`/`floyd-steinberg`.
+  it will disappear (or invert unpredictably) after `->1-bit`.
 - **Two series with different units (°C vs m/s) are deliberately NOT on a shared
   numeric y-axis.** `combined-chart` scales each series independently to the same
   pixel box and leans on direct min/max labels (with units) to keep it honest. If

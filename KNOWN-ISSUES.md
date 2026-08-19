@@ -7,7 +7,7 @@ Its counterpart is `DEVICE-ISSUES.md`, which records device/firmware and upstrea
 problems observed in production. That file is about things outside this codebase; this
 one is about the code.
 
-Line numbers are as of 2026-08-09 and will drift — treat them as a starting point, not
+Line numbers are as of 2026-08-19 and will drift — treat them as a starting point, not
 a reference. Every entry below was re-verified against the code on that date; what had
 been fixed in the meantime moved to *Resolved* at the bottom.
 
@@ -17,13 +17,13 @@ been fixed in the meantime moved to *Resolved* at the bottom.
 
 `(fn [i] (+ x (* w (/ i (double (dec n))))))` — the plotting-point spacing, which
 divides by `n-1` so the first and last points land on the box edges — appears verbatim
-in `core/series-layout` (:69), `cloud-cover-strip` (:177), `hour-axis-labels` (:354) and
-`day-markers` (:467).
+in `core/series-layout` (:69), `cloud-cover-strip` (:178), `hour-axis-labels` (:355) and
+`day-markers` (:528).
 
 The slot geometry, which divides by `n` because each point owns a column, appears in
 four more places and in three different shapes: `slot-center` in `thunder-flashes`
-(:232), `slot-edge` in `rain-background` (:254), and `slot-w` plus an inline centre
-calculation in `precip-bar-chart` (:383) and `precip-probability-line` (:436-439).
+(:233), `slot-edge` in `rain-background` (:255), and `slot-w` plus an inline centre
+calculation in `precip-bar-chart` (:384) and `precip-probability-line` (:497-500).
 
 The distinction between the two is real and load-bearing — it is why a lightning bolt
 sits over its own rainy column instead of drifting off it — and today it is explained in
@@ -34,15 +34,15 @@ divisor), and let the names carry the distinction.
 
 ### 2. Europe/Stockholm is hardcoded while the location is configurable
 
-Every timezone-aware helper in `trmnl-server.smhi` pins `Europe/Stockholm` (:159, :167,
-:220, :228), while arbitrary coordinates can be set from two directions. SMHI's coverage
+Every timezone-aware helper in `trmnl-server.smhi` pins `Europe/Stockholm` (:165, :173,
+:226, :234), while arbitrary coordinates can be set from two directions. SMHI's coverage
 is Nordic-ish so the damage is bounded, but a non-Swedish location silently gets Swedish
 local time for hour labels and day boundaries.
 
 **Wider than when this was written.** The entry originally named `--lat`/`--lon` and
-`$FORECAST_LAT`/`$FORECAST_LON`. Those env vars **no longer exist** — the only trace of
-them left is a stale docstring in `core/forecast-screen` (:487) that still cites them by
-name, which is worth deleting on its own. What replaced them is bigger: every display's
+`$FORECAST_LAT`/`$FORECAST_LON`. Those env vars **no longer exist**, and the stale
+docstring that was the last trace of them is gone too (see Resolved 2026-08-19). What
+replaced them is bigger: every display's
 `:lat`/`:lon` is a required field of its `devices.edn` entry, and since the registry forms
 landed those coordinates are **typed into a web form** by a human who is given no hint that
 only Sweden is really supported. `--lat`/`--lon` remain on the CLI path.
@@ -53,30 +53,16 @@ on the configure/edit forms, which are now the main way a location gets set.
 
 ### 3. `smhi` rebuilds a DateTimeFormatter on every call
 
-`local-time-str` (:157), `local-date` (:162), `local-day-label` (:218) and `local-now-str`
-(:223) each repeat the same `Instant/parse → atZone` pipeline; the three that format
-construct a `DateTimeFormatter` inline on every call (:160, :221, :229) — while the
+`local-time-str` (:163), `local-date` (:168), `local-day-label` (:224) and `local-now-str`
+(:229) each repeat the same `Instant/parse → atZone` pipeline; the three that format
+construct a `DateTimeFormatter` inline on every call (:166, :227, :235) — while the
 `swedish` locale right above them is correctly a `def`. The server side of this was consolidated into
 `pages/format-instant` during the 2026-07-27 refactor; `smhi` did not get the same
 treatment.
 
 **Fix:** hoist the formatters to `def`s and factor out the shared pipeline.
 
-### 4. Stale docstrings and an undocumented demo output
-
-Three separate things, all the same class — prose that outlived what it described:
-
-- `core/draw-weather-icon` (:110) still claims the icons' fills "sit above `->1-bit`'s
-  threshold and wash to white, leaving just their dark outlines — so the icons need no
-  recoloring". That stopped being true at commit `8f66c38`/`7441ec4`, which gave the fills
-  ordered-dither texture; CLAUDE.md describes the current behaviour correctly, so the
-  docstring now contradicts it.
-- `core/forecast-screen` (:487) cites `FORECAST_LAT`/`FORECAST_LON` as a way to override
-  the location. Those env vars do not exist anywhere in the codebase (see #2).
-- `--demo` also writes `out/demo-stale.png` (the stale-badge sample, `main/write-stale-demo`
-  :17-25), which appears in neither the command list nor the `main` description in CLAUDE.md.
-
-### 5. Landing-page loose ends
+### 4. Landing-page loose ends
 
 Added in `0a83cde`. One of the original three remains (the others are under *Resolved
 2026-08-09* and *Resolved 2026-08-15*):
@@ -86,7 +72,7 @@ Added in `0a83cde`. One of the original three remains (the others are under *Res
   `base-url` the pages don't have, so sharing needs a small split rather than a straight
   call.
 
-### 6. The device page reads today's log twice
+### 5. The device page reads today's log twice
 
 `pages/status` (:508-509) reads the selected day, then reads today's file again for the
 summary cards whenever you are viewing an older day. Correct, just wasteful — and the
@@ -95,21 +81,7 @@ reuses the first read.)
 
 ## Cleanup
 
-### 7. Dead code
-
-- `smhi/upcoming` (:231) — no callers anywhere.
-- `image/draw-wrapped-text` (:92) — no callers.
-- `image/floyd-steinberg` (:261) — no callers; it is a deliberate library primitive for
-  photo/gradient dithering, but it also duplicates `->1-bit`'s greyscale loop line for
-  line, so if it stays the two should share that loop.
-
-### 8. `migrate_device_logs.clj` is a spent one-off
-
-The babashka migration from the old logback device logs to the per-date layout
-(`6f76b85`, July 2026) has been run and is done, but still sits in the repo root.
-Delete it, or move it under `dev/`.
-
-### 9. A resolved entry below describes code that no longer exists
+### 6. A resolved entry below describes code that no longer exists
 
 *(The filename half of this entry — `ISSUES.md` vs `KNOWN-ISSUES.md` — is done; see
 Resolved 2026-08-09.)*
@@ -119,15 +91,15 @@ This file's *Resolved #5* below describes `core/draw-series-labels` and
 Resolved 2026-07-27). The entry is kept as a record of what happened at the time, not as a
 description of the code.
 
-### 10. `pixel-font` is derived at draw time in eight places
+### 7. `pixel-font` is derived at draw time in eight places
 
-`core` caches `legend-font` (:147) as a `def` but calls `img/pixel-font` inline at :353,
-:395, :416, :452, :472, :564, :566 and :568 — five of which (:353, :395, :452, :566, :568)
+`core` caches `legend-font` (:148) as a `def` but calls `img/pixel-font` inline at :354,
+:396, :451, :513, :533, :626, :628 and :630 — five of which (:354, :396, :513, :628, :630)
 are the identical `(img/pixel-font :regular 16)`, the very font `legend-font` already
 holds. Each call runs `Font/.deriveFont`. Two or three cached `def`s would cover every
 use.
 
-### 11. `fill-string` leaves a 5px stroke on the Graphics2D
+### 8. `fill-string` leaves a 5px stroke on the Graphics2D
 
 *(Fixed — see Resolved 2026-08-19. The deeper point below still stands for colour and
 font, which remain order-dependent global state on the shared `Graphics2D`.)*
@@ -136,21 +108,6 @@ The deeper point: the canvas map threads a mutable `Graphics2D` whose colour, fo
 stroke are order-dependent global state. A `with-stroke`-style helper, or a consistent
 save/restore discipline, would make that safe rather than merely lucky.
 
-### 12. The mm label's number format depends on the JVM's locale
-
-`core/precip-mm-labels` (:415) uses `(format "%.1fmm" …)`, which follows the default
-locale: `1.5mm` on an English JVM, `1,5mm` on a Swedish one. A comma is arguably *right*
-for a Swedish screen, but right now it is an environment property rather than a decision,
-and the rendered screen differs between a dev machine and the Pi. `server.pages` (:538)
-pins `Locale/US` explicitly for the battery voltage, so the codebase is inconsistent with
-itself. Pick one and pass it explicitly.
-
-### 13. "Moln (%)" labels a series that is not a percentage
-
-The legend in `core/forecast-screen` (:576) says `Moln (%)` while the strip's thickness
-encodes SMHI's `cloud_area_fraction` (`smhi.clj`:124) in octas (0-8). It is the only unit
-on the screen that names something it does not show.
-
 ## Minor notes
 
 - `image/->1-bit` allocates a `java.awt.Color` per pixel (~384k per render). The much
@@ -158,6 +115,10 @@ on the screen that names something it does not show.
   still irrelevant at one render per 10 minutes. Don't copy the pattern into a hot loop.
 - Hand-rolled `--hours`/`--lat`/`--lon` parsing throws a raw `NumberFormatException` on
   bad input. Fine at this scale.
+- `README.md`'s architecture section still opens "Six namespaces under `src/trmnl_server/`"
+  and lists six of the fourteen — the whole `server.*` tree, `labels`, `demo`'s stress-test
+  day and the logging story are missing. It reads as an accurate short tour rather than an
+  out-of-date one, which is the dangerous kind of stale. CLAUDE.md is the current map.
 - No test suite; for output that is fundamentally "does the screen look right," the
   `--demo` season renders are the de-facto regression tool. `clojure -M:check-labels`
   covers the one part that can be checked mechanically: that no temp/wind chart label is
@@ -178,7 +139,7 @@ the display has ever shown (confirmed at 23 points, the deployed default, not ju
 counts). It now draws a white plaque over `image/text-box`'s ink bounds and outlines it 1px
 black, so the label reads as a tile on top of the chart instead of a hole knocked in it.
 
-`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#11*
+`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#8*
 above said — it now restores what it borrows. But the prediction that "the first
 `:fill? false` call after a haloed label will draw a 5px outline" turned out **not** to
 fire for this one: measured, the plaque's border came out 1px even with the leak still in
@@ -193,6 +154,63 @@ of what ran before it.
 Worth noting what caught this: nothing mechanical did. `clojure -M:check-labels` covers
 only the temp/wind chart's label geometry, so the precip strip has no guard at all — this
 was spotted by eye, in a zoomed crop of a demo render.
+
+### Two units on the screen were wrong: one by locale, one by name
+
+*(Entries #12 and #13.)* `core/precip-mm-labels` formatted its millimetres with
+`clojure.core/format`, which follows the JVM's default locale — so the decimal separator
+was a property of whichever machine rendered the screen. This was not theoretical: the dev
+Mac runs `en_SE` and drew `2,2mm`, the Pi runs `en_GB.UTF-8` and has been drawing `2.2mm`
+on the wall this whole time, and nobody had chosen either. It now formats through
+`String/format` with an explicit locale, and the locale it picks is Swedish — every other
+word on the panel is ("Uppdaterad", "Regn", "sön"), so a decimal comma is the consistent
+answer rather than merely the local one. `smhi/swedish` stopped being `^:private` to
+provide it, since it was already the screen's locale for weekday names; it carries a
+`^Locale` tag so the `String/format` overload resolves without reflection.
+
+A side-effect worth recording: `precip-mm-labels`' plaque sizes its box to a digit rather
+than to the full string, on the grounds that "the decimal separator is the only glyph here
+that drops below the baseline". That is true of a comma and false of a full stop, so the
+reasoning in that docstring was only correct on a machine that happened to be formatting
+in Swedish. It is now correct everywhere.
+
+The legend said `Moln (%)` while the strip's thickness encodes SMHI's `cloud_area_fraction`
+in octas (0-8) — the only unit on the screen naming something it did not show. It now reads
+`Moln (0-8)`, which also matches the neighbouring `Regn (0-Nmm)`.
+
+### Three dead primitives and a spent migration script
+
+*(Entries #7 and #8.)* `smhi/upcoming`, `image/draw-wrapped-text` and
+`image/floyd-steinberg` had no callers anywhere and are gone; `clojure.string` left
+`image`'s `:require` with them. `floyd-steinberg` was the only judgement call — it was a
+deliberate library primitive for photo/gradient dithering, but this screen draws neither,
+and it duplicated `->1-bit`'s greyscale loop line for line, so the alternative was to
+refactor the render path's hot loop in service of code nothing calls. Deleted instead, with
+a pointer in CLAUDE.md saying where to find it in the history.
+
+`migrate_device_logs.clj` — the one-off babashka migration from the logback device logs to
+the per-date layout (`6f76b85`, July 2026) — was run long ago and has been deleted rather
+than moved under `dev/`: `dev/` is for things that are still run.
+
+### Prose that outlived what it described
+
+*(Entry #4, plus a fourth instance in the README.)* `core/draw-weather-icon`'s docstring
+still claimed the icons' fills "wash to white, leaving just their dark outlines — so the
+icons need no recoloring", which stopped being true at `8f66c38`/`7441ec4` when the fills
+got ordered-dither texture; it had been contradicting CLAUDE.md ever since. It now
+describes the four baked-in 1-bit treatments and points at CLAUDE.md for the
+`rsvg-convert` recipe.
+
+`core/default-forecast-location` cited `FORECAST_LAT`/`FORECAST_LON` as a way to override
+the location. Those env vars exist nowhere in the codebase, and the docstring was the last
+thing keeping the name alive — except it was not: `README.md` advertised them too, under
+`--serve`, which is precisely the path where the registry replaced them. Both fixed, and
+the docstring now says what is actually true of the server (every display's `:lat`/`:lon`
+is a required registry field, so there is no default for it to fall back to).
+
+`--demo` also writes `out/demo-stale.png`, the stale-badge sample, which appeared in
+neither the command list nor the `main` description in CLAUDE.md, nor in the README's.
+Documented in all three.
 
 ## Resolved (2026-08-15)
 

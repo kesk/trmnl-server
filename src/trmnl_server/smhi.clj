@@ -10,7 +10,13 @@
            [java.time.format DateTimeFormatter]
            [java.util Locale]))
 
-(def ^:private swedish (Locale/forLanguageTag "sv"))
+(def ^Locale swedish
+  "The screen's locale. Everything rendered onto the panel is Swedish — weekday
+   names here, and the decimal comma in core's mm labels — so pass this
+   explicitly rather than letting the JVM's default locale decide: it differs
+   between a dev machine and the Pi, which would make the rendered screen an
+   environment property."
+  (Locale/forLanguageTag "sv"))
 
 (def gothenburg {:lat 57.7089 :lon 11.9746})
 
@@ -227,8 +233,3 @@
   (-> (Instant/now)
     (.atZone (ZoneId/of "Europe/Stockholm"))
     (.format (DateTimeFormatter/ofPattern "d MMM HH:mm" swedish))))
-
-(defn upcoming
-  "Picks a spread of upcoming forecast points, every `step`'th entry, `count` of them."
-  [points & {:keys [count step] :or {count 6 step 3}}]
-  (->> points (take-nth step) (take count)))
