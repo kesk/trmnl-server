@@ -168,7 +168,7 @@ straight: there, two machines were silently producing different screens from the
 so the fix was to make the choice explicit. Here the choice was already explicit and always
 produced the same screen; only its justification was missing.
 
-### Two units on the screen were wrong: one by locale, one by name
+### One unit on the screen was wrong, and one only looked it
 
 *(Entries #12 and #13.)* `core/precip-mm-labels` formatted its millimetres with
 `clojure.core/format`, which follows the JVM's default locale — so the decimal separator
@@ -187,9 +187,19 @@ that drops below the baseline". That is true of a comma and false of a full stop
 reasoning in that docstring was only correct on a machine that happened to be formatting
 in Swedish. It is now correct everywhere.
 
-The legend said `Moln (%)` while the strip's thickness encodes SMHI's `cloud_area_fraction`
-in octas (0-8) — the only unit on the screen naming something it did not show. It now reads
-`Moln (0-8)`, which also matches the neighbouring `Regn (0-Nmm)`.
+The legend half of this was tried and **reverted the same day**, which is worth recording
+in full because the entry had it wrong. `Moln (%)` was flagged as the only unit on the
+screen naming something it did not show — the strip's thickness encodes
+`cloud_area_fraction` in octas (0-8) — and was changed to `Moln (0-8)` to match the
+neighbouring `Regn (0-Nmm)`.
+
+That reasoning does not survive contact with the screen. `Regn (0-3mm)` labels bars whose
+heights are read against that range; the cloud strip prints no number anywhere, so a range
+invites the eye to hunt for figures that do not exist, and hands the reader SMHI's internal
+unit for no benefit. The legend names the *dimension* being encoded, not the datum behind
+it, and 8 octas is 100% of the sky — % is simply how a person reads "how much of it is
+covered". `Moln (%)` restored, with the argument written next to it in `forecast-screen` so
+the next cleanup pass doesn't re-derive the same wrong fix.
 
 ### Three dead primitives and a spent migration script
 

@@ -632,10 +632,18 @@
        (img/draw-text canvas label (- 760 w) 68 :font font))
      (img/draw-line canvas 40 84 760 84)
 
+     ;; "Moln (%)" names the dimension, not the datum. SMHI reports cloud cover in
+     ;; octas and cloud-cover-strip scales the strip's thickness against 8, so this
+     ;; legend briefly read "Moln (0-8)" -- on the reasoning that % labelled a series
+     ;; that isn't one. Reverted deliberately: the strip prints no number anywhere, so
+     ;; a range invites the eye to hunt for figures that don't exist and hands the
+     ;; reader an upstream unit they have no use for. 8 octas *is* 100% of the sky,
+     ;; and % is how a person reads "how much of it is covered". The octas live in
+     ;; cloud-cover-strip, which is where the scaling happens.
      (draw-legend-row canvas 40 108 720
        [["Temp (°C)" {}]
         ["Vind (m/s)" {:dash [6.0 5.0]}]
-        ["Moln (0-8)" {:width 14.0 :paint (img/checkerboard-paint)}]])
+        ["Moln (%)" {:width 14.0 :paint (img/checkerboard-paint)}]])
 
      (let [{:keys [cloud-y cloud-max-w precip-y precip-h chart-box keep-out]} screen-geometry
            [chart-x chart-y chart-w chart-h]                                  chart-box]
