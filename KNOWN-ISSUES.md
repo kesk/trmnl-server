@@ -34,8 +34,8 @@ rather than work.
   deliberately so — it's for whoever is reading them) and `archive/reference-run-token`
   (the `run20260713-0945` segment of an archived filename). Both agree with the screen
   only because the Pi is in Sweden. Given the Europe/Stockholm decision recorded below,
-  that is fine, but the archive token is the one that would quietly disagree with the times printed inside its own
-  files if the server ever moved.
+  that is fine, but the archive token is the one that would quietly disagree with the
+  times printed inside its own files if the server ever moved.
 - `README.md`'s architecture section still opens "Six namespaces under `src/trmnl_server/`"
   and lists six of the fourteen — the whole `server.*` tree, `labels`, `demo`'s stress-test
   day and the logging story are missing. It reads as an accurate short tour rather than an
