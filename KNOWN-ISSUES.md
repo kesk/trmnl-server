@@ -13,26 +13,11 @@ been fixed in the meantime moved to *Resolved* at the bottom.
 
 ## Worth doing
 
-### 1. Landing-page loose ends
-
-Added in `0a83cde`. One of the original three remains (the others are under *Resolved
-2026-08-09* and *Resolved 2026-08-15*):
-
-- `pages/screen-card` builds `"/images/" + id + "/" + filename` by hand while
-  `server/image-url` (:126-127) exists for the same job — though the latter takes a
-  `base-url` the pages don't have, so sharing needs a small split rather than a straight
-  call.
-
-### 2. The device page reads today's log twice
-
-`pages/status` (:508-509) reads the selected day, then reads today's file again for the
-summary cards whenever you are viewing an older day. Correct, just wasteful — and the
-second read is invisible at the call site. (Viewing *today*, the common case, already
-reuses the first read.)
+Nothing outstanding. Everything below is cleanup or a note.
 
 ## Cleanup
 
-### 3. A resolved entry below describes code that no longer exists
+### 1. A resolved entry below describes code that no longer exists
 
 *(The filename half of this entry — `ISSUES.md` vs `KNOWN-ISSUES.md` — is done; see
 Resolved 2026-08-09.)*
@@ -42,7 +27,7 @@ This file's *Resolved #5* below describes `core/draw-series-labels` and
 Resolved 2026-07-27). The entry is kept as a record of what happened at the time, not as a
 description of the code.
 
-### 4. `fill-string` leaves a 5px stroke on the Graphics2D
+### 2. `fill-string` leaves a 5px stroke on the Graphics2D
 
 *(Fixed — see Resolved 2026-08-19. The deeper point below still stands for colour and
 font, which remain order-dependent global state on the shared `Graphics2D`.)*
@@ -89,7 +74,7 @@ the display has ever shown (confirmed at 23 points, the deployed default, not ju
 counts). It now draws a white plaque over `image/text-box`'s ink bounds and outlines it 1px
 black, so the label reads as a tile on top of the chart instead of a hole knocked in it.
 
-`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#4*
+`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#2*
 above said — it now restores what it borrows. But the prediction that "the first
 `:fill? false` call after a haloed label will draw a 5px outline" turned out **not** to
 fire for this one: measured, the plaque's border came out 1px even with the leak still in
@@ -104,6 +89,32 @@ of what ran before it.
 Worth noting what caught this: nothing mechanical did. `clojure -M:check-labels` covers
 only the temp/wind chart's label geometry, so the precip strip has no guard at all — this
 was spotted by eye, in a zoomed crop of a demo render.
+
+### The image path has one definition, and the second log read has a name
+
+*(Entries #1 and #2, the last two in "Worth doing".)* `pages/screen-card` built
+`"/images/" + id + "/" + filename` by hand while `server/image-url` built the same string
+with a base in front. That is a worse duplication than it looks: the firmware attaches its
+`ID` and `Access-Token` to an image fetch **only** when the URL string-prefixes the base it
+was handed, so the path a device is told to fetch and the path `/` puts in an `<img>` have
+to agree exactly. `pages/image-path` is now the single definition — public, beside
+`device-path` — and `image-url` is base plus that. Paths live with the pages that link to
+them; composing the absolute URL stays `server`'s job, as does routing the request.
+
+The second entry turned out to be **half wrong, and the half that was right was not the
+efficiency**. `pages/status` binds today's rows for the summary cards while an older day's
+table is on screen, and the entry called the extra file read wasteful. It isn't: the two
+reads are of *different files* and both are genuinely needed, and a real device log on the
+Pi is one or two lines a day (measured — the firmware posts on events, not on polls), so
+there was nothing to save. What was true is the other clause: the read hid behind a binding
+called `latest`, which reads like a filter over `rows` rather than IO. It is `today-rows`
+now, with a comment saying why both files are open. No behaviour changed.
+
+Both verified against a throwaway server on port 8099 with its own registry, archive and
+log dirs: a device poll returns an `image_url` composed through the shared path; a display
+that then fetches that image shows up on `/` with an `<img src>` on the same path; and with
+a log file planted under an older date, `?day=` renders that day's row in the table while
+the battery and firmware cards still report today's.
 
 ### The two x-geometries have names now
 

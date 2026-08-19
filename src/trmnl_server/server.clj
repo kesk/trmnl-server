@@ -123,8 +123,11 @@
       (str proto "://" host))
     fallback))
 
-(defn- image-url [base device-id filename]
-  (str base "/images/" device-id "/" filename))
+(defn- image-url
+  "The absolute URL of a rendered screen, for the firmware. The path half is
+   pages/image-path, so the <img> on `/` can't drift from what a device is told to fetch."
+  [base device-id filename]
+  (str base (pages/image-path device-id filename)))
 
 ;; --- Device API -------------------------------------------------------------------------
 

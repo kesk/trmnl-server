@@ -171,6 +171,15 @@
 
 ;; --- Shared chrome ----------------------------------------------------------------------
 
+(defn image-path
+  "Where a display's rendered PNG is served — the counterpart of device-path, and public
+   because `server` needs it too: it hands the firmware an absolute URL (base + this), and
+   the firmware only attaches its credentials to an image fetch whose URL string-prefixes
+   the base it was given. The <img> on `/` and that URL have to be the same path, so it is
+   written down once here rather than in both."
+  [device-id filename]
+  (str "/images/" device-id "/" filename))
+
 (defn- device-path
   "The URL of a display's own page (/devices/<id>) or one of its sub-pages
    (/devices/<id>/archive).
@@ -506,13 +515,18 @@
         ;; Today is always offered as a tab, even before it has a file.
         days        (->> (cons today on-disk) distinct (sort #(compare %2 %1)) vec)
         rows        (reverse (telemetry/read-log id sel))
-        latest      (if (= sel today) rows (reverse (telemetry/read-log id today)))
+        ;; The summary cards below always report *today*, even while an older day's table
+        ;; is on screen, so viewing an older day really does need both files. Named rather
+        ;; than folded into `rows`, since a second read hidden behind a binding called
+        ;; `latest` is the kind of IO nobody sees at the call site. Viewing today — the
+        ;; common case — reuses the read above.
+        today-rows  (if (= sel today) rows (reverse (telemetry/read-log id today)))
         dev         (telemetry/poll-status id)
-        voltage     (or (:battery-voltage dev) (some :battery_voltage latest))
+        voltage     (or (:battery-voltage dev) (some :battery_voltage today-rows))
         pct         (battery-percent voltage)
         [batt-lbl
          batt-pill] (battery-quality pct)
-        firmware    (or (:fw-version dev) (some :firmware_version latest))
+        firmware    (or (:fw-version dev) (some :firmware_version today-rows))
         [wifi-lbl
          wifi-pill] (wifi-quality (:rssi dev))
         wakes       (telemetry/wake-samples id)
@@ -661,7 +675,7 @@
      (if entry
        (list
          [:img {:loading "lazy"
-                :src     (str "/images/" id "/" (:filename entry))
+                :src     (image-path id (:filename entry))
                 :alt     (str "The forecast screen " label " is showing")}]
          ;; "Fetched", not "Updated": this is when the display collected the screen, which
          ;; is also the last moment we know anything about what it is showing. Neither is
