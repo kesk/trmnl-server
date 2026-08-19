@@ -13,26 +13,7 @@ been fixed in the meantime moved to *Resolved* at the bottom.
 
 ## Worth doing
 
-### 1. The same two x-geometry formulas are written out eight times
-
-`(fn [i] (+ x (* w (/ i (double (dec n))))))` — the plotting-point spacing, which
-divides by `n-1` so the first and last points land on the box edges — appears verbatim
-in `core/series-layout` (:69), `cloud-cover-strip` (:183), `hour-axis-labels` (:360) and
-`day-markers` (:533).
-
-The slot geometry, which divides by `n` because each point owns a column, appears in
-four more places and in three different shapes: `slot-center` in `thunder-flashes`
-(:238), `slot-edge` in `rain-background` (:260), and `slot-w` plus an inline centre
-calculation in `precip-bar-chart` (:389) and `precip-probability-line` (:502-505).
-
-The distinction between the two is real and load-bearing — it is why a lightning bolt
-sits over its own rainy column instead of drifting off it — and today it is explained in
-prose in three separate docstrings rather than expressed once in code.
-
-**Fix:** two helpers, `plot-x` (the `n-1` divisor) and `slot-center`/`slot-edge` (the `n`
-divisor), and let the names carry the distinction.
-
-### 2. Landing-page loose ends
+### 1. Landing-page loose ends
 
 Added in `0a83cde`. One of the original three remains (the others are under *Resolved
 2026-08-09* and *Resolved 2026-08-15*):
@@ -42,7 +23,7 @@ Added in `0a83cde`. One of the original three remains (the others are under *Res
   `base-url` the pages don't have, so sharing needs a small split rather than a straight
   call.
 
-### 3. The device page reads today's log twice
+### 2. The device page reads today's log twice
 
 `pages/status` (:508-509) reads the selected day, then reads today's file again for the
 summary cards whenever you are viewing an older day. Correct, just wasteful — and the
@@ -51,7 +32,7 @@ reuses the first read.)
 
 ## Cleanup
 
-### 4. A resolved entry below describes code that no longer exists
+### 3. A resolved entry below describes code that no longer exists
 
 *(The filename half of this entry — `ISSUES.md` vs `KNOWN-ISSUES.md` — is done; see
 Resolved 2026-08-09.)*
@@ -61,7 +42,7 @@ This file's *Resolved #5* below describes `core/draw-series-labels` and
 Resolved 2026-07-27). The entry is kept as a record of what happened at the time, not as a
 description of the code.
 
-### 5. `fill-string` leaves a 5px stroke on the Graphics2D
+### 4. `fill-string` leaves a 5px stroke on the Graphics2D
 
 *(Fixed — see Resolved 2026-08-19. The deeper point below still stands for colour and
 font, which remain order-dependent global state on the shared `Graphics2D`.)*
@@ -108,7 +89,7 @@ the display has ever shown (confirmed at 23 points, the deployed default, not ju
 counts). It now draws a white plaque over `image/text-box`'s ink bounds and outlines it 1px
 black, so the label reads as a tile on top of the chart instead of a hole knocked in it.
 
-`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#5*
+`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#4*
 above said — it now restores what it borrows. But the prediction that "the first
 `:fill? false` call after a haloed label will draw a 5px outline" turned out **not** to
 fire for this one: measured, the plaque's border came out 1px even with the leak still in
@@ -123,6 +104,38 @@ of what ran before it.
 Worth noting what caught this: nothing mechanical did. `clojure -M:check-labels` covers
 only the temp/wind chart's label geometry, so the precip strip has no guard at all — this
 was spotted by eye, in a zoomed crop of a demo render.
+
+### The two x-geometries have names now
+
+*(Entry #1.)* The screen carries two coordinate systems across the same 720px span, and
+both were written out as bare arithmetic wherever they were needed: the `(n-1)` plotting
+spacing in four places (a forecast point as an *instant*, first and last on the box edges)
+and the `w/n` slot geometry in four more and in three different shapes (a forecast point as
+an *hour*, an interval owning a column). They now go through `plot-x`, `slot-width`,
+`slot-left`, `slot-edge` and `slot-center`, with the reasoning in one comment above them.
+
+The distinction was never in doubt — it was explained at length in three separate
+docstrings, which is exactly the problem: prose warning you off the wrong divisor is a
+worse guard than a name that only offers you the right one. Those three passages are now
+two lines each, pointing at the helper instead of re-deriving the argument. What makes the
+mix-up worth guarding against: at 23 points the two systems disagree by up to half a column
+(~16px), diverging at the ends and crossing in the middle, so the failure is a bolt that
+sits over the wrong hour at the edges of the screen and over the right one in the middle.
+
+Two shapes were kept apart deliberately rather than folded together. `slot-edge` rounds and
+`slot-left` doesn't: the rain-shading rects must abut exactly (a run of rainy hours would
+otherwise grow 1px gaps where rounding truncated two sides differently), while the bars
+inset themselves within the slot and want the unrounded value. Folding those into one
+helper would have quietly moved pixels.
+
+Verified the same way as the entry above — five demo screens rendered before and after,
+compared pixel by pixel with the header clock masked, **zero** differences. That covers
+every affected path: the bars, the probability line and the stipple columns are on every
+demo day, and the summer dataset's precipitating symbol is 11, so the thunder bolts are in
+there too. Two of the rewrites were mathematically-equal-but-differently-associated
+floating point (`x + i·(w/n) + (w/n)/2` became `x + w·(i+0.5)/n`), which is precisely the
+kind of change that can move a pixel and is why the check was worth running rather than
+reasoning about.
 
 ### Two things derived per call that could be derived once
 

@@ -52,6 +52,43 @@
     (map #(map first %))
     (filter #(> (count %) 1))))
 
+;; Two x-geometries share the same 720px span, and reaching for the wrong one is
+;; the bug these names exist to prevent. A forecast point is both an *instant* --
+;; plotted as a dot, spread so the first lands on the box's left edge and the last
+;; on its right, hence the (n-1) divisor -- and an *hour*, an interval owning a
+;; column w/n wide. Instants: the temp/wind series, the cloud strip, the hour
+;; labels, the day dividers. Intervals: the rain shading, the precip bars, the
+;; probability line, the thunder bolts. At the deployed 23 points the two disagree
+;; by up to half a column (~16px), diverging at the ends and crossing in the
+;; middle, so a bolt drawn at plot-x drifts off the very column it is marking.
+
+(defn- plot-x
+  "X of the i'th of n plotting points, with the first and last on the box edges."
+  [x w n i]
+  (+ x (* w (/ i (double (dec n))))))
+
+(defn- slot-width
+  "Width of one hour's column."
+  [w n]
+  (/ w (double n)))
+
+(defn- slot-left
+  "X of the left edge of the i'th of n hour columns."
+  [x w n i]
+  (+ x (* w (/ i (double n)))))
+
+(defn- slot-edge
+  "slot-left rounded to a whole pixel, for filled columns that must abut. Two
+   adjacent rects have to share one computed edge, or a run of them develops
+   stray 1px gaps wherever rounding truncates the two sides differently."
+  [x w n i]
+  (+ x (Math/round (double (* w (/ i (double n)))))))
+
+(defn- slot-center
+  "X of the centre of the i'th of n hour columns."
+  [x w n i]
+  (+ x (* w (/ (+ i 0.5) n))))
+
 (defn- series-layout
   "Maps a value-key's series onto the chart box, scaled to its own min/max.
    Independent per-series scaling (rather than one shared numeric axis) is what
@@ -66,7 +103,7 @@
         [lo hi]     (nice-bounds values round-step :floor floor)
         n           (count points)
         value->y    (fn [v] (+ y (* h (/ (- hi v) (double (- hi lo))))))
-        idx->x      (fn [i] (+ x (* w (/ i (double (dec n))))))
+        idx->x      (fn [i] (plot-x x w n i))
         plot-points (map-indexed (fn [i point] [(idx->x i) (value->y (value-key point))]) points)]
     {:plot-points plot-points
      :idx->x      idx->x
@@ -180,7 +217,7 @@
    on the same axes."
   [canvas points x y w & {:keys [min-width max-width] :or {min-width 1.0 max-width 20.0}}]
   (let [n           (count points)
-        idx->x      (fn [i] (+ x (* w (/ i (double (dec n))))))
+        idx->x      (fn [i] (plot-x x w n i))
         plot-points (map-indexed (fn [i _] [(idx->x i) y]) points)
         widths      (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 8.0)))))) points)]
     (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
@@ -226,42 +263,34 @@
   "Marks each thundery hour with a lightning bolt, centered vertically on cy.
    The point forecast has no lightning parameter, so thunder is read off the
    symbol code alone (see smhi/thunder?). Bolts are x-centered on that hour's
-   slot — the same slot-per-point geometry (w/n wide) the rain-background column
-   and the precip bar use, NOT the (n-1)-divisor plotting-point spacing of the
-   cloud strip / temp-wind chart — so the flash sits centered over the rainy
-   column it belongs to rather than drifting off its bar. It sits inside the
-   cloud strip (cy is the strip's own centre line), its halo carving it out of
-   the checkerboard — the gap below the strip belongs to the temp/wind chart,
-   whose box starts just under it."
+   slot (slot-center, not plot-x — see the note above those fns), so the flash
+   sits over the rainy column it belongs to rather than drifting off its bar.
+   It sits inside the cloud strip (cy is the strip's own centre line), its halo
+   carving it out of the checkerboard — the gap below the strip belongs to the
+   temp/wind chart, whose box starts just under it."
   [canvas points x cy w]
-  (let [n           (count points)
-        slot-center (fn [i] (+ x (* w (/ (+ i 0.5) n))))]
+  (let [n (count points)]
     (doseq [[i point] (map-indexed vector points)]
       (when (smhi/thunder? (:symbol point))
-        (draw-thunder-flash canvas (slot-center i) cy 22.0 30.0)))))
+        (draw-thunder-flash canvas (slot-center x w n i) cy 22.0 30.0)))))
 
 (defn- rain-background
   "Shades a light stippled column behind every hour that has any
    precipitation, spanning from the cloud strip all the way down to the
    axis line above the hour labels -- purely decorative, flagging \"it's
    raining this hour\" across the whole chart rather than just on its own
-   bar below. Columns line up with precip-bar-chart's own slot-per-point
-   geometry (w/n wide, not the (n-1)-divisor spacing series-layout uses for
-   plotting points), so the shading matches the bar underneath it. Adjacent
-   rainy hours share their dividing edge (both computed via the same
-   slot-edge fn) rather than each rect getting an independently-rounded
-   x/width, so a run of consecutive rainy hours doesn't develop stray 1px
-   gaps where rounding happens to truncate the two sides differently. Drawn
-   first, before the cloud strip/combined chart/rain bars, so their own
-   fills, lines, and text all render on top of the light stipple instead of
+   bar below. Columns use the same slot geometry as the bars underneath them, so
+   the two line up, and adjacent rainy hours share their dividing edge — see
+   slot-edge, which is what keeps a run of them from developing stray 1px gaps.
+   Drawn first, before the cloud strip/combined chart/rain bars, so their own
+   fills, lines and text all render on top of the light stipple instead of
    competing with it."
   [canvas points x cloud-y bottom-y w]
-  (let [n         (count points)
-        slot-edge (fn [i] (+ x (Math/round (* w (/ i (double n))))))]
+  (let [n (count points)]
     (doseq [[i point] (map-indexed vector points)]
       (when (pos? (:precip-mm point))
-        (let [left  (slot-edge i)
-              right (slot-edge (inc i))]
+        (let [left  (slot-edge x w n i)
+              right (slot-edge x w n (inc i))]
           (img/draw-rect canvas left cloud-y (- right left) (- bottom-y cloud-y)
             :fill? true :paint (img/stipple-paint)))))))
 
@@ -357,7 +386,7 @@
   [canvas points x w y]
   (let [n       (count points)
         font    body-font
-        idx->x  (fn [i] (+ x (* w (/ i (double (dec n))))))
+        idx->x  (fn [i] (plot-x x w n i))
         indices (distinct (for [k (range axis-label-count)]
                             (Math/round (* k (/ (dec n) (double (dec axis-label-count)))))))]
     (doseq [i indices]
@@ -386,7 +415,7 @@
         ;; Headroom scales with the data instead of nice-bounds' flat +2 padding,
         ;; which is sized for °C/m/s ranges and would swamp typical sub-1mm rain.
         hi        (max 1 (Math/ceil (* raw-max 1.15)))
-        slot-w    (/ w (double n))
+        slot-w    (slot-width w n)
         bar-w     (* slot-w 0.7)
         bar-gap   (* slot-w 0.3)
         bottom    (+ y h)
@@ -394,7 +423,7 @@
         bars      (vec (map-indexed
                          (fn [i point]
                            (let [mm (:precip-mm point)]
-                             {:x     (+ x (* i slot-w) (/ bar-gap 2))
+                             {:x     (+ (slot-left x w n i) (/ bar-gap 2))
                               :bar-h (mm->bar-h mm)
                               :mm    mm}))
                          points))]
@@ -499,10 +528,9 @@
    sits over the bars yet under the haloed labels."
   [canvas points x y w h bar-rects]
   (let [n      (count points)
-        slot-w (/ w (double n))
         bottom (+ y h)
         chance (fn [p] (or (:precip-chance p) 0))
-        pt->x  (fn [i] (+ x (* i slot-w) (/ slot-w 2)))
+        pt->x  (fn [i] (slot-center x w n i))
         pct->y (fn [pct] (- bottom (* h (/ pct 100.0))))
         plot   (vec (map-indexed (fn [i p] [(pt->x i) (pct->y (chance p))]) points))
         peak   (apply max (map chance points))]
@@ -530,7 +558,7 @@
    meaningful to center a label over."
   [canvas points x w top bottom label-y]
   (let [n      (count points)
-        idx->x (fn [i] (+ x (* w (/ i (double (dec n))))))
+        idx->x (fn [i] (plot-x x w n i))
         groups (day-groups points)]
     (doseq [group groups]
       (let [center-x (/ (+ (idx->x (first group)) (idx->x (last group))) 2)]
