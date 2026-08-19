@@ -18,6 +18,16 @@
    environment property."
   (Locale/forLanguageTag "sv"))
 
+(def ^ZoneId screen-zone
+  "The zone every time on the panel is rendered in. Pinned rather than derived
+   from the display's coordinates, and that is a decision, not an oversight:
+   this server serves Swedish forecasts from a Swedish institute's API to
+   displays on Swedish walls, so a second zone would be a configuration knob
+   with no correct second setting. It stays a `def` so the decision has one
+   home — if a display ever does hang somewhere else, this is the line that
+   has to become a per-device field, along with `swedish` above."
+  (ZoneId/of "Europe/Stockholm"))
+
 (def gothenburg {:lat 57.7089 :lon 11.9746})
 
 (defn- forecast-url [{:keys [lat lon]}]
@@ -162,7 +172,7 @@
 
 (defn local-time-str [iso-time]
   (-> (Instant/parse iso-time)
-    (.atZone (ZoneId/of "Europe/Stockholm"))
+    (.atZone screen-zone)
     (.format (DateTimeFormatter/ofPattern "HH:mm"))))
 
 (defn local-date
@@ -170,7 +180,7 @@
    day/night min-max labels are grouped by."
   [iso-time]
   (-> (Instant/parse iso-time)
-    (.atZone (ZoneId/of "Europe/Stockholm"))
+    (.atZone screen-zone)
     (.toLocalDate)))
 
 (defn- julian->instant [jd]
@@ -223,7 +233,7 @@
 
 (defn local-day-label [iso-time]
   (-> (Instant/parse iso-time)
-    (.atZone (ZoneId/of "Europe/Stockholm"))
+    (.atZone screen-zone)
     (.format (DateTimeFormatter/ofPattern "EEE" swedish))))
 
 (defn local-now-str
@@ -231,5 +241,5 @@
    than a forecast point — used to stamp when a screen was rendered."
   []
   (-> (Instant/now)
-    (.atZone (ZoneId/of "Europe/Stockholm"))
+    (.atZone screen-zone)
     (.format (DateTimeFormatter/ofPattern "d MMM HH:mm" swedish))))

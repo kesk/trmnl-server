@@ -186,8 +186,15 @@ version, and 3.6x the entire screen composition).
   429, 5xx, or an unparseable 2xx), never for a plain 4xx, and never past a 15s total
   budget so a hung SMHI can't hold a device poll open for three 10s timeouts. Short
   outages are absorbed here; longer ones fall through to `server.render`'s stale cache.
-  Also owns the `symbol_code` → text mapping (1–27) and
-  timezone-aware formatting helpers. `forecast` additionally carries the response's
+  Also owns the `symbol_code` → text mapping (1–27) and the timezone-aware formatting
+  helpers, which render through `screen-zone` (`Europe/Stockholm`) and `swedish` — two
+  `def`s holding the same decision, that this server serves Swedish forecasts to displays
+  on Swedish walls. Both are deliberately *not* derived from a display's coordinates: SMHI's
+  coverage is Nordic-ish and there is no correct second setting, so they are the two lines
+  that would have to become per-device fields if that ever changed, rather than a knob
+  nobody would set (see the entry in KNOWN-ISSUES.md). The locale matters beyond weekday
+  names — `core`'s mm labels format through it too, so the decimal separator is a decision
+  rather than a property of whichever machine renders the screen. `forecast` additionally carries the response's
   top-level `referenceTime` (the SMHI forecast run's issuance time) as `:reference-time`
   **metadata on the returned seq** — data the point maps don't need but a caller may want
   to tag a render with. Because plain seq ops (`take`) drop metadata, `core/live-points`

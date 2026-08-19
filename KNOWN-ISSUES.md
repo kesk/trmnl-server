@@ -32,37 +32,18 @@ prose in three separate docstrings rather than expressed once in code.
 **Fix:** two helpers, `plot-x` (the `n-1` divisor) and `slot-center`/`slot-edge` (the `n`
 divisor), and let the names carry the distinction.
 
-### 2. Europe/Stockholm is hardcoded while the location is configurable
+### 2. `smhi` rebuilds a DateTimeFormatter on every call
 
-Every timezone-aware helper in `trmnl-server.smhi` pins `Europe/Stockholm` (:165, :173,
-:226, :234), while arbitrary coordinates can be set from two directions. SMHI's coverage
-is Nordic-ish so the damage is bounded, but a non-Swedish location silently gets Swedish
-local time for hour labels and day boundaries.
-
-**Wider than when this was written.** The entry originally named `--lat`/`--lon` and
-`$FORECAST_LAT`/`$FORECAST_LON`. Those env vars **no longer exist**, and the stale
-docstring that was the last trace of them is gone too (see Resolved 2026-08-19). What
-replaced them is bigger: every display's
-`:lat`/`:lon` is a required field of its `devices.edn` entry, and since the registry forms
-landed those coordinates are **typed into a web form** by a human who is given no hint that
-only Sweden is really supported. `--lat`/`--lon` remain on the CLI path.
-
-**Fix:** carry a timezone alongside the location — derived from the coordinates, or a
-`:tz` field on the registry entry defaulting to `Europe/Stockholm` — or at minimum say so
-on the configure/edit forms, which are now the main way a location gets set.
-
-### 3. `smhi` rebuilds a DateTimeFormatter on every call
-
-`local-time-str` (:163), `local-date` (:168), `local-day-label` (:224) and `local-now-str`
-(:229) each repeat the same `Instant/parse → atZone` pipeline; the three that format
-construct a `DateTimeFormatter` inline on every call (:166, :227, :235) — while the
-`swedish` locale right above them is correctly a `def`. The server side of this was consolidated into
+`local-time-str` (:173), `local-date` (:178), `local-day-label` (:234) and `local-now-str`
+(:239) each repeat the same `Instant/parse → atZone` pipeline; the three that format
+construct a `DateTimeFormatter` inline on every call (:176, :237, :245) — while the
+`swedish` locale and `screen-zone` above them are correctly `def`s. The server side of this was consolidated into
 `pages/format-instant` during the 2026-07-27 refactor; `smhi` did not get the same
 treatment.
 
 **Fix:** hoist the formatters to `def`s and factor out the shared pipeline.
 
-### 4. Landing-page loose ends
+### 3. Landing-page loose ends
 
 Added in `0a83cde`. One of the original three remains (the others are under *Resolved
 2026-08-09* and *Resolved 2026-08-15*):
@@ -72,7 +53,7 @@ Added in `0a83cde`. One of the original three remains (the others are under *Res
   `base-url` the pages don't have, so sharing needs a small split rather than a straight
   call.
 
-### 5. The device page reads today's log twice
+### 4. The device page reads today's log twice
 
 `pages/status` (:508-509) reads the selected day, then reads today's file again for the
 summary cards whenever you are viewing an older day. Correct, just wasteful — and the
@@ -81,7 +62,7 @@ reuses the first read.)
 
 ## Cleanup
 
-### 6. A resolved entry below describes code that no longer exists
+### 5. A resolved entry below describes code that no longer exists
 
 *(The filename half of this entry — `ISSUES.md` vs `KNOWN-ISSUES.md` — is done; see
 Resolved 2026-08-09.)*
@@ -91,7 +72,7 @@ This file's *Resolved #5* below describes `core/draw-series-labels` and
 Resolved 2026-07-27). The entry is kept as a record of what happened at the time, not as a
 description of the code.
 
-### 7. `pixel-font` is derived at draw time in eight places
+### 6. `pixel-font` is derived at draw time in eight places
 
 `core` caches `legend-font` (:148) as a `def` but calls `img/pixel-font` inline at :354,
 :396, :451, :513, :533, :626, :628 and :630 — five of which (:354, :396, :513, :628, :630)
@@ -99,7 +80,7 @@ are the identical `(img/pixel-font :regular 16)`, the very font `legend-font` al
 holds. Each call runs `Font/.deriveFont`. Two or three cached `def`s would cover every
 use.
 
-### 8. `fill-string` leaves a 5px stroke on the Graphics2D
+### 7. `fill-string` leaves a 5px stroke on the Graphics2D
 
 *(Fixed — see Resolved 2026-08-19. The deeper point below still stands for colour and
 font, which remain order-dependent global state on the shared `Graphics2D`.)*
@@ -115,6 +96,13 @@ save/restore discipline, would make that safe rather than merely lucky.
   still irrelevant at one render per 10 minutes. Don't copy the pattern into a hot loop.
 - Hand-rolled `--hours`/`--lat`/`--lon` parsing throws a raw `NumberFormatException` on
   bad input. Fine at this scale.
+- Two places render a timestamp in the *host's* zone rather than the pinned
+  `smhi/screen-zone`: `pages/format-instant` (every time on the device pages, and
+  deliberately so — it's for whoever is reading them) and `archive/reference-run-token`
+  (the `run20260713-0945` segment of an archived filename). Both agree with the screen
+  only because the Pi is in Sweden. Given the entry below that is fine, but the archive
+  token is the one that would quietly disagree with the times printed inside its own
+  files if the server ever moved.
 - `README.md`'s architecture section still opens "Six namespaces under `src/trmnl_server/`"
   and lists six of the fourteen — the whole `server.*` tree, `labels`, `demo`'s stress-test
   day and the logging story are missing. It reads as an accurate short tour rather than an
@@ -139,7 +127,7 @@ the display has ever shown (confirmed at 23 points, the deployed default, not ju
 counts). It now draws a white plaque over `image/text-box`'s ink bounds and outlines it 1px
 black, so the label reads as a tile on top of the chart instead of a hole knocked in it.
 
-`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#8*
+`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#7*
 above said — it now restores what it borrows. But the prediction that "the first
 `:fill? false` call after a haloed label will draw a 5px outline" turned out **not** to
 fire for this one: measured, the plaque's border came out 1px even with the leak still in
@@ -154,6 +142,31 @@ of what ran before it.
 Worth noting what caught this: nothing mechanical did. `clojure -M:check-labels` covers
 only the temp/wind chart's label geometry, so the precip strip has no guard at all — this
 was spotted by eye, in a zoomed crop of a demo render.
+
+### Europe/Stockholm is a decision, not an oversight
+
+*(Entry #2, closed by deciding rather than by coding.)* The backlog wanted the screen's
+timezone carried alongside the location — derived from the coordinates, or a `:tz` field on
+the registry entry — because a display configured for a non-Swedish location would get
+correct forecast data with Swedish hour labels and Swedish day boundaries.
+
+That display is not going to exist. This server serves Swedish forecasts, from a Swedish
+institute's API whose coverage is Nordic-ish anyway, to displays on Swedish walls. A `:tz`
+field would be a configuration knob with no correct second setting, and the alternative
+"at minimum, say so on the configure form" would be a warning written for an audience of
+one who already knows.
+
+What did change is that the pin now has one home instead of six. `smhi/screen-zone` is a
+`def` carrying the reasoning, used by the four formatting helpers in `smhi` and the two
+`atStartOfDay` calls in `demo`; the string `"Europe/Stockholm"` appears once in the source.
+If a display ever does hang somewhere else, that line and `smhi/swedish` beside it are what
+have to become per-device fields — which is a smaller and more findable job than the entry
+was describing.
+
+Note this is the *opposite* call from the locale fix above, for a reason worth keeping
+straight: there, two machines were silently producing different screens from the same code,
+so the fix was to make the choice explicit. Here the choice was already explicit and always
+produced the same screen; only its justification was missing.
 
 ### Two units on the screen were wrong: one by locale, one by name
 

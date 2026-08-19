@@ -3,7 +3,8 @@
    (not live) Gothenburg weather for each season, built in the same point
    shape trmnl-server.smhi/forecast produces so they can run through the exact
    same rendering pipeline as a real forecast."
-  (:import [java.time LocalDate ZoneId]))
+  (:require [trmnl-server.smhi :as smhi])
+  (:import [java.time LocalDate]))
 
 (def seasons
   "Rough Gothenburg climate normals per season: a mean/swing for the diurnal
@@ -43,7 +44,7 @@
            base-cloud cloud-swing clear-symbol precip-symbol precip-mm precip-window]}
    hours]
   (let [start (-> (LocalDate/parse start-date)
-                (.atStartOfDay (ZoneId/of "Europe/Stockholm"))
+                (.atStartOfDay smhi/screen-zone)
                 (.toInstant))]
     (for [h (range hours)]
       (let [hour-of-day (mod h 24)
@@ -70,7 +71,7 @@
    honours --hours like the seasons do."
   [hours]
   (let [start (-> (LocalDate/parse "2026-07-12")
-                (.atStartOfDay (ZoneId/of "Europe/Stockholm"))
+                (.atStartOfDay smhi/screen-zone)
                 (.toInstant))]
     (for [h (range hours)]
       (let [hod         (mod h 24)
