@@ -17,13 +17,13 @@ been fixed in the meantime moved to *Resolved* at the bottom.
 
 `(fn [i] (+ x (* w (/ i (double (dec n))))))` — the plotting-point spacing, which
 divides by `n-1` so the first and last points land on the box edges — appears verbatim
-in `core/series-layout` (:69), `cloud-cover-strip` (:178), `hour-axis-labels` (:355) and
-`day-markers` (:528).
+in `core/series-layout` (:69), `cloud-cover-strip` (:183), `hour-axis-labels` (:360) and
+`day-markers` (:533).
 
 The slot geometry, which divides by `n` because each point owns a column, appears in
 four more places and in three different shapes: `slot-center` in `thunder-flashes`
-(:233), `slot-edge` in `rain-background` (:255), and `slot-w` plus an inline centre
-calculation in `precip-bar-chart` (:384) and `precip-probability-line` (:497-500).
+(:238), `slot-edge` in `rain-background` (:260), and `slot-w` plus an inline centre
+calculation in `precip-bar-chart` (:389) and `precip-probability-line` (:502-505).
 
 The distinction between the two is real and load-bearing — it is why a lightning bolt
 sits over its own rainy column instead of drifting off it — and today it is explained in
@@ -32,18 +32,7 @@ prose in three separate docstrings rather than expressed once in code.
 **Fix:** two helpers, `plot-x` (the `n-1` divisor) and `slot-center`/`slot-edge` (the `n`
 divisor), and let the names carry the distinction.
 
-### 2. `smhi` rebuilds a DateTimeFormatter on every call
-
-`local-time-str` (:173), `local-date` (:178), `local-day-label` (:234) and `local-now-str`
-(:239) each repeat the same `Instant/parse → atZone` pipeline; the three that format
-construct a `DateTimeFormatter` inline on every call (:176, :237, :245) — while the
-`swedish` locale and `screen-zone` above them are correctly `def`s. The server side of this was consolidated into
-`pages/format-instant` during the 2026-07-27 refactor; `smhi` did not get the same
-treatment.
-
-**Fix:** hoist the formatters to `def`s and factor out the shared pipeline.
-
-### 3. Landing-page loose ends
+### 2. Landing-page loose ends
 
 Added in `0a83cde`. One of the original three remains (the others are under *Resolved
 2026-08-09* and *Resolved 2026-08-15*):
@@ -53,7 +42,7 @@ Added in `0a83cde`. One of the original three remains (the others are under *Res
   `base-url` the pages don't have, so sharing needs a small split rather than a straight
   call.
 
-### 4. The device page reads today's log twice
+### 3. The device page reads today's log twice
 
 `pages/status` (:508-509) reads the selected day, then reads today's file again for the
 summary cards whenever you are viewing an older day. Correct, just wasteful — and the
@@ -62,7 +51,7 @@ reuses the first read.)
 
 ## Cleanup
 
-### 5. A resolved entry below describes code that no longer exists
+### 4. A resolved entry below describes code that no longer exists
 
 *(The filename half of this entry — `ISSUES.md` vs `KNOWN-ISSUES.md` — is done; see
 Resolved 2026-08-09.)*
@@ -72,15 +61,7 @@ This file's *Resolved #5* below describes `core/draw-series-labels` and
 Resolved 2026-07-27). The entry is kept as a record of what happened at the time, not as a
 description of the code.
 
-### 6. `pixel-font` is derived at draw time in eight places
-
-`core` caches `legend-font` (:148) as a `def` but calls `img/pixel-font` inline at :354,
-:396, :451, :513, :533, :626, :628 and :630 — five of which (:354, :396, :513, :628, :630)
-are the identical `(img/pixel-font :regular 16)`, the very font `legend-font` already
-holds. Each call runs `Font/.deriveFont`. Two or three cached `def`s would cover every
-use.
-
-### 7. `fill-string` leaves a 5px stroke on the Graphics2D
+### 5. `fill-string` leaves a 5px stroke on the Graphics2D
 
 *(Fixed — see Resolved 2026-08-19. The deeper point below still stands for colour and
 font, which remain order-dependent global state on the shared `Graphics2D`.)*
@@ -127,7 +108,7 @@ the display has ever shown (confirmed at 23 points, the deployed default, not ju
 counts). It now draws a white plaque over `image/text-box`'s ink bounds and outlines it 1px
 black, so the label reads as a tile on top of the chart instead of a hole knocked in it.
 
-`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#7*
+`image/fill-string` really did leave its 5px halo stroke on the `Graphics2D`, as *#5*
 above said — it now restores what it borrows. But the prediction that "the first
 `:fill? false` call after a haloed label will draw a 5px outline" turned out **not** to
 fire for this one: measured, the plaque's border came out 1px even with the leak still in
@@ -142,6 +123,28 @@ of what ran before it.
 Worth noting what caught this: nothing mechanical did. `clojure -M:check-labels` covers
 only the temp/wind chart's label geometry, so the precip strip has no guard at all — this
 was spotted by eye, in a zoomed crop of a demo render.
+
+### Two things derived per call that could be derived once
+
+*(Entries #2 and #6.)* `smhi` built a `DateTimeFormatter` inline in three helpers and
+repeated the `Instant/parse → atZone` pipeline in four. The formatters are now three
+`def`s (`hour-format`, `day-format`, `stamp-format` — a `DateTimeFormatter` is immutable
+and thread-safe, which is what makes that safe) and the pipeline is one private
+`screen-time`, so each helper is a single line that says what it formats. `local-now-str`
+keeps its own `atZone`, since it starts from `Instant/now` rather than a timestamp string.
+
+`core` derived a font at draw time in eight places, five of them the identical
+`(img/pixel-font :regular 16)` that `legend-font` already held as a `def` — every call
+running `Font/.deriveFont`. The screen uses exactly three fonts, so there are now three
+`def`s: `body-font`, `bold-font`, `headline-font`. `legend-font` was renamed to
+`body-font` rather than reused under its old name, which described one of its six callers.
+
+Both are pure locality changes, and that claim is checkable rather than asserted: the five
+demo screens were rendered before and after and compared pixel by pixel, masking only the
+header's right-aligned "Uppdaterad d MMM HH:mm", which legitimately differs between two
+renders. Zero differing pixels outside that box; the ten inside it are the minute digits.
+Worth keeping that trick in mind for the next refactor in here — it is the only mechanical
+check this project has beyond `check-labels`, and it costs one `--demo` run.
 
 ### Europe/Stockholm is a decision, not an oversight
 

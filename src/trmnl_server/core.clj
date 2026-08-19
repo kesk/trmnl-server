@@ -145,12 +145,17 @@
     (draw-stale-badge (img/canvas-from copy) 766 4 20)
     copy))
 
-(def ^:private legend-font (img/pixel-font :regular 16))
+;; The screen draws in three fonts and nothing else, so derive each once. These
+;; were being rebuilt at draw time in eight places -- five of them this same
+;; regular 16 -- and every one of those calls runs Font/.deriveFont.
+(def ^:private body-font (img/pixel-font :regular 16))
+(def ^:private bold-font (img/pixel-font :bold 16))
+(def ^:private headline-font (img/pixel-font :bold 32))
 
 (defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
   (apply img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]]
     (concat [:width width :dash dash] (when paint [:paint paint])))
-  (img/draw-text canvas label (+ x 38) y :font legend-font))
+  (img/draw-text canvas label (+ x 38) y :font body-font))
 
 (defn draw-legend-row
   "Lays a row of legend keys out across [x, x+w] so the first key is flush
@@ -159,7 +164,7 @@
    left. Each key is `[label opts]` matching draw-legend-key's args; its drawn
    width is the 38px swatch-plus-gap lead-in plus the label's pixel width."
   [canvas x y w keys]
-  (let [key-w  (fn [[label _]] (+ 38 (img/text-width canvas label :font legend-font)))
+  (let [key-w  (fn [[label _]] (+ 38 (img/text-width canvas label :font body-font)))
         widths (map key-w keys)
         gap    (/ (- w (reduce + widths)) (max 1 (dec (count keys))))
         starts (reductions + x (map #(+ % gap) (butlast widths)))]
@@ -351,7 +356,7 @@
    than duplicated under each chart."
   [canvas points x w y]
   (let [n       (count points)
-        font    (img/pixel-font :regular 16)
+        font    body-font
         idx->x  (fn [i] (+ x (* w (/ i (double (dec n))))))
         indices (distinct (for [k (range axis-label-count)]
                             (Math/round (* k (/ (dec n) (double (dec axis-label-count)))))))]
@@ -393,7 +398,7 @@
                               :bar-h (mm->bar-h mm)
                               :mm    mm}))
                          points))]
-    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x (- y 6) :font (img/pixel-font :regular 16) :halo? true)
+    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x (- y 6) :font body-font :halo? true)
     (doseq [{:keys [x bar-h]} bars]
       (when (pos? bar-h)
         (img/draw-rect canvas x (- bottom bar-h) bar-w bar-h :fill? true)))
@@ -448,7 +453,7 @@
   [canvas specs]
   (doseq [{:keys [x top mm]} specs]
     (let [text          (String/format smhi/swedish "%.1fmm" (to-array [(double mm)]))
-          font          (img/pixel-font :bold 16)
+          font          bold-font
           bx            (- x 4)
           by            (- top 6)
           [x1 _ x2 y2]  (img/text-box canvas text bx by :font font)
@@ -510,7 +515,7 @@
     ;; dot doesn't read anyway (the peak sits on a plateau corner and/or atop the
     ;; black bars), so the line's shape carries "when" instead.
     (let [tag  (str "Regnrisk (max " (int peak) "%)")
-          font (img/pixel-font :regular 16)
+          font body-font
           tw   (img/text-width canvas tag :font font)]
       (img/draw-text canvas tag (- (+ x w) tw) (- y 6) :font font :halo? true))
     (img/draw-polyline canvas plot :dash [5.0 4.0] :width 2.0)
@@ -530,7 +535,7 @@
     (doseq [group groups]
       (let [center-x (/ (+ (idx->x (first group)) (idx->x (last group))) 2)]
         (img/draw-text canvas (smhi/local-day-label (:time (nth points (first group)))) (- center-x 12) label-y
-          :font (img/pixel-font :bold 16))))
+          :font bold-font)))
     (doseq [[_a b] (partition 2 1 groups)]
       (let [boundary-x (idx->x (first b))]
         (img/draw-dashed-line canvas boundary-x top boundary-x bottom)))))
@@ -623,11 +628,11 @@
      ;; Wordmark top-right, right edge flush with the 760 content margin (same
      ;; as the divider/Uppdaterad below it); its 38px height clears that line.
      (draw-logo canvas (- 760 logo-w) 14)
-     (img/draw-text canvas (str (int (Math/rint (double (:temp now)))) "°") 122 44 :font (img/pixel-font :bold 32))
+     (img/draw-text canvas (str (int (Math/rint (double (:temp now)))) "°") 122 44 :font headline-font)
      (img/draw-text canvas (str (int (Math/rint (double (:wind now)))) " m/s, " condition) 122 68
-       :font (img/pixel-font :regular 16))
+       :font body-font)
      (let [label (str "Uppdaterad " (smhi/local-now-str))
-           font  (img/pixel-font :regular 16)
+           font  body-font
            w     (img/text-width canvas label :font font)]
        (img/draw-text canvas label (- 760 w) 68 :font font))
      (img/draw-line canvas 40 84 760 84)

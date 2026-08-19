@@ -6,7 +6,7 @@
   (:import [java.io IOException]
            [java.net URI]
            [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]
-           [java.time Duration Instant LocalDate ZoneId]
+           [java.time Duration Instant LocalDate ZoneId ZonedDateTime]
            [java.time.format DateTimeFormatter]
            [java.util Locale]))
 
@@ -170,18 +170,25 @@
   [symbol-code]
   (contains? thunder-symbol-codes symbol-code))
 
+(def ^:private hour-format (DateTimeFormatter/ofPattern "HH:mm"))
+(def ^:private day-format (DateTimeFormatter/ofPattern "EEE" swedish))
+(def ^:private stamp-format (DateTimeFormatter/ofPattern "d MMM HH:mm" swedish))
+
+(defn- screen-time
+  "An SMHI ISO timestamp as wall-clock time in screen-zone — the pipeline the
+   helpers below share. A DateTimeFormatter is immutable and thread-safe, which
+   is why the three above are `def`s rather than rebuilt per call."
+  ^ZonedDateTime [iso-time]
+  (.atZone (Instant/parse iso-time) screen-zone))
+
 (defn local-time-str [iso-time]
-  (-> (Instant/parse iso-time)
-    (.atZone screen-zone)
-    (.format (DateTimeFormatter/ofPattern "HH:mm"))))
+  (.format (screen-time iso-time) hour-format))
 
 (defn local-date
   "The Europe/Stockholm calendar date an SMHI timestamp falls on — the unit
    day/night min-max labels are grouped by."
   [iso-time]
-  (-> (Instant/parse iso-time)
-    (.atZone screen-zone)
-    (.toLocalDate)))
+  (.toLocalDate (screen-time iso-time)))
 
 (defn- julian->instant [jd]
   (Instant/ofEpochMilli (long (* (- jd 2440587.5) 86400000.0))))
@@ -232,14 +239,10 @@
       :else        (or (.isBefore t sunrise) (.isAfter t sunset)))))
 
 (defn local-day-label [iso-time]
-  (-> (Instant/parse iso-time)
-    (.atZone screen-zone)
-    (.format (DateTimeFormatter/ofPattern "EEE" swedish))))
+  (.format (screen-time iso-time) day-format))
 
 (defn local-now-str
   "Current time formatted like local-time-str's siblings, but for 'now' rather
    than a forecast point — used to stamp when a screen was rendered."
   []
-  (-> (Instant/now)
-    (.atZone screen-zone)
-    (.format (DateTimeFormatter/ofPattern "d MMM HH:mm" swedish))))
+  (.format (.atZone (Instant/now) screen-zone) stamp-format))
