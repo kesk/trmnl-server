@@ -1,40 +1,26 @@
-# Code review findings
+# Code health: decisions and backlog
 
-Weaknesses in *this repo's own code*, roughly in priority order. None are urgent for
-the current 15-minute-poll deployment — this is a backlog, not a bug list.
+Two things about *this repo's own code*: what is worth fixing (currently nothing), and —
+the bulk of the file — a log of what was fixed, what was declined, and why. Read the
+Resolved sections before starting a cleanup. Several entries there record reasoning that
+is invisible in the code and that a fresh pass tends to re-derive backwards; one of them
+exists because a "fix" applied on 2026-08-19 was reverted the same day.
 
 Its counterpart is `DEVICE-ISSUES.md`, which records device/firmware and upstream-API
 problems observed in production. That file is about things outside this codebase; this
 one is about the code.
 
-Line numbers are as of 2026-08-19 and will drift — treat them as a starting point, not
-a reference. Every entry below was re-verified against the code on that date; what had
-been fixed in the meantime moved to *Resolved* at the bottom.
+Line numbers are as of 2026-08-19 and drift constantly — where an entry cites one, treat
+it as a starting point rather than a reference. Entry numbers quoted in the Resolved
+sections ("*Entry #12*") are whatever that item was called on the day it closed: the open
+list was renumbered each time it shrank, so those numbers date an entry rather than
+identify anything you can still look up.
 
-## Worth doing
+## Open
 
-Nothing outstanding. Everything below is cleanup or a note.
-
-## Cleanup
-
-### 1. A resolved entry below describes code that no longer exists
-
-*(The filename half of this entry — `ISSUES.md` vs `KNOWN-ISSUES.md` — is done; see
-Resolved 2026-08-09.)*
-
-This file's *Resolved #5* below describes `core/draw-series-labels` and
-`draw-extremum-label`, which no longer exist: that design was superseded twice over (see
-Resolved 2026-07-27). The entry is kept as a record of what happened at the time, not as a
-description of the code.
-
-### 2. `fill-string` leaves a 5px stroke on the Graphics2D
-
-*(Fixed — see Resolved 2026-08-19. The deeper point below still stands for colour and
-font, which remain order-dependent global state on the shared `Graphics2D`.)*
-
-The deeper point: the canvas map threads a mutable `Graphics2D` whose colour, font and
-stroke are order-dependent global state. A `with-stroke`-style helper, or a consistent
-save/restore discipline, would make that safe rather than merely lucky.
+Nothing outstanding. The last entries were closed on 2026-08-19; what they were and how
+they went is in the Resolved section below, and the notes that follow are observations
+rather than work.
 
 ## Minor notes
 
@@ -47,13 +33,19 @@ save/restore discipline, would make that safe rather than merely lucky.
   `smhi/screen-zone`: `pages/format-instant` (every time on the device pages, and
   deliberately so — it's for whoever is reading them) and `archive/reference-run-token`
   (the `run20260713-0945` segment of an archived filename). Both agree with the screen
-  only because the Pi is in Sweden. Given the entry below that is fine, but the archive
-  token is the one that would quietly disagree with the times printed inside its own
+  only because the Pi is in Sweden. Given the Europe/Stockholm decision recorded below,
+  that is fine, but the archive token is the one that would quietly disagree with the times printed inside its own
   files if the server ever moved.
 - `README.md`'s architecture section still opens "Six namespaces under `src/trmnl_server/`"
   and lists six of the fourteen — the whole `server.*` tree, `labels`, `demo`'s stress-test
   day and the logging story are missing. It reads as an accurate short tour rather than an
   out-of-date one, which is the dangerous kind of stale. CLAUDE.md is the current map.
+- The canvas map threads a mutable `Graphics2D` whose colour, font and stroke are
+  order-dependent global state. The stroke half of this bit for real once (see Resolved
+  2026-08-19, where an unfilled rect's border width turned out to depend on what had drawn
+  before it) and `draw-rect` now saves and restores its own; colour and font still don't.
+  A `with-stroke`-style helper, or a consistent save/restore discipline, would make that
+  safe rather than merely lucky — worth doing if a third case turns up, not before.
 - No test suite; for output that is fundamentally "does the screen look right," the
   `--demo` season renders are the de-facto regression tool. `clojure -M:check-labels`
   covers the one part that can be checked mechanically: that no temp/wind chart label is
@@ -455,4 +447,7 @@ Eleven keyword args in parallel above-/below- pairs, with per-day vectors thread
 **Fixed:** `combined-chart` computed a per-day placement map up front and passed it as a
 single arg. *Superseded:* `d4827c4` replaced this with one-pass placement against real
 boxes, and `4506ddb` moved the whole thing to `trmnl-server.labels`. Neither
-`draw-series-labels` nor `draw-extremum-label` exists any more.
+`draw-series-labels` nor `draw-extremum-label` exists any more, so read this entry as a
+record of what happened in July 2026 rather than as a description of the code. (An open
+entry used to sit at the top of this file saying exactly that; it was deleted on
+2026-08-19 in favour of saying it here, where the reader actually is.)

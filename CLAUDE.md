@@ -114,14 +114,22 @@ There is no test suite or linter configured, beyond `clojure -M:fmt` (cljfmt) fo
 and `clojure -M:check-labels` (see `dev/`) for the one rendering property that can be checked
 without eyes.
 
-Two docs sit alongside this one: **`KNOWN-ISSUES.md`** is the backlog of weaknesses in this
-repo's own code (duplication, dead code, stale docstrings — each with file/line and a
-suggested fix), plus a log of what's been resolved and why; **`DEVICE-ISSUES.md`** covers
-device/firmware and upstream-API problems seen in production, which are not this codebase's
-bugs. Check the former before starting a cleanup — the thing you noticed is probably already
-written up there. The latter is mostly *resolved* entries kept as a permanent record of how
-the firmware behaves, and several are cited by number from docstrings in `src/`, so its
-numbering is load-bearing: append rather than renumber.
+Two docs sit alongside this one: **`KNOWN-ISSUES.md`** covers this repo's own code — a
+backlog of weaknesses (duplication, dead code, stale docstrings, each with file/line and a
+suggested fix) that is **currently empty**, and, taking up most of the file, a log of what
+was fixed, what was declined, and why; **`DEVICE-ISSUES.md`** covers device/firmware and
+upstream-API problems seen in production, which are not this codebase's bugs. Read the
+former before starting a cleanup, and not only to check whether the thing you noticed is
+already written up: several entries record why the code is the way it is, and a fresh
+reading of the screen tends to re-derive some of those backwards. `Moln (%)` was "fixed"
+to `Moln (0-8)` and reverted the same day for exactly that reason.
+
+`DEVICE-ISSUES.md` is mostly *resolved* entries kept as a permanent record of how the
+firmware behaves, and several are cited by number from docstrings in `src/`, so its
+numbering is load-bearing: append rather than renumber. `KNOWN-ISSUES.md` is the opposite —
+nothing cites its numbers, and its open list was renumbered every time it shrank, so the
+numbers in its Resolved sections date an entry rather than identify one.
+
 The only build step is the uberjar target in `build.clj` (via `tools.build`), used solely to
 produce a self-contained jar for deployment. Deployment itself (`deploy.clj`) is a babashka
 script that shells out to `clojure -T:build uber` rather than requiring `build.clj` in-process,
