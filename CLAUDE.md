@@ -278,7 +278,7 @@ version, and 3.6x the entire screen composition).
   `GET /` (the index — a card per registered display showing the screen it last
   downloaded, each
   one linking into that display's status page, which links back),
-  `GET /devices/<id>` (per-device battery/firmware/awake-trend/deployed-commit/
+  `GET /devices/<id>` (per-device battery/firmware/awake-trend/
   forecast-health/device-log dashboard — the display's *own* page, not a `/status` leaf
   under it, so the URLs nest into a hierarchy) and
   `GET /devices/<id>/archive` (a gallery of that device's rolling 24h image archive), with
@@ -788,13 +788,21 @@ version, and 3.6x the entire screen composition).
   CSS lives in `resources/css/{base,archive,home,login,form}.css` (slurped at load through
   `io/resource`, so it resolves from the uberjar too) rather than inline string
   blobs — `base.css` is the shared shell, with `archive.css`, `home.css`,
-  `login.css` and `form.css` layered on top for the pages that need more than it. The `/status` page also shows the **deployed commit** via
-  `deployed-version`, read once at load from a bundled `version.edn` that
-  `build.clj`'s uber task bakes in (`git rev-parse --short HEAD`, plus a `-dirty`
+  `login.css` and `form.css` layered on top for the pages that need more than it. `/`
+  also carries the **deployed commit** in a footer (`version-footer`, reading
+  `deployed-version` — read once at load from a bundled `version.edn` that
+  `build.clj`'s uber task bakes in: `git rev-parse --short HEAD`, plus a `-dirty`
   suffix when the tree isn't clean, and a build timestamp). Running from source
   (`clojure -M:serve`, no build step) there's no such resource and no commit to report,
   so it shows `dev-local` — there is deliberately **no** git fallback here, since
-  shelling out to `git` at load time cost the CLI a ~60s exit hang.
+  shelling out to `git` at load time cost the CLI a ~60s exit hang. It sits on `/` for
+  the same reason the waiting-to-be-configured list does: it is a fact about the server
+  process, not about any one display. It was a card on the device page until 2026-08-20,
+  where it said the same thing once per display and shared a section heading
+  ("Server · build") with that display's *firmware* version — two different machines'
+  builds side by side. Firmware moved up into Device health, where the rest of that
+  display's own facts are, and what was left (forecast freshness, last poll) is now
+  "Serving".
 
 - **`trmnl-server.server.telemetry`** — everything each device reports about itself and
   where it's kept: that device's latest `/api/display` header snapshot

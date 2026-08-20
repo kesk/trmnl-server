@@ -51,7 +51,10 @@
 
 ;; Deployed commit, baked into version.edn by build.clj's uber task and bundled into the
 ;; jar. Absent when running from source (clojure -M:serve), where there's no build step —
-;; there's no commit to report there, so the device page just shows "dev-local". Read once at load.
+;; there's no commit to report there, so the footer just shows "dev-local". Read once at load.
+;; It says which build of *this server* is running, which is a fact about the process and
+;; not about any one display, so it belongs on / and is reported there once — it used to be
+;; a card on every device page, saying the same thing as many times as there are displays.
 (def ^:private deployed-version
   (or (when-let [r (io/resource "version.edn")]
         (try (read-string (slurp r)) (catch Exception _ nil)))
@@ -104,7 +107,7 @@
 (defn- format-built-at
   "build.clj bakes :built-at into version.edn as a raw ISO-8601 instant string
    (e.g. 2026-07-16T10:41:12.123456Z). Render it as a compact local wall-clock time
-   for the device page's 'Deployed' pill; pass the original through unchanged if it isn't
+   for the landing page's footer; pass the original through unchanged if it isn't
    parseable as an instant, so a hand-edited version.edn can't blow up the page."
   [built]
   (try
@@ -241,6 +244,17 @@
       [:span.mono id]
       [:span.unreg-seen "seen " (ago-str last-seen now)]])])
 
+(defn- version-footer
+  "Which build of this server is running, at the bottom of /. A property of the process
+   rather than of any display, so it is said once on the index instead of once per device
+   page — the question it answers (\"is the Pi running what I just deployed?\") is asked of
+   the server, and asking it of a display was only ever incidental to where the card sat."
+  []
+  [:p.foot.mono
+   (or (:commit deployed-version) "unknown")
+   (when-let [built (:built-at deployed-version)]
+     (str " · built " (format-built-at built)))])
+
 (defn- no-devices
   "What / shows before any display has been configured. Anything already polling is
    offered for configuration, which is the whole first run: plug the display in, wait for
@@ -258,7 +272,8 @@
           (waiting-list waiting (System/currentTimeMillis)))
         [:p.empty (str "No display has polled this server yet. Point one at it and it will "
                     "show an id on its screen, which will appear here — or write a "
-                    "devices.edn by hand (see devices.example.edn) and restart.")]))))
+                    "devices.edn by hand (see devices.example.edn) and restart.")])
+      (version-footer))))
 
 (defn- logout-form
   "The way out of a session. A POST, not a link: a GET /logout would let a link
@@ -557,6 +572,11 @@
            [:div.k "WiFi"]
            [:div.v.mono (if (:rssi dev) (str (:rssi dev) " dBm") "—")]
            [:span {:class (str "pill " wifi-pill)} wifi-lbl]]
+          [:div.card
+           [:div.k "Firmware"]
+           [:div.v.mono (or firmware "—")]
+           (when-let [model (:model dev)]
+             [:span.pill.pill-unknown model])]
           [:div.card.awake
            [:div.k "Awake · last cycle"]
            [:div.v (if latest-wake (str (ms->secs latest-wake) " s") "—")]
@@ -571,18 +591,8 @@
                    [:div.av (if avg (str (ms->secs avg) "s") "—")]])])
              [:span.pill.pill-unknown "no samples yet"])]]]
         [:section.group
-         [:div.sec "Server · build"]
-         [:div.cards.cards-build
-          [:div.card
-           [:div.k "Firmware"]
-           [:div.v.mono (or firmware "—")]
-           (when-let [model (:model dev)]
-             [:span.pill.pill-unknown model])]
-          [:div.card
-           [:div.k "Deployed"]
-           [:div.v.mono (or (:commit deployed-version) "unknown")]
-           (when-let [built (:built-at deployed-version)]
-             [:span.pill.pill-unknown "built " (format-built-at built)])]
+         [:div.sec "Serving"]
+         [:div.cards.cards-serving
           [:div.card
            [:div.k "Forecast"]
            [:div.v.mono (if (:generated-at fcast) (format-millis (:generated-at fcast)) "—")]
@@ -698,7 +708,7 @@
    configured, each showing the id it is printing on its own screen. That belongs here and
    only here: it is server-wide rather than about any one display (which is why the device
    pages carry no copy of it), and this is the page you are on when you plug a new display
-   in."
+   in. The build footer under it is there for the same reason — see version-footer."
   [auth-state]
   (let [all-devices (devices/all)
         waiting     (seq (devices/provisional-list))]
@@ -716,7 +726,8 @@
              [:p.tag (if (= 1 (count waiting))
                        "A display is polling this server and showing this id on its screen. Click it to say what it is and where."
                        "These displays are polling this server and showing these ids on their screens. Click one to say what it is and where.")]
-             (waiting-list waiting (System/currentTimeMillis))])))
+             (waiting-list waiting (System/currentTimeMillis))])
+          (version-footer)))
       (no-devices "trmnl-server" home-css))))
 
 ;; --- /login -----------------------------------------------------------------------------

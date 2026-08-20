@@ -51,6 +51,21 @@ rather than work.
   covers the one part that can be checked mechanically: that no temp/wind chart label is
   drawn onto a dot or another label. Everything else is still eyes-on-a-PNG.
 
+## Resolved (2026-08-20)
+
+### The server's build was reported once per display
+
+The device page carried a "Deployed" card — the commit and build time of the *server* —
+inside a section headed "Server · build", next to that display's **firmware** version. Two
+different machines' builds, side by side, on a page that is otherwise entirely about one
+display; and with two displays registered, the server's half of it was simply printed
+twice, identically. It answers a question asked of the process ("is the Pi running what I
+just deployed?"), so it now sits once in a footer on `/`, which is already where the
+server-wide things live (the waiting-to-be-configured list). Firmware moved up into Device
+health, with the rest of that display's own facts, and the two cards left behind — forecast
+freshness and last poll — became a section called "Serving". `pages/version-footer` is the
+new home; `deployed-version` itself is unchanged.
+
 ## Resolved (2026-08-19)
 
 ### The mm label was illegible where it mattered most, and the stroke leak was real

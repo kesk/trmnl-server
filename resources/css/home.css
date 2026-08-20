@@ -37,3 +37,7 @@
 .unreg-item:hover{border-color:var(--muted)}
 .unreg-item .mono{font-size:13px}
 .unreg-seen{font-size:12px;color:var(--muted)}
+/* Which build of the server is serving this page. A footnote in every sense: muted,
+   small, and at the very bottom — it is the answer to "is the Pi running what I just
+   deployed?", which is worth having somewhere and worth shouting nowhere. */
+.foot{margin:34px 0 0;font-size:12px;color:var(--muted)}

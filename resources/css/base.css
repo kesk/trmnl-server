@@ -45,11 +45,13 @@ h1{font-size:20px;font-weight:500;margin:0 0 18px}
 .group{margin-bottom:20px}
 .sec{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
 .cards{display:grid;gap:12px}
-.cards-health{grid-template-columns:1fr 1fr 2fr}
-/* Four cards, two of them full timestamps — 20px is what keeps "2026-07-30 23:19:06"
-   on one line in a quarter-width card. */
-.cards-build{grid-template-columns:repeat(4,1fr)}
-.cards-build .v{font-size:20px}
+/* Battery, WiFi and Firmware share a row; the Awake card spans it, since it carries a
+   sparkline and four averages rather than one number. */
+.cards-health{grid-template-columns:repeat(3,1fr)}
+/* Two cards, both full timestamps — 20px is what keeps "2026-07-30 23:19:06" on one
+   line once the column narrows. */
+.cards-serving{grid-template-columns:repeat(2,1fr)}
+.cards-serving .v{font-size:20px}
 .card{background:var(--card);border-radius:10px;padding:12px 15px}
 .k{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
 .v{font-size:24px;font-weight:500;margin:3px 0 7px}
@@ -59,7 +61,7 @@ h1{font-size:20px;font-weight:500;margin:0 0 18px}
 .pill-watch{background:var(--warn-bg);color:var(--warn-fg)}
 .pill-low{background:var(--err-bg);color:var(--err-fg)}
 .pill-unknown{color:var(--muted);border:.5px solid var(--bd)}
-.awake{display:flex;flex-direction:column}
+.awake{grid-column:1/-1;display:flex;flex-direction:column}
 .spark{display:block;width:100%;height:34px;color:var(--muted);margin:2px 0 8px}
 .spark polyline{fill:none;stroke:currentColor;stroke-width:1.2}
 .avgs{display:flex;margin-top:auto}
@@ -68,8 +70,7 @@ h1{font-size:20px;font-weight:500;margin:0 0 18px}
 .avg .al{font-size:10px;color:var(--muted)}
 .avg .av{font-size:15px;font-weight:500}
 @media(max-width:640px){
-  .cards-health,.cards-build{grid-template-columns:1fr 1fr}
-  .awake{grid-column:1/-1}
+  .cards-health,.cards-serving{grid-template-columns:1fr 1fr}
 }
 .h{font-size:13px;font-weight:500;margin:0 0 8px}
 .h-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px}
