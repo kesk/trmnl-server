@@ -702,8 +702,3 @@
      (hour-axis-labels canvas points 40 720 468)
      (day-markers canvas points 40 720 118 440 454)
      canvas)))
-
-(defn- draw-centered
-  "Draws `text` horizontally centred on the panel, with its baseline at y."
-  [canvas text y & {:keys [font]}]
-  (img/draw-text canvas text (/ (- img/og-width (img/text-width canvas text :font font)) 2) y :font font))

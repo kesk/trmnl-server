@@ -41,7 +41,6 @@
             [hiccup2.core :as h]
             [trmnl-server.core :as core]
             [trmnl-server.server.archive :as archive]
-            [trmnl-server.server.auth :as auth]
             [trmnl-server.server.devices :as devices]
             [trmnl-server.server.render :as render]
             [trmnl-server.server.telemetry :as telemetry])

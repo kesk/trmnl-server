@@ -176,6 +176,9 @@
         entry     (get @cache device-id)]
     (if (serve-as-is? entry)
       entry
+      ;; clj-kondo reads the lock as a fresh local because it's an inline call; it's the
+      ;; shared per-device Object out of `locks`, which is what that linter asks for.
+      #_{:clj-kondo/ignore [:locking-suspicious-lock]}
       (locking (lock-for device-id)
         (let [entry (get @cache device-id)]
           (if (serve-as-is? entry)
