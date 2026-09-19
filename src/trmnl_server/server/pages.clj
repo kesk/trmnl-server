@@ -144,12 +144,66 @@
       :else            [(str "stale · " failures " failed attempt" (when (> failures 1) "s"))
                         (if (> failures 1) "pill-low" "pill-watch")])))
 
+(def ^:private lipo-curve
+  "Open-circuit voltage → state of charge for a single LiPo cell, as [volts percent]
+   pairs from full to empty. A generic curve for the chemistry, not one measured on this
+   pack, and the firmware reads under load (WiFi up), which sits a little below rest — so
+   the percent it yields is a \"~\" figure. Its *shape* is what matters more: the long
+   plateau through the 3.9–3.7 V range is where a straight 3.0–4.2 V line used to read
+   \"72%\" for a cell that's nearer 60, and where a slope fitted in volts would see almost
+   nothing while the charge drains away underneath. Charge drains linearly under the
+   display's near-constant load, so mapping through this first is what lets
+   battery-forecast fit a straight line."
+  [[4.20 100] [4.15 95] [4.11 90] [4.08 85] [4.02 80] [3.98 75] [3.95 70] [3.91 65]
+   [3.87 60] [3.85 55] [3.84 50] [3.82 45] [3.80 40] [3.79 35] [3.77 30] [3.75 25]
+   [3.73 20] [3.71 15] [3.69 10] [3.61 5] [3.27 0]])
+
 (defn- battery-percent
-  "Rough charge estimate from a raw battery_voltage reading (LiPo, ~3V empty to
-   ~4.2V full). Not the device's exact curve — just enough to flag a low battery."
+  "Charge estimate for a raw battery_voltage reading: linear interpolation along
+   lipo-curve, clamped to its ends. A double — callers round for display, and
+   battery-forecast wants the unrounded value to fit against."
   [voltage]
   (when voltage
-    (-> (/ (- voltage 3) 0.012) (max 1.0) (min 100.0) Math/round)))
+    (let [v (double voltage)]
+      (cond
+        (>= v (ffirst lipo-curve))       100.0
+        (<= v (first (last lipo-curve))) 0.0
+        :else
+        (some (fn [[[v1 p1] [v2 p2]]]
+                (when (and (<= v v1) (>= v v2))
+                  (+ p2 (* (- p1 p2) (/ (- v v2) (- v1 v2))))))
+          (partition 2 1 lipo-curve))))))
+
+(def ^:private day-ms (* 24 60 60 1000))
+
+(defn- battery-forecast
+  "How the battery is trending, from a straight line fitted through the last week of poll
+   samples in percent space (see lipo-curve for why percent rather than volts): nil until
+   there's at least a day of samples, else {:per-day <percent per day, signed> :days-left
+   <estimate, or nil when it isn't draining>}. Days left extrapolates the fitted value at
+   now, not the newest raw reading. A week is far short of a full discharge (a couple of
+   months at the 15-minute refresh), so this is a current-rate extrapolation like a
+   laptop's, not a validated model — and the earliest estimates, off a day's worth of
+   samples, wobble accordingly."
+  [samples now]
+  (when-let [{:keys [slope] fitted :now}
+             (telemetry/series-fit samples #(some-> (:v %) battery-percent)
+               now telemetry/poll-retention-ms 24 day-ms)]
+    (let [per-day (* slope day-ms)]
+      {:per-day   per-day
+       :days-left (when (< per-day -0.01) (/ (max fitted 0.0) (- per-day)))})))
+
+(defn- forecast-str
+  "battery-forecast as one muted line under the Battery pill: '≈ 41 days left · −1.5 %/day',
+   or, when it isn't draining, just the rate ('steady', 'charging'). Days are rounded and
+   capped at 'over a year', past which the digits are noise."
+  [{:keys [per-day days-left]}]
+  (let [rate (String/format java.util.Locale/US "%+.1f %%/day" (to-array [per-day]))]
+    (cond
+      (nil? days-left)  (str (if (> per-day 0.5) "charging" "steady") " · " rate)
+      (< days-left 1)   (str "under a day left · " rate)
+      (> days-left 366) (str "over a year left · " rate)
+      :else             (str "≈ " (Math/round (double days-left)) " days left · " rate))))
 
 (defn- battery-quality
   "Maps a rough charge percentage to a human label and the pill class to tint it
@@ -439,42 +493,61 @@
 
 ;; --- The device page --------------------------------------------------------------------
 
-(def ^:private wake-windows
+(def ^:private trend-windows
   "Trend windows shown on the device page, label + span in ms — short, day, and week."
   [["1h" (* 60 60 1000)]
    ["6h" (* 6 60 60 1000)]
    ["24h" (* 24 60 60 1000)]
-   ["7d" telemetry/wake-retention-ms]])
+   ["7d" telemetry/poll-retention-ms]])
 
-(defn- wake-sparkline
-  "An inline SVG polyline of the wake-time series (ms over time) scaled to a small box,
-   for the device page's Awake card. nil when there are fewer than two samples to connect. Pure
+(defn- sparkline
+  "An inline SVG polyline of one poll series (k = :ms or :v, over time) scaled to a small
+   box, for the device page's Awake card. nil when fewer than two samples carry k. Pure
    server-rendered hiccup — no JS, no axis, no dependency; a glanceable trend read next to
    the numeric averages, not a precise chart. x maps each sample's :t across the width so
-   irregular poll spacing shows; y maps :ms so taller = longer awake (inverted). Colour is
-   left to CSS (currentColor → --muted) to stay legible in light and dark."
-  [samples]
-  (when (> (count samples) 1)
-    (let [w    240
-          h    34
-          pad  3
-          ts   (map :t samples)
-          vs   (map :ms samples)
-          tmin (apply min ts)
-          tmax (apply max ts)
-          vmin (apply min vs)
-          vmax (apply max vs)
-          trng (double (max 1 (- tmax tmin)))
-          vrng (double (max 1 (- vmax vmin)))
-          pts  (->> samples
-                 (map (fn [{:keys [t ms]}]
-                        (let [x (+ pad (* (- w (* 2 pad)) (/ (- t tmin) trng)))
-                              y (+ pad (* (- h (* 2 pad)) (- 1 (/ (- ms vmin) vrng))))]
-                          (str (Math/round (double x)) "," (Math/round (double y))))))
-                 (str/join " "))]
-      [:svg {:class               "spark" :viewBox     (str "0 0 " w " " h) :width "100%" :height h
-             :preserveAspectRatio "none"  :aria-hidden "true"}
-       [:polyline {:points pts}]])))
+   irregular poll spacing shows; y is fitted to the series' own min/max so taller = higher
+   (inverted). Colour is left to CSS (currentColor → --muted) to stay legible in light and
+   dark. Generic over k, though only :ms is drawn: a :v sparkline was tried and dropped —
+   a week of battery voltage is a nearly flat line that the fit in battery-forecast reads
+   better than an eye can."
+  [samples k]
+  (let [samples (filterv k samples)]
+    (when (> (count samples) 1)
+      (let [w    240
+            h    34
+            pad  3
+            ts   (map :t samples)
+            vs   (map k samples)
+            tmin (apply min ts)
+            tmax (apply max ts)
+            vmin (apply min vs)
+            vmax (apply max vs)
+            trng (double (max 1 (- tmax tmin)))
+            vrng (let [r (double (- vmax vmin))] (if (pos? r) r 1.0))
+            pts  (->> samples
+                   (map (fn [{:keys [t] :as s}]
+                          (let [x (+ pad (* (- w (* 2 pad)) (/ (- t tmin) trng)))
+                                y (+ pad (* (- h (* 2 pad)) (- 1 (/ (- (get s k) vmin) vrng))))]
+                            (str (Math/round (double x)) "," (Math/round (double y))))))
+                   (str/join " "))]
+        [:svg {:class               "spark" :viewBox     (str "0 0 " w " " h) :width "100%" :height h
+               :preserveAspectRatio "none"  :aria-hidden "true"}
+         [:polyline {:points pts}]]))))
+
+(defn- trend
+  "The sparkline and the row of window averages under the Awake card's headline number:
+   series k of the poll samples, each average rendered through fmt. nil when the series
+   has nothing in it, so the caller decides what an empty card says."
+  [samples k now fmt]
+  (when (some k samples)
+    [:div.tb
+     (sparkline samples k)
+     [:div.avgs
+      (for [[lbl window] trend-windows
+            :let         [avg (telemetry/series-average samples k now window)]]
+        [:div.avg
+         [:div.al lbl]
+         [:div.av (if avg (fmt avg) "—")]])]]))
 
 (defn- row-class
   "Tints a log row by severity so the noisy device errors are glanceable: red for any
@@ -536,16 +609,18 @@
         ;; common case — reuses the read above.
         today-rows  (if (= sel today) rows (reverse (telemetry/read-log id today)))
         dev         (telemetry/poll-status id)
-        voltage     (or (:battery-voltage dev) (some :battery_voltage today-rows))
+        polls       (telemetry/poll-samples id)
+        ;; The persisted series outlives a restart, so it's the second source for the
+        ;; headline figure — otherwise the card would say "no data yet" above a week's graph.
+        voltage     (or (:battery-voltage dev) (some :v (rseq polls)) (some :battery_voltage today-rows))
         pct         (battery-percent voltage)
         [batt-lbl
          batt-pill] (battery-quality pct)
         firmware    (or (:fw-version dev) (some :firmware_version today-rows))
         [wifi-lbl
          wifi-pill] (wifi-quality (:rssi dev))
-        wakes       (telemetry/wake-samples id)
         now         (System/currentTimeMillis)
-        latest-wake (:ms (last wakes))
+        latest-wake (some :ms (rseq polls))
         fcast       (render/cache-status device)
         [fc-lbl
          fc-pill]   (forecast-quality fcast now)]
@@ -566,7 +641,9 @@
                      (String/format java.util.Locale/US "%.3f V" (to-array [voltage]))
                      "—")]
            [:span {:class (str "pill " batt-pill)}
-            (if voltage (str "~" pct "% · " batt-lbl) "no data yet")]]
+            (if voltage (str "~" (Math/round (double pct)) "% · " batt-lbl) "no data yet")]
+           (when-let [fc (battery-forecast polls now)]
+             [:div.sub (forecast-str fc)])]
           [:div.card
            [:div.k "WiFi"]
            [:div.v.mono (if (:rssi dev) (str (:rssi dev) " dBm") "—")]
@@ -579,15 +656,7 @@
           [:div.card.awake
            [:div.k "Awake · last cycle"]
            [:div.v (if latest-wake (str (ms->secs latest-wake) " s") "—")]
-           (if (seq wakes)
-             (list
-               (wake-sparkline wakes)
-               [:div.avgs
-                (for [[lbl window] wake-windows
-                      :let         [avg (telemetry/wake-average wakes now window)]]
-                  [:div.avg
-                   [:div.al lbl]
-                   [:div.av (if avg (str (ms->secs avg) "s") "—")]])])
+           (or (trend polls :ms now #(str (ms->secs %) "s"))
              [:span.pill.pill-unknown "no samples yet"])]]]
         [:section.group
          [:div.sec "Serving"]

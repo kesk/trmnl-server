@@ -1,14 +1,14 @@
 (ns trmnl-server.server.telemetry
   "Everything the devices tell us about themselves, and where it's kept: each one's
-   last /api/display poll headers, its rolling wake-time series, and its raw /api/log
-   bodies on disk. Storage and aggregation only — the HTTP endpoints that feed it live
+   last /api/display poll headers, its rolling per-poll series (awake time and battery
+   voltage), and its raw /api/log bodies on disk. Storage and aggregation only — the HTTP endpoints that feed it live
    in server, the device page's rendering of it in server.pages.
 
    Every fn here is scoped to one device by its :id — its stable identity rather than
-   its :name, so a display can be renamed without orphaning the wake-time history and
+   its :name, so a display can be renamed without orphaning the poll history and
    log days filed under it (see server.devices). On disk that's a subdirectory per
    device: logs/<id>/device-<date>.log and
-   logs/<id>/wake-times.edn. Subdirectories rather than mangled filenames because
+   logs/<id>/polls.edn. Subdirectories rather than mangled filenames because
    prune-logs! then comes out right for free — its cap is a count of files in a
    directory, so a shared one would let a chatty display evict a quiet one's days.
 
@@ -25,19 +25,19 @@
 
 (def ^:private max-log-files 7)
 
-;; How far back wake-time samples are kept — sets the longest trend window (7d) on the device page.
-(def wake-retention-ms (* 7 24 60 60 1000))
+;; How far back poll samples are kept — sets the longest trend window (7d) on the device page.
+(def poll-retention-ms (* 7 24 60 60 1000))
 
 (defonce ^:private log-lock (Object.))
-(defonce ^:private wake-lock (Object.))
+(defonce ^:private poll-lock (Object.))
 
 ;; Device :id -> that device's latest /api/display header snapshot.
 (defonce ^:private poll-state (atom {}))
 
-;; Device :id -> rolling series of {:t <epoch-ms> :ms <awake-ms>} wake durations,
-;; oldest→newest, persisted to disk so the device page's trend survives restarts. See
-;; record-wake-time! below.
-(defonce ^:private wake-history (atom {}))
+;; Device :id -> rolling series of {:t <epoch-ms> :ms <awake-ms> :v <battery-volts>}, one
+;; sample per /api/display poll, oldest→newest, persisted to disk so the device page's trends
+;; survive restarts. Either value may be nil (absent) — see record-sample! below.
+(defonce ^:private poll-history (atom {}))
 
 (def ^:private log-name-re #"device-(\d{4}-\d{2}-\d{2})\.log")
 
@@ -61,83 +61,130 @@
   []
   (str (LocalDate/now ZoneOffset/UTC)))
 
-;; --- Device wake-time trend -------------------------------------------------------------
-;; The firmware's Wake-Time header reports how long the device was awake during its previous
-;; cycle (ms) — a health signal, since a device fighting weak WiFi stays awake longer and
-;; drains the battery. We keep a rolling series of these samples per device (persisted so it
-;; survives restarts) and surface the latest value plus moving averages on the device page.
+;; --- Per-poll trends ------------------------------------------------------------------
+;; Two headers on every /api/display poll are worth a trend rather than a snapshot. Wake-Time
+;; is how long the device was awake during its previous cycle (ms) — a health signal, since a
+;; device fighting weak WiFi stays awake longer and drains the battery. Battery-Voltage is the
+;; raw cell reading, which only means anything as a slope: one value says "3.86 V", a week of
+;; them says how fast it's going. Both land in one rolling series per device (persisted so it
+;; survives restarts); the device page draws the first as a sparkline with moving averages and
+;; fits a discharge rate to the second (see series-fit and pages/battery-forecast).
 
-(defn- wake-file
-  "Where one device's wake-time series is persisted — a single EDN file in its own
-   telemetry directory, alongside its device logs."
+(defn- poll-file
+  "Where one device's poll series is persisted — a single EDN file in its own telemetry
+   directory, alongside its device logs."
+  ^File [device-id]
+  (io/file (dir device-id) "polls.edn"))
+
+(defn- legacy-wake-file
+  "Where the series lived before it carried battery voltage (wake-times.edn, samples of
+   {:t :ms} only). Read once at startup when polls.edn doesn't exist yet, so a deploy
+   doesn't throw away a week of awake-time history; the old file is left in place and
+   simply ignored once the new one has been written."
   ^File [device-id]
   (io/file (dir device-id) "wake-times.edn"))
 
-(defn- prune-wake
+(defn- prune-polls
   "Drops samples older than the retention window (by their :t timestamp)."
   [samples now]
-  (let [cutoff (- now wake-retention-ms)]
+  (let [cutoff (- now poll-retention-ms)]
     (filterv #(>= (:t %) cutoff) samples)))
 
-(defn load-wake-history!
-  "Reads each listed device's persisted wake-time series into the atom at startup, pruning
+(defn load-poll-history!
+  "Reads each listed device's persisted poll series into the atom at startup, pruning
    stale samples. Best-effort per device: a missing or corrupt file just leaves that one
    empty rather than taking the others down with it."
   [device-ids]
   (let [now (System/currentTimeMillis)]
-    (reset! wake-history
+    (reset! poll-history
       (reduce (fn [acc device-id]
-                (let [f (wake-file device-id)]
+                (let [f (poll-file device-id)
+                      f (if (.isFile f) f (legacy-wake-file device-id))]
                   (if (.isFile f)
                     (try
-                      (assoc acc device-id (prune-wake (vec (read-string (slurp f))) now))
+                      (assoc acc device-id (prune-polls (vec (read-string (slurp f))) now))
                       (catch Exception e
-                        (log/warn e (str "Could not read wake-time history for " device-id))
+                        (log/warn e (str "Could not read poll history for " device-id))
                         acc))
                     acc)))
         {} device-ids))))
 
-(defn- record-wake-time!
-  "Appends one wake-duration sample (ms) to a device's series, prunes to the retention
-   window, and persists. Ignores nil/non-positive values — the firmware sends 0 on a fresh
-   boot with no previous cycle, which would otherwise drag the averages down. Persistence
-   is best-effort: an IO error is logged and swallowed so the device poll still succeeds."
-  [device-id wake-ms]
-  (when (and wake-ms (pos? wake-ms))
-    (locking wake-lock
-      (let [now     (System/currentTimeMillis)
-            samples (prune-wake (conj (get @wake-history device-id []) {:t now :ms wake-ms}) now)]
-        (swap! wake-history assoc device-id samples)
-        (try
-          (.mkdirs (dir device-id))
-          (spit (wake-file device-id) (pr-str samples))
-          (catch Exception e
-            (log/warn e (str "Could not write wake-time history for " device-id))))))))
+(defn- record-sample!
+  "Appends one poll's sample — awake ms and battery volts — to a device's series, prunes to
+   the retention window, and persists. Non-positive values are stored as nil: the firmware
+   sends Wake-Time 0 on a fresh boot with no previous cycle, and a Battery-Voltage of -1
+   when it has no reading, and either would otherwise drag its average down. A poll with
+   neither is not recorded at all. Persistence is best-effort: an IO error is logged and
+   swallowed so the device poll still succeeds."
+  [device-id wake-ms volts]
+  (let [ms (when (and wake-ms (pos? wake-ms)) wake-ms)
+        v  (when (and volts (pos? volts)) volts)]
+    (when (or ms v)
+      (locking poll-lock
+        (let [now     (System/currentTimeMillis)
+              sample  (cond-> {:t now} ms (assoc :ms ms) v (assoc :v v))
+              samples (prune-polls (conj (get @poll-history device-id []) sample) now)]
+          (swap! poll-history assoc device-id samples)
+          (try
+            (.mkdirs (dir device-id))
+            (spit (poll-file device-id) (pr-str samples))
+            (catch Exception e
+              (log/warn e (str "Could not write poll history for " device-id)))))))))
 
-(defn wake-samples
-  "One device's rolling wake-time series, oldest→newest, as {:t :ms} maps."
+(defn poll-samples
+  "One device's rolling poll series, oldest→newest, as {:t :ms :v} maps (:ms and :v each
+   possibly absent — see record-sample!)."
   [device-id]
-  (get @wake-history device-id []))
+  (get @poll-history device-id []))
 
-(defn wake-average
-  "Mean awake-time in *milliseconds* over samples within the last window-ms, or nil when
-   the window holds no samples. Left in ms so the presentation layer owns the unit and
-   rounding (see pages/ms->secs)."
-  [samples now window-ms]
+(defn series-average
+  "Mean of one series (k = :ms or :v) over samples within the last window-ms, or nil when
+   the window holds no sample carrying it. Left in the raw unit so the presentation layer
+   owns the rounding (see pages/ms->secs)."
+  [samples k now window-ms]
   (let [cutoff (- now window-ms)
-        xs     (keep (fn [{:keys [t ms]}] (when (>= t cutoff) ms)) samples)]
+        xs     (keep (fn [{:keys [t] :as s}] (when (>= t cutoff) (get s k))) samples)]
     (when (seq xs)
       (/ (reduce + xs) (count xs)))))
+
+(defn series-fit
+  "Least-squares line through one series over samples within the last window-ms: y is
+   (f sample) for every sample where that's non-nil, x is time. Returns nil when fewer than
+   min-n samples qualify or they span less than min-span-ms — a slope fitted to an hour of
+   ADC noise is a number, not an estimate — else {:slope <y per ms> :now <fitted y at now>
+   :n :span-ms}. Times are centred on their mean before fitting so epoch-millis-sized x
+   values don't cost precision. The fitted value at now is what a caller extrapolates
+   from, rather than the newest raw sample, since the whole point of the fit is that a
+   single reading is noisy."
+  [samples f now window-ms min-n min-span-ms]
+  (let [cutoff (- now window-ms)
+        pts    (keep (fn [{:keys [t] :as s}]
+                       (when (>= t cutoff)
+                         (when-let [y (f s)] [(double t) (double y)])))
+                 samples)
+        n      (count pts)]
+    (when (and (>= n min-n)
+            (>= (- (first (last pts)) (first (first pts))) min-span-ms))
+      (let [tm  (/ (reduce + (map first pts)) n)
+            ym  (/ (reduce + (map second pts)) n)
+            sxx (reduce + (map (fn [[t _]] (let [d (- t tm)] (* d d))) pts))
+            sxy (reduce + (map (fn [[t y]] (* (- t tm) (- y ym))) pts))]
+        (when (pos? sxx)
+          (let [slope (/ sxy sxx)]
+            {:slope   slope
+             :now     (+ ym (* slope (- now tm)))
+             :n       n
+             :span-ms (long (- (first (last pts)) (first (first pts))))}))))))
 
 ;; --- Latest poll snapshot ---------------------------------------------------------------
 
 (defn record-poll!
   "Takes the telemetry parsed off one device's /api/display poll: keeps it as that
-   device's latest snapshot for the device page's summary cards, and feeds its Wake-Time into
-   that device's rolling trend."
+   device's latest snapshot for the device page's summary cards, and feeds its Wake-Time and
+   Battery-Voltage into that device's rolling trends."
   [device-id status]
   (swap! poll-state assoc device-id status)
-  (record-wake-time! device-id (:wake-time status)))
+  (record-sample! device-id (:wake-time status) (:battery-voltage status)))
 
 (defn poll-status
   "One device's most recent /api/display poll telemetry, or nil if it hasn't polled since

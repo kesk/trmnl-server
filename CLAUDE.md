@@ -807,9 +807,10 @@ version, and 3.6x the entire screen composition).
 - **`trmnl-server.server.telemetry`** — everything each device reports about itself and
   where it's kept: that device's latest `/api/display` header snapshot
   (`record-poll!`/`poll-status`),
-  its rolling wake-time series, and its raw `/api/log` bodies on disk. Every fn takes a
+  its rolling per-poll series (awake time + battery voltage), and its raw `/api/log` bodies
+  on disk. Every fn takes a
   device `:id`, and on disk that's a subdirectory per device
-  (`logs/<id>/device-<date>.log`, `logs/<id>/wake-times.edn`). Subdirectories rather
+  (`logs/<id>/device-<date>.log`, `logs/<id>/polls.edn`). Subdirectories rather
   than mangled filenames specifically because `prune-logs!` then comes out right for
   free — its cap is a count of files in a directory, so a shared one would let a chatty
   display evict a quiet one's days. See the logging note below.
@@ -937,18 +938,44 @@ the *current* day even while you're viewing an older one.
 
 The **Awake card** surfaces the firmware's `Wake-Time` header (how long the device was
 awake during its previous cycle, ms — a health signal, since fighting weak WiFi keeps it
-awake longer and drains the battery): the latest value in seconds plus moving averages over
-1h/6h/24h/7d windows. Every device `/api/display` poll feeds one sample into `telemetry/record-poll!`,
-which keeps a rolling `wake-history` series of `{:t :ms}` maps per device, **persisted to
-disk** as
-`wake-times.edn` (in that display's `$DEVICE_LOG_DIR/<id>/`, alongside its device logs) so
-the trend survives
-restarts/redeploys — `load-wake-history!` reloads every registered device's series in
-`start!`. Samples are pruned to a 7-day
-window (`wake-retention-ms`, which also sets the longest average window) and non-positive
-values are dropped (the firmware sends `0` on a fresh boot with no previous cycle). Writes are
-best-effort under `wake-history-lock` and never break the serving path. Unlike the other cards
-this one is history-based, not a single snapshot — an empty series shows "no samples yet".
+awake longer and drains the battery): the latest value in seconds, a sparkline, and moving
+averages over 1h/6h/24h/7d windows. Every device `/api/display` poll feeds one sample into
+`telemetry/record-poll!`, which keeps a rolling `poll-history` series of `{:t :ms :v}` maps
+per device — `:v` being the poll's `Battery-Voltage`, see the next paragraph — **persisted
+to disk** as `polls.edn` (in that display's `$DEVICE_LOG_DIR/<id>/`, alongside its device
+logs) so the trends survive restarts/redeploys. `load-poll-history!` reloads every
+registered device's series in `start!`, falling back to the pre-voltage `wake-times.edn`
+(samples of `{:t :ms}` only) when `polls.edn` doesn't exist yet, so the first deploy of
+this keeps the week of awake history; the old file is then left alone and ignored.
+Samples are pruned to a 7-day window (`poll-retention-ms`, which also sets the longest
+average window). Either value may be absent from a sample: non-positive readings are
+stored as nil (the firmware sends `Wake-Time: 0` on a fresh boot with no previous cycle,
+and `Battery-Voltage: -1` with no reading), and a poll with neither isn't recorded at all —
+`sparkline`, `series-average` and `series-fit` filter on the key they're reading. Writes
+are best-effort under `poll-lock` and never break the serving path. The headline figures
+fall back to the newest sample in the series, so a restart doesn't leave "no data yet"
+above a week's graph; an empty series shows "no samples yet".
+
+The **Battery card** is a number, not a graph — a voltage sparkline was tried on 2026-09-19
+and dropped the same day, because a week of LiPo voltage is a nearly flat line that says
+nothing to the eye. What the recorded `:v` series is for instead is the **discharge
+estimate** under the pill: `pages/battery-forecast` fits a straight line
+(`telemetry/series-fit`, plain least squares) through the last week's samples and shows
+`≈ N days left · −X %/day` (or `charging` / `steady` when it isn't draining). Two things
+about it are load-bearing. The fit is done in **percent, not volts**: `battery-percent`
+maps each reading through `lipo-curve`, a generic single-cell LiPo voltage→charge table
+with the long 3.9–3.7 V plateau a LiPo actually has, and charge drains linearly under the
+display's constant load even though voltage doesn't — so a line through percent
+extrapolates honestly where a line through volts would sit on the plateau seeing nothing
+and then be surprised by the knee. (That curve also replaced the old straight 3.0–4.2 V
+percent, which read a 3.86 V cell as 72% when it's nearer 57.) And it's a **current-rate
+extrapolation, not a validated model**: a week is far short of a full discharge (a couple
+of months at the 15-minute refresh), it refuses to fit anything under a day / 24 samples,
+and its earliest estimates wobble. The percent stays a "~" figure — the curve is the
+chemistry's, not this pack's, and the firmware reads under load — but the days-left is
+oddly the more trustworthy number, since it depends on the curve's slope rather than its
+absolute position. The firmware is no help here: the OG sends the raw ADC reading and
+nothing else (`lipo.soc()` in `display.cpp` is the fuel gauge on newer boards).
 
 The CLI batch-render feedback in `main` (`"Wrote out/…"`, `"Rendering …"`) is deliberately
 still `println` — that's interactive terminal output for a human running the command,

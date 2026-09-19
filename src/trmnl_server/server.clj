@@ -715,7 +715,7 @@
         base-url (str "http://" (lan-ip) ":" port)]
     (devices/load!)
     (auth/load!)
-    (telemetry/load-wake-history! (map :id (devices/all)))
+    (telemetry/load-poll-history! (map :id (devices/all)))
     (sync-aliases!)
     (httpkit/run-server (handler base-url) {:port port})
     (log/info (str "TRMNL server listening on " base-url))
