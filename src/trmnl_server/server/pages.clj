@@ -637,8 +637,10 @@
          [:div.cards.cards-health
           [:div.card
            [:div.k "Battery"]
+           ;; Two decimals: that's the resolution the firmware reports at (3.86, 3.87 —
+           ;; 10 mV steps), so a third would be a digit the device never sent.
            [:div.v (if voltage
-                     (String/format java.util.Locale/US "%.3f V" (to-array [voltage]))
+                     (String/format java.util.Locale/US "%.2f V" (to-array [voltage]))
                      "—")]
            [:span {:class (str "pill " batt-pill)}
             (if voltage (str "~" (Math/round (double pct)) "% · " batt-lbl) "no data yet")]
