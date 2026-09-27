@@ -1,15 +1,7 @@
 #!/usr/bin/env bb
 ;; Builds an uberjar and ships it to dashboard-pi, then restarts the systemd service.
 ;;
-;; Two targets, deliberately independent of each other on the same Pi:
-;;
-;;   (default)  the live service — ~/trmnl-server, port 8080, unit trmnl-server
-;;   --test     a second instance — ~/trmnl-server-test, port 8081, unit
-;;              trmnl-server-test, with its own registry, archive and device logs
-;;
-;; The test target exists to rehearse a change against a real display before it
-;; touches the one on the wall — notably registering a device, which is hard to
-;; practise any other way. Nothing is shared between them but the host.
+;; Target: the live service — ~/trmnl-server, port 8080, unit trmnl-server.
 ;;
 ;; The device registry (devices.edn) is *not* shipped by default: the local copy is a
 ;; development one with placeholder MAC addresses, and overwriting a real registry
@@ -20,7 +12,7 @@
 ;; with server-generated tokens that exist nowhere else. --force overrides.
 
 (require '[babashka.process :refer [shell]]
-         '[babashka.fs :as fs])
+  '[babashka.fs :as fs])
 
 (def host "dashboard-pi")
 (def jar-path "target/trmnl-server.jar")
@@ -31,11 +23,11 @@
 (def force? (contains? args "--force"))
 
 (def target
-  (if (contains? args "--test")
-    {:label "test" :dir "trmnl-server-test" :unit "trmnl-server-test" :port 8081
-     :unit-src "deploy/trmnl-server-test.service"}
-    {:label "live" :dir "trmnl-server" :unit "trmnl-server" :port 8080
-     :unit-src "deploy/trmnl-server.service"}))
+  {:label    "live"
+   :dir      "trmnl-server"
+   :unit     "trmnl-server"
+   :port     8080
+   :unit-src "deploy/trmnl-server.service"})
 
 (let [{:keys [label dir unit port]} target]
   (println (str "Target: " label " (~/" dir ", port " port ", unit " unit ")")))
@@ -45,7 +37,7 @@
 (println "Build uber jar")
 (shell "clojure" "-T:build" "uber")
 
-;; Harmless for the live target, and what makes a first --test deploy work at all.
+;; Harmless on an existing install, and what makes a first deploy to a fresh Pi work at all.
 (shell "ssh" host (str "mkdir -p " remote-dir))
 
 (println "Copy jar")
@@ -72,13 +64,13 @@
       (System/exit 1))
     (println "Copy device registry")
     (shell "scp" devices-path (str host ":" remote-dir "/devices.edn")))
-  ;; Not pushing: at least make it obvious when the target has no registry at all, since
-  ;; the server will start but refuse every device poll. On a fresh --test deploy that is
-  ;; the *intended* state — the display announces its MAC on its own screen and on /, where
-  ;; it can be registered by clicking it.
+  ;; Not pushing: say so when the target has no registry at all. The server copes — a
+  ;; display that polls provisions itself and waits on / to be configured — but none of
+  ;; them gets a forecast until somebody does, which is expected on a fresh Pi and a
+  ;; problem anywhere else.
   (when-not (remote-registry?)
-    (println "NOTE: no devices.edn on" host (str remote-dir " — every device poll will be rejected"))
-    (println "      until one exists. Plug a display in and register it from / .")))
+    (println "NOTE: no devices.edn on" host (str remote-dir " — no display is configured, so"))
+    (println "      each one that polls will show its setup screen until it's configured from / .")))
 
 ;; Same shape as the devices.edn note above, and for the same reason: the admin password
 ;; lives only on the Pi (deploy never ships it), so the only thing this end can usefully
@@ -87,8 +79,7 @@
                           "ssh" host (str "test -f " remote-dir "/admin.env"))))
   (println "NOTE: no admin.env on" host (str remote-dir " — / and every /devices/ page will"))
   (println "      be open to anyone who can reach the server, including the forms that")
-  (println "      register and edit displays. Fix with: bb set-password.clj"
-    (if (contains? args "--test") "--test" "")))
+  (println "      register and edit displays. Fix with: bb set-password.clj"))
 
 (println "Copy service file")
 (shell "scp" (:unit-src target) (str host ":~/" (:unit target) ".service"))

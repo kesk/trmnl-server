@@ -2,7 +2,6 @@
 ;; Sets the admin password for the human-facing pages (/, /status, /archive).
 ;;
 ;;   bb set-password.clj            live service  — ~/trmnl-server/admin.env on the Pi
-;;   bb set-password.clj --test     test instance — ~/trmnl-server-test/admin.env
 ;;   bb set-password.clj --print    print the line, change nothing (local dev, or paste
 ;;                                  it somewhere yourself)
 ;;
@@ -21,7 +20,7 @@
 ;; the stored hash, which gets a fresh salt each time), so everyone logged in is logged out.
 
 (require '[babashka.process :refer [shell process]]
-         '[clojure.string :as str])
+  '[clojure.string :as str])
 
 (def host "dashboard-pi")
 
@@ -29,9 +28,7 @@
 (def print-only? (contains? args "--print"))
 
 (def target
-  (if (contains? args "--test")
-    {:label "test" :dir "trmnl-server-test" :unit "trmnl-server-test" :port 8081}
-    {:label "live" :dir "trmnl-server" :unit "trmnl-server" :port 8080}))
+  {:label "live" :dir "trmnl-server" :unit "trmnl-server" :port 8080})
 
 (def remote-dir (str "~/" (:dir target)))
 

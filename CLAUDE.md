@@ -76,22 +76,12 @@ bb deploy.clj
 # It's for seeding a target that hasn't got one; --force overrides it.
 bb deploy.clj --devices
 
-# Deploy to the *test* instance instead: a second, independent service on the same Pi
-# (~/trmnl-server-test, port 8081, unit trmnl-server-test, see
-# deploy/trmnl-server-test.service). Own working directory, so own devices.edn, admin.env,
-# archive/ and logs/ — nothing is shared with the live service but the host. It exists to rehearse
-# a change against a real display before it touches the one on the wall; registering a
-# device is the case that can't be tested any other way. Combines with --devices.
-bb deploy.clj --test
-
 # Set the admin password for the human-facing pages. Prompts with echo off, hashes the
 # password through the server's own code (salted PBKDF2), writes ~/trmnl-server/admin.env
 # on the Pi with umask 077 and restarts the service. The plaintext never reaches the Pi,
-# a command line, or the terminal — only the hash does. --test targets the test instance;
-# --print just prints the ADMIN_PASSWORD_HASH= line and changes nothing. Setting a
+# a command line, or the terminal — only the hash does. --print just prints the ADMIN_PASSWORD_HASH= line and changes nothing. Setting a
 # password logs out every existing session (fresh salt → new session signing key).
 bb set-password.clj
-bb set-password.clj --test
 bb set-password.clj --print
 
 # What that script shells out to: reads one password from *stdin* (never argv, which `ps`
@@ -516,9 +506,8 @@ version, and 3.6x the entire screen composition).
   Keyed by a salt (`id-salt`, `$ID_SALT_FILE`, 16 bytes, created on first run) because a
   bare MAC hash is brute-forceable — a known OUI leaves ~16M candidates — and ids are
   visible on the ungated `/images/<id>/…` route, so recovering a MAC from one would hand
-  over a display's token. Two consequences: the live and test instances have separate salts
-  and so disagree about ids for the same display, and losing `id-salt` re-ids every
-  *unconfigured* display (configured ones carry their id in the file). Deriving from the MAC
+  over a display's token. One consequence: losing `id-salt` re-ids every *unconfigured*
+  display (configured ones carry their id in the file). Deriving from the MAC
   is not what the `:id`/`:name` split forbids — that rule is about deriving an id from a
   mutable *label*; a MAC is immutable hardware identity, so there is no rename to be
   confused by.
