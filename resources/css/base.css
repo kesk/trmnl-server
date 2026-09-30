@@ -1,5 +1,10 @@
 *{box-sizing:border-box}
 :root{
+  /* Declared so the parts the browser draws itself follow the theme with the rest: the
+     Hours <select>'s arrow and its dropped-open list (see form.css), and scrollbars. The
+     variables below only reach what our own rules paint, so without this a dark page gets
+     a light popup list hanging off it. */
+  color-scheme:light dark;
   --bg:#fff;--fg:#1c1c1a;--muted:#87867e;--card:#f7f7f4;--bd:#e6e5df;--zebra:#faf9f6;
   --err-bg:#fcecea;--err-fg:#9f332d;--warn-bg:#fbf1dd;--warn-fg:#875812;--ok-bg:#e6f2e6;--ok-fg:#2f6b32;
 }

@@ -251,7 +251,34 @@ version, and 3.6x the entire screen composition).
   `default-forecast-hours`/`default-forecast-location` are
   the single source of truth for "prognosis length" and "where" — callers override
   them via `--hours`/`--lat`/`--lon` (main) rather than hardcoding a point count or
-  coordinates themselves. The server no longer reaches for
+  coordinates themselves. **`even-label-hours`** is the rule behind that 23 rather
+  than the value: the point counts `hour-axis-labels` can label at even spacing, i.e.
+  those where `(hours - 1)` divides by `(dec axis-label-count)` — `[12 23 34 45]`,
+  derived from the label count so the two can't drift. 24 is the instructive near
+  miss (ten 2-hour gaps and one 3-hour one). It's what the registry forms offer in
+  their Hours dropdown and **not** a validation rule: `entry-problems` still takes
+  any positive integer, and `--hours`/`$FORECAST_HOURS` are unconstrained.
+
+  **The list stops at 45 for a second reason, and it's SMHI's, not the label
+  arithmetic's.** Every x-coordinate on the screen comes from a point's *index*
+  (`idx->x`, five copies of the same linear expression), so the chart assumes points
+  are evenly spaced **in time** — and SMHI's point forecast is hourly only for its
+  first stretch before jumping straight to 6-hour steps (not the "eg 3, 6 and 12 h"
+  its docs give as examples), which the chart would go on plotting at hourly pitch.
+  That boundary is anchored to the **calendar, not the run**: it sits at 00:00Z three
+  days out, so the hourly run shrinks by a point an hour through the UTC day and
+  resets at midnight. Measured against `times.json` (2026-08-16): a 14:00Z run gave
+  59 hourly points and the 15:00Z run 58, boundary unmoved at 2026-08-19T00:00Z —
+  i.e. `73 - H` points for UTC hour `H`, from 73 at midnight down to 50 by 23:00Z. So
+  45 clears the worst case by five, while 56 (the next count the label rule allows)
+  would overrun it from 18:00Z **every day**. Check `times.json` rather than a single
+  forecast before raising this — a spot check in the morning shows 56 working fine:
+
+  ```bash
+  curl -s 'https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1/times.json'
+  ```
+
+  The server no longer reaches for
   `default-forecast-location` at all: every display's coordinates are required fields
   of its `devices.edn` entry. `$FORECAST_HOURS` survives as the server-wide fallback
   for an entry that omits `:hours`.
@@ -766,7 +793,16 @@ version, and 3.6x the entire screen composition).
   control and the "auth disabled" pill they carry in return. `configure-device` and
   `edit-device` are the two registry forms — the only pages here that ask for something
   rather than report it. Both ask for the same two things (what to call this display, where
-  it is); `configure-device` is the one a provisional display gets, and it issues nothing. They share a `field` helper and take `values`/`errors`, so a
+  it is, plus an optional forecast length); `configure-device` is the one a provisional
+  display gets, and it issues nothing. They share a `field` helper — and a `select-field`
+  one, used by exactly one field: **Hours is a dropdown, not a number box**, offering blank
+  ("server default") plus `core/even-label-hours`, because every other count gives a
+  visibly uneven hour axis and a free box mostly invited typing `24`. It still isn't a
+  check (`entry-problems` accepts any positive integer, and a hand-written `devices.edn`
+  may say anything), which is why a current value that *isn't* one of the offered counts is
+  kept as an option of its own: a `<select>` with no matching option selects its **first**,
+  so dropping it would mean opening the edit form on a display set to 24 and pressing Save
+  silently reset it to the default. Both take `values`/`errors`, so a
   refused submission comes back with every box still holding what was typed (`errors`
   being non-nil is also what suppresses the prefilled defaults, so a box somebody
   deliberately cleared doesn't silently refill itself); the *validation* is
