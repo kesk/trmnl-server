@@ -949,22 +949,23 @@ The **Battery card** is a number, not a graph — a voltage sparkline was tried 
 and dropped the same day, because a week of LiPo voltage is a nearly flat line that says
 nothing to the eye. What the recorded `:v` series is for instead is the **discharge
 estimate** under the pill: `pages/battery-forecast` fits a straight line
-(`telemetry/series-fit`, plain least squares) through the last week's samples and shows
-`≈ N days left · −X %/day` (or `charging` / `steady` when it isn't draining). Two things
-about it are load-bearing. The fit is done in **percent, not volts**: `battery-percent`
-maps each reading through `lipo-curve`, a generic single-cell LiPo voltage→charge table
-with the long 3.9–3.7 V plateau a LiPo actually has, and charge drains linearly under the
-display's constant load even though voltage doesn't — so a line through percent
-extrapolates honestly where a line through volts would sit on the plateau seeing nothing
-and then be surprised by the knee. (That curve also replaced the old straight 3.0–4.2 V
-percent, which read a 3.86 V cell as 72% when it's nearer 57.) And it's a **current-rate
-extrapolation, not a validated model**: a week is far short of a full discharge (a couple
-of months at the 15-minute refresh), it refuses to fit anything under a day / 24 samples,
-and its earliest estimates wobble. The percent stays a "~" figure — the curve is the
-chemistry's, not this pack's, and the firmware reads under load — but the days-left is
-oddly the more trustworthy number, since it depends on the curve's slope rather than its
-absolute position. The firmware is no help here: the OG sends the raw ADC reading and
-nothing else (`lipo.soc()` in `display.cpp` is the fuel gauge on newer boards).
+(`telemetry/series-fit`, plain least squares) through the last week's voltages and shows
+`≈ N days left · −X mV/day` (or `charging` / `steady` when it isn't draining). Two things
+about it are load-bearing. The fit is done in **volts, and run down to `cutoff-volts`**
+(3.10 V, provisional): it was done in percent through `lipo-curve` until 2026-10-03, which
+said "8 days" for a display at 3.63 V losing 10 mV/day, because percent-per-volt varies
+about fourfold across the curve — a rate measured on the steep 3.7 V stretch got projected
+across the flat knee below it. The display kept running for weeks. Voltage falls
+near-linearly under constant load until the knee, which a week of data never reaches. The
+curve (`battery-percent`, a generic single-cell LiPo table with the 3.9–3.7 V plateau)
+still drives the "~N%" and the LOW/watch pill, but now ends at `cutoff-volts` rather than
+3.27 V. **`cutoff-volts` is a guess**: when a display actually dies, set it to the last
+voltage it reported. And it's a **current-rate extrapolation, not a validated model**: it
+runs long if the knee arrives before the cutoff, it refuses to fit anything under a day /
+24 samples, and its earliest estimates wobble. The percent stays a "~" figure — the curve
+is the chemistry's, not this pack's, and the firmware reads under load. The firmware is no
+help here: the OG sends the raw ADC reading and nothing else (`lipo.soc()` in `display.cpp`
+is the fuel gauge on newer boards).
 
 The CLI batch-render feedback in `main` (`"Wrote out/…"`, `"Rendering …"`) is deliberately
 still `println` — that's interactive terminal output for a human running the command,

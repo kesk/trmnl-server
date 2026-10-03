@@ -144,24 +144,29 @@
       :else            [(str "stale · " failures " failed attempt" (when (> failures 1) "s"))
                         (if (> failures 1) "pill-low" "pill-watch")])))
 
+(def ^:private cutoff-volts
+  "Where the battery counts as empty: 0% on lipo-curve and the target battery-forecast
+   extrapolates to. A provisional figure — a typical LiPo protection circuit cuts out
+   somewhere around 3.0 V, and this pack's real cutoff is only known once a display has
+   actually died on it; set it to the last voltage that display reported."
+  3.10)
+
 (def ^:private lipo-curve
   "Open-circuit voltage → state of charge for a single LiPo cell, as [volts percent]
    pairs from full to empty. A generic curve for the chemistry, not one measured on this
    pack, and the firmware reads under load (WiFi up), which sits a little below rest — so
-   the percent it yields is a \"~\" figure. Its *shape* is what matters more: the long
-   plateau through the 3.9–3.7 V range is where a straight 3.0–4.2 V line used to read
-   \"72%\" for a cell that's nearer 60, and where a slope fitted in volts would see almost
-   nothing while the charge drains away underneath. Charge drains linearly under the
-   display's near-constant load, so mapping through this first is what lets
-   battery-forecast fit a straight line."
+   the percent it yields is a \"~\" figure. The long plateau through the 3.9–3.7 V range is
+   where a straight 3.0–4.2 V line used to read \"72%\" for a cell that's nearer 60. Below
+   3.6 V the cell is on its knee and the voltage falls away fast while the last few percent
+   last; the bottom of the curve runs to cutoff-volts rather than to the 3.27 V it used to
+   end at, which read a display still running happily at 3.63 V as nearly empty."
   [[4.20 100] [4.15 95] [4.11 90] [4.08 85] [4.02 80] [3.98 75] [3.95 70] [3.91 65]
    [3.87 60] [3.85 55] [3.84 50] [3.82 45] [3.80 40] [3.79 35] [3.77 30] [3.75 25]
-   [3.73 20] [3.71 15] [3.69 10] [3.61 5] [3.27 0]])
+   [3.73 20] [3.71 15] [3.69 10] [3.61 5] [3.40 2] [3.10 0]])
 
 (defn- battery-percent
   "Charge estimate for a raw battery_voltage reading: linear interpolation along
-   lipo-curve, clamped to its ends. A double — callers round for display, and
-   battery-forecast wants the unrounded value to fit against."
+   lipo-curve, clamped to its ends. A double — callers round for display."
   [voltage]
   (when voltage
     (let [v (double voltage)]
@@ -178,29 +183,31 @@
 
 (defn- battery-forecast
   "How the battery is trending, from a straight line fitted through the last week of poll
-   samples in percent space (see lipo-curve for why percent rather than volts): nil until
-   there's at least a day of samples, else {:per-day <percent per day, signed> :days-left
-   <estimate, or nil when it isn't draining>}. Days left extrapolates the fitted value at
-   now, not the newest raw reading. A week is far short of a full discharge (a couple of
-   months at the 15-minute refresh), so this is a current-rate extrapolation like a
-   laptop's, not a validated model — and the earliest estimates, off a day's worth of
-   samples, wobble accordingly."
+   voltages: nil until there's at least a day of samples, else {:mv-per-day <millivolts
+   per day, signed> :days-left <estimate, or nil when it isn't draining>}. Fitted in volts
+   and run down to cutoff-volts, not fitted in percent: percent per volt changes by a
+   factor of four across lipo-curve, so a rate measured on its steep stretch and projected
+   across the flat one gave \"8 days\" for a display with weeks left. A cell's voltage
+   falls near-linearly under constant load until the knee, which a week is nowhere near.
+   Days left extrapolates the fitted value at now, not the newest raw reading. A current-
+   rate extrapolation like a laptop's, not a validated model — it runs long if the knee
+   arrives before cutoff-volts, and the earliest estimates, off a day's samples, wobble."
   [samples now]
   (when-let [{:keys [slope] fitted :now}
-             (telemetry/series-fit samples #(some-> (:v %) battery-percent)
-               now telemetry/poll-retention-ms 24 day-ms)]
-    (let [per-day (* slope day-ms)]
-      {:per-day   per-day
-       :days-left (when (< per-day -0.01) (/ (max fitted 0.0) (- per-day)))})))
+             (telemetry/series-fit samples :v now telemetry/poll-retention-ms 24 day-ms)]
+    (let [v-per-day (* slope day-ms)]
+      {:mv-per-day (* 1000.0 v-per-day)
+       :days-left  (when (< v-per-day -0.0005)
+                     (/ (max (- fitted cutoff-volts) 0.0) (- v-per-day)))})))
 
 (defn- forecast-str
-  "battery-forecast as one muted line under the Battery pill: '≈ 41 days left · −1.5 %/day',
+  "battery-forecast as one muted line under the Battery pill: '≈ 41 days left · −10 mV/day',
    or, when it isn't draining, just the rate ('steady', 'charging'). Days are rounded and
    capped at 'over a year', past which the digits are noise."
-  [{:keys [per-day days-left]}]
-  (let [rate (String/format java.util.Locale/US "%+.1f %%/day" (to-array [per-day]))]
+  [{:keys [mv-per-day days-left]}]
+  (let [rate (String/format java.util.Locale/US "%+.0f mV/day" (to-array [mv-per-day]))]
     (cond
-      (nil? days-left)  (str (if (> per-day 0.5) "charging" "steady") " · " rate)
+      (nil? days-left)  (str (if (> mv-per-day 5.0) "charging" "steady") " · " rate)
       (< days-left 1)   (str "under a day left · " rate)
       (> days-left 366) (str "over a year left · " rate)
       :else             (str "≈ " (Math/round (double days-left)) " days left · " rate))))
