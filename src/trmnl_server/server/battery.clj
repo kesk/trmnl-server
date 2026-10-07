@@ -14,8 +14,10 @@
 (def ^:private lipo-curve
   "Open-circuit voltage → state of charge for a single LiPo cell, as [volts percent]
    pairs from full to empty. A generic curve for the chemistry, not one measured on this
-   pack, and the firmware reads under load (WiFi up), which sits a little below rest — so
-   the percent it yields is a \"~\" figure. The long plateau through the 3.9–3.7 V range is
+   pack. The firmware takes its reading right after waking, before WiFi is turned on
+   (bl.cpp: \"BEFORE WiFi is turned on\"), so it is nearer rest than a reading mid-transmit
+   would be, but the ESP32 is awake and drawing, so it still sits a little below it — the
+   percent it yields is a \"~\" figure. The long plateau through the 3.9–3.7 V range is
    where a straight 3.0–4.2 V line used to read \"72%\" for a cell that's nearer 60. Below
    3.6 V the cell is on its knee and the voltage falls away fast while the last few percent
    last; the bottom of the curve runs to cutoff-volts rather than to the 3.27 V it used to

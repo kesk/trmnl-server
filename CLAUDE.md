@@ -995,7 +995,8 @@ still drives the "~N%" and the LOW/watch pill, but now ends at `cutoff-volts` ra
 voltage it reported. And it's a **current-rate extrapolation, not a validated model**: it
 runs long if the knee arrives before the cutoff, it refuses to fit anything under a day /
 24 samples, and its earliest estimates wobble. The percent stays a "~" figure — the curve
-is the chemistry's, not this pack's, and the firmware reads under load. The firmware is no
+is the chemistry's, not this pack's, and the reading is taken with the ESP32 awake but
+before WiFi is on (`bl.cpp`), so it is near rest, not at it. The firmware is no
 help here: the OG sends the raw ADC reading and nothing else (`lipo.soc()` in `display.cpp`
 is the fuel gauge on newer boards).
 
