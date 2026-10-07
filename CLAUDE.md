@@ -22,7 +22,9 @@ clojure -M:run
 # out/demo-rain-test(.png|-1bit.png), a chart stress-test day (see demo below),
 # and out/demo-stale.png, one season's screen wearing the stale-warning badge
 # (core/stamp-stale-badge, what a device sees when a render falls back to the
-# last good image — 1-bit only, since the badge is what's being looked at)
+# last good image — 1-bit only, since the badge is what's being looked at).
+# The five screens each wear a different battery level, so between them they show
+# every state the header's battery icon has (see core/draw-battery).
 clojure -M -m trmnl-server.main --demo
 
 # Override how many hourly points are fetched/rendered (default 23) —
@@ -128,8 +130,8 @@ this is otherwise a `deps.edn`-only exploratory project (no Leiningen).
 
 ## Architecture
 
-Fourteen namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
-`demo`, `labels`, `core`, `main`); `server` and the seven `server.*` ones under it are
+Fifteen namespaces, cleanly separated by concern. Six are the domain (`image`, `smhi`,
+`demo`, `labels`, `core`, `main`); `server` and the eight `server.*` ones under it are
 the serving path, which only `--serve` exercises.
 
 **The server is multi-device.** One Pi serves several TRMNL displays, each with its own
@@ -235,7 +237,10 @@ version, and 3.6x the entire screen composition).
   (`forecast-screen`, arity-1 accepts any point seq matching smhi's shape, arity-2
   additionally takes the `{:lat :lon}` location that seq is for [used only to place
   the header icon's day/night variant via `smhi/night?`; arity-1 defaults it to
-  Gothenburg, which is also what `--demo` renders], arity-0 fetches `live-points` of
+  Gothenburg, which is also what `--demo` renders], arity-3 adds an options map whose one
+  key, `:battery-percent`, is drawn as the header's battery icon [`draw-battery`, four
+  segments, `battery-bars` of them lit by nearest quarter; no estimate means no icon, never
+  an empty one], arity-0 fetches `live-points` of
   `default-forecast-hours` [23] points for `default-forecast-location` [Gothenburg]),
   and is where domain-specific
   layout/chart logic lives (e.g. `combined-chart`, `nice-bounds` for
@@ -476,7 +481,7 @@ version, and 3.6x the entire screen composition).
   registry — whose `:id`s are themselves validated to `[a-z0-9-]+`
   at load. So no route can be walked out of its directory.
 
-  The work behind the routes is seven namespaces under `trmnl-server.server.*`, none of
+  The work behind the routes is eight namespaces under `trmnl-server.server.*`, none of
   which know about HTTP:
 
 - **`trmnl-server.server.devices`** — the device registry, and the only namespace that
@@ -676,8 +681,9 @@ version, and 3.6x the entire screen composition).
   radio powered — exactly what `/status`'s wake-time trend is watching for). Keying on
   the device rather than on `[lat lon hours]` means two displays in the same town would
   fetch twice; that's accepted deliberately, since sharing an entry would make it
-  ambiguous which device's archive a render belongs to. `current-image` takes a device,
-  renders via
+  ambiguous which device's archive a render belongs to. `current-image` takes a device
+  and, second, `{:battery-voltage v}` — the reading its own poll just carried, which
+  `server`'s `display-response` hands over — and renders via
   `core/forecast-screen` (fed `core/live-points` of the device's `:lat`/`:lon` and its
   `:hours`, else `$FORECAST_HOURS`, else `core/default-forecast-hours`)
   + `image/->1-bit`, encodes to PNG bytes in
@@ -792,6 +798,32 @@ version, and 3.6x the entire screen composition).
   builds side by side. Firmware moved up into Device health, where the rest of that
   display's own facts are, and what was left (forecast freshness, last poll) is now
   "Serving".
+
+- **`trmnl-server.server.battery`** — what a raw `Battery-Voltage` means: the LiPo
+  discharge curve, `cutoff-volts` and `percent`, with no dependencies. Two readers, which
+  is why it isn't in either: `pages` (the Battery card's "~N%" and the fit down to the
+  cutoff) and `render` (the header's battery icon, below). `percent` takes a reading at
+  face value, so `render/battery-percent` drops the OG's `-1` "no reading" first — left
+  to `percent` it clamps to 0, and the wall would show an empty battery for a sensor that
+  merely didn't answer. (`pages` still passes the -1 through, and prints "0% · LOW" for
+  it; that is the page's own quirk, not this one's.)
+
+  **The battery icon on the screen** is drawn from the voltage in the poll that triggers
+  the render, so it is as fresh as the render and no fresher: a screen served from the
+  10-minute cache keeps the icon it was drawn with, which for a pack that moves a few mV a
+  day is nothing, and is why the cache isn't keyed on it. It is the raw reading, not the
+  fitted one `battery-forecast` uses — the fit needs a day of samples and the icon should
+  work from the first poll — so a display sitting on a boundary (the segments change at
+  about 3.70, 3.80, 3.89 and 4.10 V) can flip between two segment counts from poll to
+  poll. Left alone deliberately: "roughly" is the brief, and a debounce would be a second
+  piece of state to explain a one-segment wobble.
+
+  It also says what the percent says, no more. The empty outline is under about 12%
+  (below roughly 3.70 V), the same region the page calls LOW — so a pack on the knee at
+  3.63 V draws an empty outline while the days-left line under the page's pill, which
+  knows the drain rate, says weeks. The icon is the charge; it is not a countdown. The
+  archive doesn't carry it: dedupe and the `.edn` sidecar are the forecast data, which has
+  no battery in it.
 
 - **`trmnl-server.server.telemetry`** — everything each device reports about itself and
   where it's kept: that device's latest `/api/display` header snapshot
@@ -951,13 +983,13 @@ nothing to the eye. What the recorded `:v` series is for instead is the **discha
 estimate** under the pill: `pages/battery-forecast` fits a straight line
 (`telemetry/series-fit`, plain least squares) through the last week's voltages and shows
 `≈ N days left · −X mV/day` (or `charging` / `steady` when it isn't draining). Two things
-about it are load-bearing. The fit is done in **volts, and run down to `cutoff-volts`**
-(3.10 V, provisional): it was done in percent through `lipo-curve` until 2026-10-03, which
+about it are load-bearing. The fit is done in **volts, and run down to `battery/cutoff-volts`**
+(3.10 V, provisional): it was done in percent through the discharge curve until 2026-10-03, which
 said "8 days" for a display at 3.63 V losing 10 mV/day, because percent-per-volt varies
 about fourfold across the curve — a rate measured on the steep 3.7 V stretch got projected
 across the flat knee below it. The display kept running for weeks. Voltage falls
 near-linearly under constant load until the knee, which a week of data never reaches. The
-curve (`battery-percent`, a generic single-cell LiPo table with the 3.9–3.7 V plateau)
+curve (`battery/percent`, a generic single-cell LiPo table with the 3.9–3.7 V plateau)
 still drives the "~N%" and the LOW/watch pill, but now ends at `cutoff-volts` rather than
 3.27 V. **`cutoff-volts` is a guess**: when a display actually dies, set it to the last
 voltage it reported. And it's a **current-rate extrapolation, not a validated model**: it

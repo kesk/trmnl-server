@@ -242,16 +242,18 @@
   [request fallback-base]
   (with-device request
     (fn [device]
-      (when-let [status (parse-display-headers (:headers request))]
-        (telemetry/record-poll! (:id device) status))
-      (let [filename (render/serve-filename (render/current-image device))]
-        (json-response {:filename          filename
-                        :image_url         (image-url (base-url request fallback-base) (:id device) filename)
-                        :image_url_timeout 0
-                        :refresh_rate      refresh-rate-seconds
-                        :reset_firmware    false
-                        :update_firmware   false
-                        :firmware_url      nil})))
+      (let [status (parse-display-headers (:headers request))]
+        (when status
+          (telemetry/record-poll! (:id device) status))
+        (let [filename (render/serve-filename
+                         (render/current-image device {:battery-voltage (:battery-voltage status)}))]
+          (json-response {:filename          filename
+                          :image_url         (image-url (base-url request fallback-base) (:id device) filename)
+                          :image_url_timeout 0
+                          :refresh_rate      refresh-rate-seconds
+                          :reset_firmware    false
+                          :update_firmware   false
+                          :firmware_url      nil}))))
     #(provisional-display-response request)))
 
 (defn- setup-response

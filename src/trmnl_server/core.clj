@@ -182,6 +182,36 @@
     (draw-stale-badge (img/canvas-from copy) 766 4 20)
     copy))
 
+(def ^:private battery-segments 4)
+
+;; The icon's footprint: a 30x14 body plus a 3px nub on its right end. Named like logo-w
+;; because forecast-screen lays the header out against it.
+(def ^:private battery-w 33)
+(def ^:private battery-h 14)
+
+(defn battery-bars
+  "How many of the battery icon's four segments a charge estimate (0-100) lights: the
+   nearest quarter, so 0 means under about an eighth, which is where the outline goes
+   empty. Rounded rather than ceilinged because a 'roughly' that only errs one way is
+   wrong more often than one that doesn't — a ceiling shows three bars for 76% and a
+   full set for 100%."
+  [percent]
+  (-> (Math/round (/ (double percent) (/ 100.0 battery-segments)))
+    (max 0)
+    (min battery-segments)))
+
+(defn draw-battery
+  "Draws a battery icon with its top-left at x,y, battery-w x battery-h: a body, a nub on
+   its right end, and four segments inside, `battery-bars` of them filled for `percent`.
+   Built from filled rects (black body, white inside, black segments) rather than an
+   outline stroke, so every edge is a whole pixel and survives ->1-bit untouched."
+  [canvas x y percent]
+  (img/draw-rect canvas x y 30 battery-h :fill? true)
+  (img/draw-rect canvas (+ x 30) (+ y 4) 3 6 :fill? true)
+  (img/draw-rect canvas (+ x 2) (+ y 2) 26 10 :fill? true :color Color/WHITE)
+  (dotimes [i (battery-bars percent)]
+    (img/draw-rect canvas (+ x 4 (* i 6)) (+ y 4) 4 6 :fill? true)))
+
 ;; The screen draws in three fonts and nothing else, so derive each once. These
 ;; were being rebuilt at draw time in eight places -- five of them this same
 ;; regular 16 -- and every one of those calls runs Font/.deriveFont.
@@ -645,7 +675,13 @@
   ;; sunrise/sunset; it defaults to Gothenburg, which is also what --demo's
   ;; synthetic data represents, so demo callers can omit it.
   ([points] (forecast-screen points default-forecast-location))
-  ([points location]
+  ([points location] (forecast-screen points location {}))
+  ;; `:battery-percent` (0-100) is the display's charge estimate, drawn as the header's
+  ;; battery icon. Optional because most callers have none to give: the CLI render isn't
+  ;; for any particular display, and a display that hasn't reported a voltage yet has
+  ;; nothing to show. No estimate means no icon, not an empty one — an empty battery is
+  ;; a claim.
+  ([points location {:keys [battery-percent]}]
    (let [canvas    (img/blank-canvas)
          ;; The display hangs in a fixed spot (a hallway) — the viewer already
          ;; knows where and roughly when they are, so the header leads with
@@ -656,6 +692,9 @@
      ;; Wordmark top-right, right edge flush with the 760 content margin (same
      ;; as the divider/Uppdaterad below it); its 38px height clears that line.
      (draw-logo canvas (- 760 logo-w) 14)
+     ;; Beside the wordmark, on its vertical centre, where a status bar keeps one.
+     (when battery-percent
+       (draw-battery canvas (- 760 logo-w 14 battery-w) (- 33 (/ battery-h 2)) battery-percent))
      (img/draw-text canvas (str (int (Math/rint (double (:temp now)))) "°") 122 44 :font headline-font)
      (img/draw-text canvas (str (int (Math/rint (double (:wind now)))) " m/s, " condition) 122 68
        :font body-font)

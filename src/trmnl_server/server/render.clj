@@ -19,7 +19,8 @@
   (:require [clojure.tools.logging :as log]
             [trmnl-server.core :as core]
             [trmnl-server.image :as img]
-            [trmnl-server.server.archive :as archive])
+            [trmnl-server.server.archive :as archive]
+            [trmnl-server.server.battery :as battery])
   (:import [java.awt.image BufferedImage]
            [java.io ByteArrayOutputStream]
            [java.security MessageDigest]
@@ -149,6 +150,14 @@
   [device-id]
   (swap! cache dissoc device-id))
 
+(defn- battery-percent
+  "The charge estimate to draw for a poll's Battery-Voltage, or nil for no icon. The OG
+   sends -1 when it has no reading (see server.telemetry), and battery/percent would clamp
+   that to 0 — an empty battery drawn on the wall for a sensor that merely didn't answer."
+  [voltage]
+  (when (and voltage (pos? voltage))
+    (battery/percent voltage)))
+
 (defn current-image
   "Returns the device's cached {:bytes :filename :generated-at}, regenerating from a
    fresh forecast when its cache is empty or older than cache-ttl-ms. If regeneration
@@ -163,6 +172,11 @@
    request (device poll, browser hit on / or a device page) fetches SMHI again while
    it's already struggling.
 
+   The second argument is what the device's own poll just told us, `{:battery-voltage v}`,
+   drawn as the header's battery icon. It reaches the render only when a render happens, so
+   a screen served from cache keeps the icon it was drawn with: a battery moves too slowly
+   for a 10-minute-old figure to matter, which is why the cache isn't keyed on it.
+
    The `filename` is keyed on an MD5 of the rendered pixels, so it only changes when
    the image actually changes — which is what lets the device skip re-downloading an
    identical screen between polls.
@@ -171,7 +185,7 @@
    arriving on an expired cache don't both fetch SMHI and re-render; the second
    re-checks the cache inside the lock and reuses the entry the first one just
    produced."
-  [device]
+  [device {:keys [battery-voltage]}]
   (let [device-id (:id device)
         entry     (get @cache device-id)]
     (if (serve-as-is? entry)
@@ -186,7 +200,8 @@
             (try
               (let [location  (forecast-location device)
                     points    (core/live-points (forecast-hours device) location)
-                    image     (img/->1-bit (core/forecast-screen points location))
+                    image     (img/->1-bit (core/forecast-screen points location
+                                             {:battery-percent (battery-percent battery-voltage)}))
                     bytes     (png-bytes image)
                     ;; Cache/download key is the pixel hash; the archive dedupe key is the
                     ;; forecast *data* hash instead, so the per-render "Uppdaterad HH:mm"

@@ -9,6 +9,12 @@
             [trmnl-server.server.auth :as auth])
   (:gen-class))
 
+;; A charge estimate for each --demo screen, in the order they are written (the four seasons,
+;; then the rain test), chosen so the five screens between them show every state the battery
+;; icon has: full, three, two and one segments, and the empty outline. Arbitrary, and
+;; unrelated to the season it lands on.
+(def ^:private demo-battery-percents [100 70 45 20 5])
+
 (defn- write-screen [canvas name]
   (img/save-image (:image canvas) (str "out/" name ".png"))
   (img/save-image (img/->1-bit canvas) (str "out/" name "-1bit.png"))
@@ -19,7 +25,9 @@
    (server.clj's SMHI-fetch-failure fallback) stamped on it, so the badge can
    be eyeballed without needing a real SMHI outage."
   [hours]
-  (let [bw     (img/->1-bit (core/forecast-screen (demo/season-points (first demo/seasons) hours)))
+  (let [bw     (img/->1-bit (core/forecast-screen (demo/season-points (first demo/seasons) hours)
+                              core/default-forecast-location
+                              {:battery-percent (first demo-battery-percents)}))
         marked (core/stamp-stale-badge bw)]
     (img/save-image marked "out/demo-stale.png")
     (println "Wrote out/demo-stale.png")))
@@ -67,11 +75,15 @@
     (cond
       (some #{"--demo"} args)
       (do
-        (doseq [{:keys [label file] :as season} demo/seasons]
+        (doseq [[{:keys [label file] :as season} percent] (map vector demo/seasons demo-battery-percents)]
           (println (str "Rendering " label "..."))
-          (write-screen (core/forecast-screen (demo/season-points season hours)) file))
+          (write-screen (core/forecast-screen (demo/season-points season hours)
+                          core/default-forecast-location {:battery-percent percent})
+            file))
         (println "Rendering Rain test...")
-        (write-screen (core/forecast-screen (demo/rain-test-points hours)) "demo-rain-test")
+        (write-screen (core/forecast-screen (demo/rain-test-points hours)
+                        core/default-forecast-location {:battery-percent (peek demo-battery-percents)})
+          "demo-rain-test")
         (write-stale-demo hours))
 
       (some #{"--serve"} args)
