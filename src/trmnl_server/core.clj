@@ -425,6 +425,40 @@
             lw    (img/text-width canvas label :font font)]
         (img/draw-text canvas label (- px (/ lw 2.0)) y :font font)))))
 
+(def ^:private rain-period-min-hours
+  "How many consecutive wet hours make a rain period worth a total. A one- or
+   two-hour shower is already fully told by its own bars and wettest-hour label;
+   what a total adds is the sum over a stretch too long to add up by eye."
+  3)
+
+(defn- rain-periods
+  "Runs of consecutive points with any precipitation, at least
+   rain-period-min-hours long, as {:start i :end i :total mm} (end inclusive).
+   Wet means the same as rain-background's stipple -- any mm at all -- so a
+   period's bracket spans exactly the shaded columns above it. SMHI's
+   precipitation_amount_mean is per hour at this resolution, so the period's
+   total is the sum of its points."
+  [points]
+  (->> points
+    (map-indexed vector)
+    (partition-by (fn [[_ point]] (pos? (:precip-mm point))))
+    (filter (fn [run] (pos? (:precip-mm (second (first run))))))
+    (filter #(>= (count %) rain-period-min-hours))
+    (mapv (fn [run] {:start (ffirst run)
+                     :end   (first (last run))
+                     :total (reduce + (map (comp :precip-mm second) run))}))))
+
+(defn- mm-str
+  "An mm figure as the screen prints it, with Swedish's decimal comma (see
+   smhi/swedish for why that's a decision rather than the host's locale)."
+  [mm]
+  (String/format smhi/swedish "%.1fmm" (to-array [(double mm)])))
+
+(def ^:private period-band-h
+  "Height reserved at the top of the precip strip for the rain-period brackets,
+   taken from the bars' travel when there is at least one period to bracket."
+  18)
+
 (defn precip-bar-chart
   "Draws precipitation (mm) as one bottom-anchored vertical bar per forecast
    point. Kept as its own row with its own 0-based scale — per the no-shared-axis
@@ -437,10 +471,22 @@
    it crosses), and the filled bar rectangles for precip-probability-line to
    clip its white pass to. Wettest-per-day (like the temp/wind extrema above)
    rather than one max across the whole span, so a rainy first day doesn't hide
-   a smaller-but-still-notable second-day shower."
-  [canvas points x y w h]
+   a smaller-but-still-notable second-day shower.
+
+   `periods` (from rain-periods) changes two things. The bars give up the top
+   period-band-h of the strip to precip-period-brackets, so the tallest bar can
+   never reach up into a bracket. And hours inside a period are left out of the
+   wettest-per-day pick: the period's total speaks for them, and two plaques
+   over the same run would compete. A day whose rain all falls inside periods
+   gets no hourly label at all; a short shower elsewhere that day still does."
+  [canvas points x y w h periods]
   (let [n         (count points)
         values    (map :precip-mm points)
+        in-period (fn [i] (some #(<= (:start %) i (:end %)) periods))
+        title-y   (- y 6)
+        band      (if (seq periods) period-band-h 0)
+        y         (+ y band)
+        h         (- h band)
         raw-max   (apply max values)
         ;; Headroom scales with the data instead of nice-bounds' flat +2 padding,
         ;; which is sized for °C/m/s ranges and would swamp typical sub-1mm rain.
@@ -457,13 +503,15 @@
                               :bar-h (mm->bar-h mm)
                               :mm    mm}))
                          points))]
-    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x (- y 6) :font body-font :halo? true)
+    (img/draw-text canvas (str "Regn (0-" (int hi) "mm)") x title-y :font body-font :halo? true)
     (doseq [{:keys [x bar-h]} bars]
       (when (pos? bar-h)
         (img/draw-rect canvas x (- bottom bar-h) bar-w bar-h :fill? true)))
     (img/draw-line canvas x bottom (+ x w) bottom)
     {:mm-labels (->> (day-groups points)
-                  (map (fn [group] (apply max-key :bar-h (map bars group))))
+                  (keep (fn [group]
+                          (when-let [outside (seq (remove in-period group))]
+                            (apply max-key :bar-h (map bars outside)))))
                   (filter #(pos? (:mm %)))
                   (mapv (fn [{:keys [x bar-h mm]}] {:x x :top (- bottom bar-h) :mm mm})))
      :bar-rects (->> bars
@@ -486,59 +534,93 @@
    distance this screen is ever looked at from."
   4)
 
-(defn precip-mm-labels
-  "Draws the wettest-per-day mm labels from precip-bar-chart's returned specs.
-   Split out so it runs AFTER precip-probability-line, so what it paints over the
-   dashed line wins (paint order is the only masking a 1-bit surface has).
-
-   Knocked out on a **white plaque, not a halo**. A halo strokes the glyph
-   outlines, so it only clears ~half of fill-string's 5px stroke around each
-   glyph's edge and leaves whatever is behind the label showing through the gaps
-   *between* glyphs. That is where the probability line peaks — it is highest at
-   the wettest hour almost by definition, which is exactly the hour this label
-   sits above — so a dash would survive in the gap beside the decimal separator
-   and read as a stray mark on the number. A filled rect over the text's ink
-   bounds clears the whole footprint in one go, which is what the halo was
-   reaching for and couldn't express.
+(defn- draw-mm-plaque
+  "Draws `text` in bold at baseline bx,by, knocked out on a **white plaque, not
+   a halo**. A halo strokes the glyph outlines, so it only clears ~half of
+   fill-string's 5px stroke around each glyph's edge and leaves whatever is
+   behind the label showing through the gaps *between* glyphs. That is where the
+   probability line peaks — it is highest at the wettest hour almost by
+   definition, which is exactly the hour an mm label sits above — so a dash would
+   survive in the gap beside the decimal separator and read as a stray mark on
+   the number. A filled rect over the text's ink bounds clears the whole
+   footprint in one go, which is what the halo was reaching for and couldn't
+   express.
 
    The plaque is then outlined 1px black, so its edge is a drawn edge rather than
    wherever the stipple and the dashed line happen to stop. Without it the cleared
    rectangle reads as a hole knocked in the chart; with it the label reads as a
-   tile sitting on top, which is what it is. draw-rect sets that 1px itself: this
-   is the codebase's first unfilled rect, and an outline whose width depends on
-   what the previous caller left on the shared Graphics2D is a trap (it measured
-   1px here only because precip-probability-line's dashed pass happens to reset the
-   stroke between the last haloed label and this call)."
+   tile sitting on top, which is what it is. draw-rect sets that 1px itself: an
+   outline whose width depends on what the previous caller left on the shared
+   Graphics2D is a trap (it measured 1px here only because
+   precip-probability-line's dashed pass happens to reset the stroke between the
+   last haloed label and this call)."
+  [canvas text bx by]
+  (let [font          bold-font
+        [x1 _ x2 y2]  (img/text-box canvas text bx by :font font)
+        ;; Vertical extent measured from a digit, not from the whole string. The
+        ;; decimal separator is the only glyph here that drops below the baseline,
+        ;; so sizing the box to the full ink bounds spends a couple of rows on its
+        ;; tail and pushes the digits -- which are what the eye reads as "the
+        ;; text" -- above centre. Centre the digit block instead and let the tail
+        ;; hang into the bottom padding, which is deeper than the tail is long.
+        [_ dy1 _ dy2] (img/text-box canvas "0" bx by :font font)
+        first-px      (fn [v] (long (Math/floor (double v))))
+        ;; Ink bounds are a continuous rect, so the last *pixel* it covers is one
+        ;; short of its ceiling. Rounding both edges instead put the plaque a pixel
+        ;; right of centre -- correct to within a pixel, and a pixel is 6% of the
+        ;; gap at this size.
+        last-px       (fn [v] (dec (long (Math/ceil (double v)))))
+        left          (- (first-px x1) mm-label-pad 1)
+        right         (+ (last-px x2) mm-label-pad 1)
+        top*          (- (first-px dy1) mm-label-pad 1)
+        bottom        (max (+ (last-px dy2) mm-label-pad 1)
+                        (+ (last-px y2) 1))
+        w             (- right left)
+        h             (- bottom top*)]
+    (img/draw-rect canvas left top* w h :fill? true :color Color/WHITE :arc mm-label-arc)
+    (img/draw-rect canvas left top* w h :fill? false :color Color/BLACK :arc mm-label-arc)
+    (img/draw-text canvas text bx by :font font)))
+
+(defn precip-mm-labels
+  "Draws the wettest-per-day mm labels from precip-bar-chart's returned specs,
+   each on draw-mm-plaque's plaque. Split out so it runs AFTER
+   precip-probability-line, so what it paints over the dashed line wins (paint
+   order is the only masking a 1-bit surface has)."
   [canvas specs]
   (doseq [{:keys [x top mm]} specs]
-    (let [text          (String/format smhi/swedish "%.1fmm" (to-array [(double mm)]))
-          font          bold-font
-          bx            (- x 4)
-          by            (- top 6)
-          [x1 _ x2 y2]  (img/text-box canvas text bx by :font font)
-          ;; Vertical extent measured from a digit, not from the whole string. The
-          ;; decimal separator is the only glyph here that drops below the baseline,
-          ;; so sizing the box to the full ink bounds spends a couple of rows on its
-          ;; tail and pushes the digits -- which are what the eye reads as "the
-          ;; text" -- above centre. Centre the digit block instead and let the tail
-          ;; hang into the bottom padding, which is deeper than the tail is long.
-          [_ dy1 _ dy2] (img/text-box canvas "0" bx by :font font)
-          first-px      (fn [v] (long (Math/floor (double v))))
-          ;; Ink bounds are a continuous rect, so the last *pixel* it covers is one
-          ;; short of its ceiling. Rounding both edges instead put the plaque a pixel
-          ;; right of centre -- correct to within a pixel, and a pixel is 6% of the
-          ;; gap at this size.
-          last-px       (fn [v] (dec (long (Math/ceil (double v)))))
-          left          (- (first-px x1) mm-label-pad 1)
-          right         (+ (last-px x2) mm-label-pad 1)
-          top*          (- (first-px dy1) mm-label-pad 1)
-          bottom        (max (+ (last-px dy2) mm-label-pad 1)
-                          (+ (last-px y2) 1))
-          w             (- right left)
-          h             (- bottom top*)]
-      (img/draw-rect canvas left top* w h :fill? true :color Color/WHITE :arc mm-label-arc)
-      (img/draw-rect canvas left top* w h :fill? false :color Color/BLACK :arc mm-label-arc)
-      (img/draw-text canvas text bx by :font font))))
+    (draw-mm-plaque canvas (mm-str mm) (- x 4) (- top 6))))
+
+(defn precip-period-brackets
+  "Draws a bracket over each rain period's columns, in the band precip-bar-chart
+   reserved at the top of the strip, with the period's total on a plaque centred
+   on it. The bracket alone is what says \"sum\": the plaque reads just \"7,2mm\",
+   like an hourly label, and sitting on a bracket that spans several bars is
+   what tells the two apart. It spans the period's slot edges inset 3px, so two
+   periods a single dry hour apart still read as two brackets.
+
+   Drawn last in the strip, so the solid bracket sits over the dashed
+   probability line where they cross at 100%. A plaque wider than a short
+   period is clamped to the panel rather than centred off its edge.
+
+   An hourly label can't land on a bracket: its plaque sits over its own bar,
+   which is outside every period, and periods are maximal runs, so there is
+   always at least one dry column between that bar and the nearest bracket."
+  [canvas points x y w periods]
+  (let [n      (count points)
+        line-y (+ y 7)
+        font   bold-font]
+    (doseq [{:keys [start end total]} periods]
+      (let [left  (+ (slot-edge x w n start) 3)
+            right (- (slot-edge x w n (inc end)) 3)
+            text  (mm-str total)
+            tw    (img/text-width canvas text :font font)
+            bx    (-> (- (/ (+ left right) 2.0) (/ tw 2.0))
+                    (max (+ x 4))
+                    (min (- (+ x w) tw 4)))]
+        (img/draw-rect canvas left line-y (- right left) 2 :fill? true)
+        (img/draw-rect canvas left line-y 2 11 :fill? true)
+        (img/draw-rect canvas (- right 2) line-y 2 11 :fill? true)
+        (draw-mm-plaque canvas text bx (+ line-y 6))))))
 
 (defn precip-probability-line
   "Overlays probability-of-precipitation as a recessive dashed line across
@@ -731,13 +813,16 @@
        ;; where the reasoning behind their edges lives -- and which is the copy
        ;; check-labels reads, so it checks this chart and not one of its own.
        (combined-chart canvas points chart-x chart-y chart-w chart-h :keep-out keep-out)
-       ;; Three z-layers in the precip strip: bars, then the probability line
-       ;; over them, then the mm labels on top -- so the line stays visible
-       ;; through a tall bar while each label's white plaque still clears the
-       ;; line where they overlap (paint order is the only masking there is).
-       (let [{:keys [mm-labels bar-rects]} (precip-bar-chart canvas points 40 precip-y 720 precip-h)]
+       ;; Four z-layers in the precip strip: bars, then the probability line
+       ;; over them, then the mm labels and period brackets on top -- so the
+       ;; line stays visible through a tall bar while each label's white plaque
+       ;; still clears the line where they overlap (paint order is the only
+       ;; masking there is).
+       (let [periods                       (rain-periods points)
+             {:keys [mm-labels bar-rects]} (precip-bar-chart canvas points 40 precip-y 720 precip-h periods)]
          (precip-probability-line canvas points 40 precip-y 720 precip-h bar-rects)
-         (precip-mm-labels canvas mm-labels)))
+         (precip-mm-labels canvas mm-labels)
+         (precip-period-brackets canvas points 40 precip-y 720 periods)))
      (hour-axis-labels canvas points 40 720 468)
      (day-markers canvas points 40 720 118 440 454)
      canvas)))

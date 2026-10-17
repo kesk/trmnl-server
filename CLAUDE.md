@@ -246,7 +246,15 @@ version, and 3.6x the entire screen composition).
   layout/chart logic lives (e.g. `combined-chart`, `nice-bounds` for
   rounding axis extents, and `chart-labels`, the domain half of the labelling: which
   values get labelled, how they read, and what they have to stay off — the geometry that
-  turns that into positions is `labels` above). Where those things sit on the panel is
+  turns that into positions is `labels` above). The precip strip carries one more kind
+  of label: `rain-periods` finds runs of 3+ consecutive wet hours (wet meaning any mm,
+  the same test as the stippled rain shading) and `precip-period-brackets` draws a
+  bracket over each with its summed total ("7,2mm") on the same plaque the hourly
+  labels use. The bars give up an 18px band at the top of the strip to make room, and
+  hours inside a period drop out of the wettest-per-day hourly pick, so a run is told by
+  its total and a short shower by its wettest hour. The plaque deliberately has no
+  "totalt" or Σ (the font has no Σ anyway): the bracket spanning several bars is what
+  says it's a sum. Where those things sit on the panel is
   `screen-geometry`: one map holding the cloud/precip strip positions plus the
   `:chart-box` and `:keep-out` rects derived from them. It's a `def` rather than
   `let` bindings inside `forecast-screen` because `clojure -M:check-labels` reads it —
