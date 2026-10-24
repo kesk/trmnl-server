@@ -52,20 +52,17 @@
     (map #(map first %))
     (filter #(> (count %) 1))))
 
-;; Two x-geometries share the same 720px span, and reaching for the wrong one is
-;; the bug these names exist to prevent. A forecast point is both an *instant* --
-;; plotted as a dot, spread so the first lands on the box's left edge and the last
-;; on its right, hence the (n-1) divisor -- and an *hour*, an interval owning a
-;; column w/n wide. Instants: the temp/wind series, the cloud strip, the hour
-;; labels, the day dividers. Intervals: the rain shading, the precip bars, the
-;; probability line, the thunder bolts. At the deployed 23 points the two disagree
-;; by up to half a column (~16px), diverging at the ends and crossing in the
-;; middle, so a bolt drawn at plot-x drifts off the very column it is marking.
-
-(defn- plot-x
-  "X of the i'th of n plotting points, with the first and last on the box edges."
-  [x w n i]
-  (+ x (* w (/ i (double (dec n))))))
+;; One x-geometry for the whole 720px span: each forecast point owns a column
+;; w/n wide. Everything drawn *at* a point -- the temp/wind dots and lines, the
+;; cloud strip, the thunder bolts, the probability line, the hour labels, the
+;; day dividers -- sits on its column's centre (slot-center); the precip bars
+;; and rain shading fill the column. There used to be a second, point-as-instant
+;; geometry that spread the dots edge to edge with an (n-1) divisor. At 23
+;; points it disagreed with the columns by up to half a column (~16px), drifting
+;; from left of a bar to right of it across the span, so an hour label sat
+;; under its bar in the middle of the screen and beside it at the ends. The
+;; price of one geometry is that the lines start and end half a column inside
+;; the box rather than on its edges.
 
 (defn- slot-width
   "Width of one hour's column."
@@ -103,7 +100,7 @@
         [lo hi]     (nice-bounds values round-step :floor floor)
         n           (count points)
         value->y    (fn [v] (+ y (* h (/ (- hi v) (double (- hi lo))))))
-        idx->x      (fn [i] (plot-x x w n i))
+        idx->x      (fn [i] (slot-center x w n i))
         plot-points (map-indexed (fn [i point] [(idx->x i) (value->y (value-key point))]) points)]
     {:plot-points plot-points
      :idx->x      idx->x
@@ -247,7 +244,7 @@
    on the same axes."
   [canvas points x y w & {:keys [min-width max-width] :or {min-width 1.0 max-width 20.0}}]
   (let [n           (count points)
-        idx->x      (fn [i] (plot-x x w n i))
+        idx->x      (fn [i] (slot-center x w n i))
         plot-points (map-indexed (fn [i _] [(idx->x i) y]) points)
         widths      (map (fn [p] (double (Math/round (+ min-width (* (- max-width min-width) (/ (:cloud-cover p) 8.0)))))) points)]
     (img/draw-variable-line canvas plot-points widths :paint (img/checkerboard-paint))))
@@ -293,7 +290,7 @@
   "Marks each thundery hour with a lightning bolt, centered vertically on cy.
    The point forecast has no lightning parameter, so thunder is read off the
    symbol code alone (see smhi/thunder?). Bolts are x-centered on that hour's
-   slot (slot-center, not plot-x — see the note above those fns), so the flash
+   slot (slot-center, see the note above those fns), so the flash
    sits over the rainy column it belongs to rather than drifting off its bar.
    It sits inside the cloud strip (cy is the strip's own centre line), its halo
    carving it out of the checkerboard — the gap below the strip belongs to the
@@ -402,23 +399,31 @@
     (doseq [label placed]
       (labels/draw-placed canvas label))))
 
-(def ^:private axis-label-count
-  "How many hour-of-day labels hour-axis-labels always draws, evenly spaced
-   from the first to the last point — fixed rather than hour-interval-based,
-   so changing --hours/FORECAST_HOURS changes label spacing, not label count."
+(def ^:private max-axis-labels
+  "The most hour-of-day labels hour-axis-labels draws. Twelve HH:mm labels
+   leave a comfortable gap between them across the 720px axis; more start to
+   crowd."
   12)
 
 (defn- hour-axis-labels
-  "Draws axis-label-count hour-of-day labels evenly spaced along a shared
-   x-axis, at a fixed y. Shared by combined-chart and precip-bar-chart since
-   both plot the same points across the same x span — drawn once here rather
-   than duplicated under each chart."
+  "Draws hour-of-day labels under every k'th column along a shared x-axis, at a
+   fixed y, k being the smallest step that keeps the count within
+   max-axis-labels. Shared by combined-chart and precip-bar-chart since both
+   plot the same points across the same x span — drawn once here rather than
+   duplicated under each chart.
+
+   A fixed step rather than a fixed count, so the labels are always evenly
+   spaced and a whole number of hours apart. A fixed count of 12 needed
+   (hours - 1) to be a multiple of 11 to come out even -- 24 points labelled
+   10:00 then 13:00 -- which is what used to pin the default at 23. Nothing
+   needs the last column labelled: the points sit on column centres, so the
+   last one isn't on the box edge for a label to mark."
   [canvas points x w y]
   (let [n       (count points)
         font    body-font
-        idx->x  (fn [i] (plot-x x w n i))
-        indices (distinct (for [k (range axis-label-count)]
-                            (Math/round (* k (/ (dec n) (double (dec axis-label-count)))))))]
+        idx->x  (fn [i] (slot-center x w n i))
+        step    (long (Math/ceil (/ n (double max-axis-labels))))
+        indices (range 0 n step)]
     (doseq [i indices]
       (let [px    (idx->x i)
             label (smhi/local-time-str (:time (nth points i)))
@@ -731,7 +736,7 @@
   [canvas points x w top bottom]
   (let [n (count points)]
     (doseq [[_a b] (partition 2 1 (day-groups points))]
-      (let [boundary-x (plot-x x w n (first b))]
+      (let [boundary-x (slot-center x w n (first b))]
         (img/draw-dashed-line canvas boundary-x top boundary-x bottom :dash [6.0 4.0])))))
 
 (defn- day-labels
@@ -740,7 +745,7 @@
    center a label over."
   [canvas points x w label-y]
   (let [n      (count points)
-        idx->x (fn [i] (plot-x x w n i))]
+        idx->x (fn [i] (slot-center x w n i))]
     (doseq [group (day-groups points)]
       (let [center-x (/ (+ (idx->x (first group)) (idx->x (last group))) 2)]
         (img/draw-text canvas (smhi/local-day-label (:time (nth points (first group)))) (- center-x 12) label-y
@@ -749,9 +754,10 @@
 (def default-forecast-hours
   "How many hourly points forecast-screen renders when fetching live data or
    generating a demo season, absent an explicit override (e.g. --hours or
-   FORECAST_HOURS). 23 rather than a round 24/48: hour-axis-labels' 12 labels
-   only land at perfectly even pixel spacing when (hours - 1) is a multiple of
-   11, and 23 is the smallest such count above a day."
+   FORECAST_HOURS). 23 rather than a round 24 for symmetry: with an odd count
+   hour-axis-labels' every-other-hour labels reach the last column too, so the
+   axis is labelled from the first column to the last. 24 was tried on
+   2026-10-24 and left the 23:00 column unlabelled at the right end."
   23)
 
 (def default-forecast-location

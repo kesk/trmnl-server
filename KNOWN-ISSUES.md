@@ -155,6 +155,14 @@ floating point (`x + i·(w/n) + (w/n)/2` became `x + w·(i+0.5)/n`), which is pr
 kind of change that can move a pixel and is why the check was worth running rather than
 reasoning about.
 
+**Superseded 2026-10-24: there is one geometry now.** Naming the two kept them from being
+mixed up, but the mix-up was still on the screen by design: the hour labels were instants
+and the bars above them were slots, so a label sat under its bar mid-screen and half a
+column beside it at either end. `plot-x` is gone; everything drawn at a point (dots,
+lines, cloud strip, hour labels, day dividers, day labels) now sits on `slot-center`. The
+cost is that the temp/wind lines and the cloud strip stop half a column (~16px) short of
+the box edges instead of running to them.
+
 ### Two things derived per call that could be derived once
 
 *(Entries #2 and #6.)* `smhi` built a `DateTimeFormatter` inline in three helpers and
