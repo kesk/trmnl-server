@@ -250,9 +250,14 @@ version, and 3.6x the entire screen composition).
   of label: `rain-periods` finds runs of 3+ consecutive wet hours (wet meaning any mm,
   the same test as the stippled rain shading) and `precip-period-brackets` draws a
   bracket over each with its summed total ("7,2mm") on the same plaque the hourly
-  labels use. The bars give up an 18px band at the top of the strip to make room, and
-  hours inside a period drop out of the wettest-per-day hourly pick, so a run is told by
-  its total and a short shower by its wettest hour. The plaque deliberately has no
+  labels use. The bars give up an 18px band at the top of the strip, and the total
+  slides along its bracket to clear the hourly labels. An hourly label sits just above
+  its bar, except on a bar of 36px or more (`mm-label-sink-min-h`), where it is sunk
+  into the bar's top with 4px of bar showing above it — that is what lets a tall bar
+  keep its height under a bracket instead of the band growing to make room. Hours inside a period stay in the
+  wettest-per-day hourly pick — they were dropped from it at first, and since real
+  forecasts trail 0,1mm hours into every spell, that took the hourly labels off a third
+  of archived screens; how hard it rains and how much falls are different answers. The plaque deliberately has no
   "totalt" or Σ (the font has no Σ anyway): the bracket spanning several bars is what
   says it's a sum. Where those things sit on the panel is
   `screen-geometry`: one map holding the cloud/precip strip positions plus the

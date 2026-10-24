@@ -456,7 +456,11 @@
 
 (def ^:private period-band-h
   "Height reserved at the top of the precip strip for the rain-period brackets,
-   taken from the bars' travel when there is at least one period to bracket."
+   taken from the bars' travel when there is at least one period to bracket.
+   Just the bracket and its total: an hourly label set above its bar reaches 19px
+   up, which would need about 4px more than this to clear the bracket line, but
+   only bars under mm-label-sink-min-h keep their label above, and those are
+   too low to get near it. The tall ones have theirs sunk into the bar."
   18)
 
 (defn precip-bar-chart
@@ -473,16 +477,17 @@
    rather than one max across the whole span, so a rainy first day doesn't hide
    a smaller-but-still-notable second-day shower.
 
-   `periods` (from rain-periods) changes two things. The bars give up the top
-   period-band-h of the strip to precip-period-brackets, so the tallest bar can
-   never reach up into a bracket. And hours inside a period are left out of the
-   wettest-per-day pick: the period's total speaks for them, and two plaques
-   over the same run would compete. A day whose rain all falls inside periods
-   gets no hourly label at all; a short shower elsewhere that day still does."
+   `periods` (from rain-periods) makes the bars give up the top period-band-h of
+   the strip to precip-period-brackets. Hours inside a period stay in the
+   wettest-per-day pick: they were left out for a while, so that a period was
+   told by its total alone, and in practice that took the hourly labels off the
+   screen -- real forecasts trail a run of 0,1mm hours into every rain spell,
+   so most wet hours are in a period, and a third of a sample of 176 archived
+   screens had no hourly label at all. How hard it rains and how much falls in
+   total are different answers, and the screen wants both."
   [canvas points x y w h periods]
   (let [n         (count points)
         values    (map :precip-mm points)
-        in-period (fn [i] (some #(<= (:start %) i (:end %)) periods))
         title-y   (- y 6)
         band      (if (seq periods) period-band-h 0)
         y         (+ y band)
@@ -509,11 +514,9 @@
         (img/draw-rect canvas x (- bottom bar-h) bar-w bar-h :fill? true)))
     (img/draw-line canvas x bottom (+ x w) bottom)
     {:mm-labels (->> (day-groups points)
-                  (keep (fn [group]
-                          (when-let [outside (seq (remove in-period group))]
-                            (apply max-key :bar-h (map bars outside)))))
+                  (map (fn [group] (apply max-key :bar-h (map bars group))))
                   (filter #(pos? (:mm %)))
-                  (mapv (fn [{:keys [x bar-h mm]}] {:x x :top (- bottom bar-h) :mm mm})))
+                  (mapv (fn [{:keys [x bar-h mm]}] {:x x :w bar-w :top (- bottom bar-h) :bottom bottom :mm mm})))
      :bar-rects (->> bars
                   (filter #(pos? (:bar-h %)))
                   (mapv (fn [{:keys [x bar-h]}] [x (- bottom bar-h) bar-w bar-h])))}))
@@ -533,6 +536,8 @@
    enough that it still reads as a rectangle at arm's length, which is the only
    distance this screen is ever looked at from."
   4)
+
+(declare mm-plaque-box)
 
 (defn- draw-mm-plaque
   "Draws `text` in bold at baseline bx,by, knocked out on a **white plaque, not
@@ -554,6 +559,15 @@
    Graphics2D is a trap (it measured 1px here only because
    precip-probability-line's dashed pass happens to reset the stroke between the
    last haloed label and this call)."
+  [canvas text bx by]
+  (let [[left top w h] (mm-plaque-box canvas text bx by)]
+    (img/draw-rect canvas left top w h :fill? true :color Color/WHITE :arc mm-label-arc)
+    (img/draw-rect canvas left top w h :fill? false :color Color/BLACK :arc mm-label-arc)
+    (img/draw-text canvas text bx by :font bold-font)))
+
+(defn- mm-plaque-box
+  "The [x y w h] draw-mm-plaque will clear for `text` at baseline bx,by, so a
+   caller can keep two plaques apart before drawing either."
   [canvas text bx by]
   (let [font          bold-font
         [x1 _ x2 y2]  (img/text-box canvas text bx by :font font)
@@ -577,18 +591,50 @@
                         (+ (last-px y2) 1))
         w             (- right left)
         h             (- bottom top*)]
-    (img/draw-rect canvas left top* w h :fill? true :color Color/WHITE :arc mm-label-arc)
-    (img/draw-rect canvas left top* w h :fill? false :color Color/BLACK :arc mm-label-arc)
-    (img/draw-text canvas text bx by :font font)))
+    [left top* w h]))
+
+(def ^:private mm-label-peek
+  "How far a bar sticks up above the mm label sunk into its top."
+  4)
+
+(def ^:private mm-label-sink-min-h
+  "A bar at least this tall gets its mm label sunk into its top rather than set
+   above it. About twice a plaque's height, so a sunk label still leaves most of
+   its bar showing; on a shorter bar the plaque -- wider than the bar -- would
+   hide nearly all of it, and the bar has room above it anyway. That room is
+   what period-band-h relies on: every bar short enough to keep its label above
+   is low enough for that label to clear a bracket line."
+  36)
+
+(defn- mm-label-placements
+  "Where precip-mm-labels will put each of precip-bar-chart's label specs, as
+   {:text :bx :by :box} -- worked out before anything is drawn, so
+   precip-period-brackets can steer its totals clear of them. Centred on its
+   bar, and either set just above it or, on a bar of mm-label-sink-min-h or
+   more, sunk into its top with mm-label-peek px of bar showing above. Sinking
+   the tall ones is what lets the bars keep their height under a bracket: set
+   above, the tallest bar's label would need the band to grow to clear it."
+  [canvas specs]
+  (mapv (fn [{:keys [x w top bottom mm]}]
+          (let [text     (mm-str mm)
+                tw       (img/text-width canvas text :font bold-font)
+                bx       (- (+ x (/ w 2.0)) (/ tw 2.0))
+                above    (- top 6)
+                [_ ptop] (mm-plaque-box canvas text bx above)
+                sunk     (+ above (- (+ top mm-label-peek) ptop))
+                by       (if (>= (- bottom top) mm-label-sink-min-h) sunk above)]
+            {:text text :bx bx :by by :box (mm-plaque-box canvas text bx by)}))
+    specs))
 
 (defn precip-mm-labels
-  "Draws the wettest-per-day mm labels from precip-bar-chart's returned specs,
-   each on draw-mm-plaque's plaque. Split out so it runs AFTER
-   precip-probability-line, so what it paints over the dashed line wins (paint
-   order is the only masking a 1-bit surface has)."
-  [canvas specs]
-  (doseq [{:keys [x top mm]} specs]
-    (draw-mm-plaque canvas (mm-str mm) (- x 4) (- top 6))))
+  "Draws the wettest-per-day mm labels placed by mm-label-placements, each on
+   draw-mm-plaque's plaque. Runs AFTER precip-probability-line and the period
+   brackets, so what it paints over them wins (paint order is the only masking
+   a 1-bit surface has) -- where a label sits over a bracket's end tick, the
+   number is what has to survive."
+  [canvas placements]
+  (doseq [{:keys [text bx by]} placements]
+    (draw-mm-plaque canvas text bx by)))
 
 (defn precip-period-brackets
   "Draws a bracket over each rain period's columns, in the band precip-bar-chart
@@ -598,29 +644,43 @@
    what tells the two apart. It spans the period's slot edges inset 3px, so two
    periods a single dry hour apart still read as two brackets.
 
-   Drawn last in the strip, so the solid bracket sits over the dashed
-   probability line where they cross at 100%. A plaque wider than a short
-   period is clamped to the panel rather than centred off its edge.
-
-   An hourly label can't land on a bracket: its plaque sits over its own bar,
-   which is outside every period, and periods are maximal runs, so there is
-   always at least one dry column between that bar and the nearest bracket."
-  [canvas points x y w periods]
+   Drawn after the probability line, so the solid bracket sits over the dashed
+   one where they cross at 100%, and before the hourly labels, which win where
+   they meet. The total starts centred on its bracket and slides along it to
+   the nearest position clear of every hourly label (`avoid`, boxes from
+   mm-label-placements) -- the wettest hour of a period is often its middle,
+   and its label then reaches up to exactly where a centred total sits. It
+   keeps its centre over the bracket and on the panel; when no such position is
+   clear it stays centred, and the hourly label is drawn over it."
+  [canvas points x y w periods avoid]
   (let [n      (count points)
         line-y (+ y 7)
         font   bold-font]
     (doseq [{:keys [start end total]} periods]
-      (let [left  (+ (slot-edge x w n start) 3)
-            right (- (slot-edge x w n (inc end)) 3)
-            text  (mm-str total)
-            tw    (img/text-width canvas text :font font)
-            bx    (-> (- (/ (+ left right) 2.0) (/ tw 2.0))
-                    (max (+ x 4))
-                    (min (- (+ x w) tw 4)))]
+      (let [left   (+ (slot-edge x w n start) 3)
+            right  (- (slot-edge x w n (inc end)) 3)
+            text   (mm-str total)
+            tw     (img/text-width canvas text :font font)
+            by     (+ line-y 6)
+            clamp  #(-> % (max (+ x 4)) (min (- (+ x w) tw 4)))
+            mid    (clamp (- (/ (+ left right) 2.0) (/ tw 2.0)))
+            clear? (fn [bx]
+                     (let [[px py pw ph] (mm-plaque-box canvas text bx by)]
+                       (not-any? (fn [[ax ay aw ah]]
+                                   (and (< (- px 2) (+ ax aw)) (< ax (+ px pw 2))
+                                     (< (- py 2) (+ ay ah)) (< ay (+ py ph 2))))
+                         avoid)))
+            bx     (or (->> (range 0 (- right left) 2)
+                         (mapcat (fn [d] [(+ mid d) (- mid d)]))
+                         (filter #(= % (clamp %)))
+                         (filter #(<= left (+ % (/ tw 2.0)) right))
+                         (filter clear?)
+                         first)
+                     mid)]
         (img/draw-rect canvas left line-y (- right left) 2 :fill? true)
         (img/draw-rect canvas left line-y 2 11 :fill? true)
         (img/draw-rect canvas (- right 2) line-y 2 11 :fill? true)
-        (draw-mm-plaque canvas text bx (+ line-y 6))))))
+        (draw-mm-plaque canvas text bx by)))))
 
 (defn precip-probability-line
   "Overlays probability-of-precipitation as a recessive dashed line across
@@ -814,15 +874,16 @@
        ;; check-labels reads, so it checks this chart and not one of its own.
        (combined-chart canvas points chart-x chart-y chart-w chart-h :keep-out keep-out)
        ;; Four z-layers in the precip strip: bars, then the probability line
-       ;; over them, then the mm labels and period brackets on top -- so the
-       ;; line stays visible through a tall bar while each label's white plaque
-       ;; still clears the line where they overlap (paint order is the only
+       ;; over them, then the period brackets, then the hourly mm labels on top
+       ;; -- so the line stays visible through a tall bar while each label's
+       ;; white plaque still clears what it overlaps (paint order is the only
        ;; masking there is).
        (let [periods                       (rain-periods points)
-             {:keys [mm-labels bar-rects]} (precip-bar-chart canvas points 40 precip-y 720 precip-h periods)]
+             {:keys [mm-labels bar-rects]} (precip-bar-chart canvas points 40 precip-y 720 precip-h periods)
+             placed                        (mm-label-placements canvas mm-labels)]
          (precip-probability-line canvas points 40 precip-y 720 precip-h bar-rects)
-         (precip-mm-labels canvas mm-labels)
-         (precip-period-brackets canvas points 40 precip-y 720 periods)))
+         (precip-period-brackets canvas points 40 precip-y 720 periods (map :box placed))
+         (precip-mm-labels canvas placed)))
      (hour-axis-labels canvas points 40 720 468)
      (day-markers canvas points 40 720 118 440 454)
      canvas)))
