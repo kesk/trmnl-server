@@ -721,24 +721,30 @@
     (img/draw-polyline canvas plot :dash [5.0 4.0] :width 2.0)
     (img/draw-polyline canvas plot :dash [5.0 4.0] :width 2.0 :paint Color/WHITE :clip bar-rects)))
 
-(defn- day-markers
-  "Draws a weekday label centered over each calendar day's x-span, plus a
-   hairline dashed divider between consecutive days, spanning the cloud strip
-   through the rain chart — so a multi-day forecast reads at a glance without
-   decoding hour labels to figure out where 'tomorrow' starts. Reuses
-   day-groups' rule of skipping a lone-point sliver day, since there's nothing
-   meaningful to center a label over."
-  [canvas points x w top bottom label-y]
+(defn- day-dividers
+  "Draws a 1px dashed divider between consecutive days, spanning the cloud strip
+   down to the x-axis — so a multi-day forecast reads at a glance
+   without decoding hour labels to figure out where 'tomorrow' starts. Drawn
+   under the charts, so every label's halo or plaque cuts the divider rather
+   than being struck through by it; the series lines cross over it. Reuses
+   day-groups' rule of skipping a lone-point sliver day, matching day-labels."
+  [canvas points x w top bottom]
+  (let [n (count points)]
+    (doseq [[_a b] (partition 2 1 (day-groups points))]
+      (let [boundary-x (plot-x x w n (first b))]
+        (img/draw-dashed-line canvas boundary-x top boundary-x bottom :dash [6.0 4.0])))))
+
+(defn- day-labels
+  "Draws a weekday label centered over each calendar day's x-span. Skips a
+   lone-point sliver day (day-groups), since there's nothing meaningful to
+   center a label over."
+  [canvas points x w label-y]
   (let [n      (count points)
-        idx->x (fn [i] (plot-x x w n i))
-        groups (day-groups points)]
-    (doseq [group groups]
+        idx->x (fn [i] (plot-x x w n i))]
+    (doseq [group (day-groups points)]
       (let [center-x (/ (+ (idx->x (first group)) (idx->x (last group))) 2)]
         (img/draw-text canvas (smhi/local-day-label (:time (nth points (first group)))) (- center-x 12) label-y
-          :font bold-font)))
-    (doseq [[_a b] (partition 2 1 groups)]
-      (let [boundary-x (idx->x (first b))]
-        (img/draw-dashed-line canvas boundary-x top boundary-x bottom)))))
+          :font bold-font)))))
 
 (def default-forecast-hours
   "How many hourly points forecast-screen renders when fetching live data or
@@ -869,6 +875,9 @@
        ;; and the gap under the strip is the chart's now. A thundery hour is an
        ;; overcast one, so there's always strip to carve.
        (thunder-flashes canvas points 40 cloud-y 720)
+       ;; Over the strip but under everything else, so labels and plaques cut
+       ;; the dividers rather than being struck through.
+       (day-dividers canvas points 40 720 118 (+ precip-y precip-h))
        ;; Box and keep-out rects both come from screen-geometry above, which is
        ;; where the reasoning behind their edges lives -- and which is the copy
        ;; check-labels reads, so it checks this chart and not one of its own.
@@ -884,6 +893,6 @@
          (precip-probability-line canvas points 40 precip-y 720 precip-h bar-rects)
          (precip-period-brackets canvas points 40 precip-y 720 periods (map :box placed))
          (precip-mm-labels canvas placed)))
+     (day-labels canvas points 40 720 454)
      (hour-axis-labels canvas points 40 720 468)
-     (day-markers canvas points 40 720 118 440 454)
      canvas)))

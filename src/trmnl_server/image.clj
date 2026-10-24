@@ -144,11 +144,14 @@
 
 (defn draw-dashed-line
   "A recessive hairline for gridlines/axes — dashed since a 1-bit surface can't
-   fall back to a lighter gray the way a color surface would."
-  [{:keys [^Graphics2D graphics]} x1 y1 x2 y2 & {:keys [color] :or {color Color/BLACK}}]
+   fall back to a lighter gray the way a color surface would. :dash [on off]
+   restyles it for a divider that should read as structure rather than as a
+   gridline."
+  [{:keys [^Graphics2D graphics]} x1 y1 x2 y2 & {:keys [color dash]
+                                                 :or   {color Color/BLACK dash [2.0 3.0]}}]
   (.setColor graphics color)
   (.setStroke graphics (BasicStroke. 1.0 BasicStroke/CAP_BUTT BasicStroke/JOIN_MITER
-                         1.0 (float-array [2.0 3.0]) 0.0))
+                         1.0 (float-array dash) 0.0))
   (.drawLine graphics (int x1) (int y1) (int x2) (int y2))
   (.setStroke graphics (BasicStroke. 1.0)))
 
