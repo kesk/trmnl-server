@@ -347,30 +347,49 @@
   (let [temp-layout (series-layout points :temp x y w h 2 nil)
         wind-layout (series-layout points :wind x y w h 2 0)
         series      [{:layout temp-layout
-                      :fmt    (fn [{:keys [temp]}] (str (int (Math/rint (double temp))) "°"))}
-                     ;; Same "4 (8) m/s" shape as the header, each label with its own
-                     ;; hour's gust — a number rather than a third line, which would
-                     ;; mostly be the wind line scaled by ~1.8.
+                      :fmt    (fn [{:keys [temp]} _] (str (int (Math/rint (double temp))) "°"))}
+                     ;; Same "4 (8) m/s" shape as the header, the gust being that
+                     ;; hour's own — a number rather than a third line, which would
+                     ;; mostly be the wind line scaled by ~1.8. Only on each day's
+                     ;; strongest labelled peak (gust? below): on every label it was
+                     ;; a wall of parentheses, and pushed labels onto the lines.
                      {:layout wind-layout
-                      :fmt    (fn [{:keys [wind gust]}]
-                                (str (int (Math/rint (double wind))) (gust-suffix wind gust) " m/s"))}]
+                      :gusts? true
+                      :fmt    (fn [{:keys [wind gust]} gust?]
+                                (str (int (Math/rint (double wind))) (when gust? (gust-suffix wind gust)) " m/s"))}]
         global-i    (fn [layout kind]
                       (:i (first ((if (= kind :max) :maxima :minima) (:candidates layout)))))
-        spec        (fn [{:keys [layout fmt]} i kind required?]
-                      {:dot       (nth (:plot-points layout) i)
-                       :text      (fmt (nth points i))
-                       :kind      kind
-                       :required? required?})
+        spec        (fn [s i kind required?]
+                      {:series s :i i :kind kind :required? required?})
         globals     (for [s series kind [:max :min]]
                       (spec s (global-i (:layout s) kind) kind true))
         extras      (for [s                series
                           :let             [layout (:layout s)
                                             globals #{(global-i layout :max) (global-i layout :min)}]
                           {:keys [i kind]} (labels/pick-extras (:candidates layout) globals 2)]
-                      (spec s i kind false))]
+                      (spec s i kind false))
+        specs       (concat globals extras)
+        ;; Per calendar day, the labelled wind peak with the strongest wind
+        ;; (the earliest on a tie). Picked among the labels rather than the
+        ;; day's points, since a day's windiest hour needn't be labelled; and
+        ;; among peaks only, so a day whose one wind label is a minimum gets
+        ;; no gust rather than hanging it on the calmest hour.
+        gust?       (->> specs
+                      (filter #(and (:gusts? (:series %)) (= :max (:kind %))))
+                      (group-by #(smhi/local-date (:time (nth points (:i %)))))
+                      vals
+                      (map (fn [day] (reduce #(if (> (:wind (nth points (:i %2))) (:wind (nth points (:i %1)))) %2 %1)
+                                       (sort-by :i day))))
+                      (map :i)
+                      set)
+        label       (fn [{{:keys [layout fmt gusts?]} :series :keys [i kind required?]}]
+                      {:dot       (nth (:plot-points layout) i)
+                       :text      (fmt (nth points i) (and gusts? (contains? gust? i)))
+                       :kind      kind
+                       :required? required?})]
     {:temp-layout temp-layout
      :wind-layout wind-layout
-     :labels      (labels/place canvas (concat globals extras)
+     :labels      (labels/place canvas (map label specs)
                     {;; Hard: stay on the panel, above whatever keep-out covers.
                      :bounds   [4 (- y 12) (- img/og-width 4) (+ y h 26)]
                      ;; Soft: a first- or last-point label is centred on the box
