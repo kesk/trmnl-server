@@ -122,6 +122,9 @@
             {:time          (str (.plusSeconds (java.time.Instant/parse "2026-01-01T00:00:00Z") (* 3600 i)))
              :temp          t
              :wind          w
+             ;; Varied gust factor, so the gust-carrying max label is checked at
+             ;; every width it can take.
+             :gust          (/ (Math/round (* 10.0 w (+ 1.3 (rnd 1.0)))) 10.0)
              :symbol        1
              :precip-chance 0
              :precip-mm     0

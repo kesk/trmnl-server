@@ -55,6 +55,8 @@
         {:time          (str (.plusSeconds start (* h 3600)))
          :temp          (Math/round temp)
          :wind          (/ (Math/round (* (double wind) 10)) 10.0)
+         ;; SMHI's gusts run ~1.7-2x the mean wind, a little more when it's calm.
+         :gust          (/ (Math/round (* (double wind) (+ 1.7 (* 0.2 (Math/cos (* 2 Math/PI (/ hour-of-day 7.0))))) 10)) 10.0)
          :symbol        (if raining? precip-symbol clear-symbol)
          :cloud-cover   (Math/round (double cloud))
          :precip-mm     (if raining? precip-mm 0.0)
@@ -85,6 +87,7 @@
         {:time          (str (.plusSeconds start (* h 3600)))
          :temp          (Math/round temp)
          :wind          (+ 3.0 (double (mod h 3)))
+         :gust          (+ 6.0 (* 2.0 (double (mod h 3))))
          :symbol        (if wet? 18 3)
          :cloud-cover   (if wet? 7 3)
          :precip-mm     mm

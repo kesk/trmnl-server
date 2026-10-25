@@ -321,6 +321,14 @@
           (img/draw-rect canvas left cloud-y (- right left) (- bottom-y cloud-y)
             :fill? true :paint (img/stipple-paint)))))))
 
+(defn- gust-suffix
+  "\" (22)\" for a point's gust, or \"\" when it has none — an archived forecast
+   from before :gust was fetched — or when, rounded, the gust is no stronger than
+   the mean wind, where the parenthesis would say nothing."
+  [wind gust]
+  (let [r (fn [v] (int (Math/rint (double v))))]
+    (if (and gust (> (r gust) (r wind))) (str " (" (r gust) ")") "")))
+
 (defn chart-labels
   "What combined-chart will draw, resolved but not yet drawn: {:temp-layout
    :wind-layout :labels}, where each label is {:dot :text :anchor :leader? :box}
@@ -338,15 +346,19 @@
   [canvas points x y w h & {:keys [keep-out]}]
   (let [temp-layout (series-layout points :temp x y w h 2 nil)
         wind-layout (series-layout points :wind x y w h 2 0)
-        series      [{:layout temp-layout                                     :value-key :temp
-                      :fmt    (fn [t] (str (int (Math/rint (double t))) "°"))}
-                     {:layout wind-layout                                        :value-key :wind
-                      :fmt    (fn [v] (str (int (Math/rint (double v))) " m/s"))}]
+        series      [{:layout temp-layout
+                      :fmt    (fn [{:keys [temp]}] (str (int (Math/rint (double temp))) "°"))}
+                     ;; Same "4 (8) m/s" shape as the header, each label with its own
+                     ;; hour's gust — a number rather than a third line, which would
+                     ;; mostly be the wind line scaled by ~1.8.
+                     {:layout wind-layout
+                      :fmt    (fn [{:keys [wind gust]}]
+                                (str (int (Math/rint (double wind))) (gust-suffix wind gust) " m/s"))}]
         global-i    (fn [layout kind]
                       (:i (first ((if (= kind :max) :maxima :minima) (:candidates layout)))))
-        spec        (fn [{:keys [layout value-key fmt]} i kind required?]
+        spec        (fn [{:keys [layout fmt]} i kind required?]
                       {:dot       (nth (:plot-points layout) i)
-                       :text      (fmt (value-key (nth points i)))
+                       :text      (fmt (nth points i))
                        :kind      kind
                        :required? required?})
         globals     (for [s series kind [:max :min]]
@@ -850,7 +862,9 @@
      (when battery-percent
        (draw-battery canvas (- 760 logo-w 14 battery-w) (- 33 (/ battery-h 2)) battery-percent))
      (img/draw-text canvas (str (int (Math/rint (double (:temp now)))) "°") 122 44 :font headline-font)
-     (img/draw-text canvas (str (int (Math/rint (double (:wind now)))) " m/s, " condition) 122 68
+     (img/draw-text canvas (str (int (Math/rint (double (:wind now))))
+                             (gust-suffix (:wind now) (:gust now))
+                             " m/s, " condition) 122 68
        :font body-font)
      (let [label (str "Uppdaterad " (smhi/local-now-str))
            font  body-font

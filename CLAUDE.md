@@ -176,8 +176,13 @@ version, and 3.6x the entire screen composition).
 
 - **`trmnl-server.smhi`** — HTTP client for SMHI's public point-forecast API, using
   `java.net.http.HttpClient` directly (no HTTP dependency needed). Fetches raw JSON,
-  normalizes each `timeSeries` entry into a flat `{:time :temp :symbol :wind
-  :precip-chance :precip-mm :cloud-cover}` map. A non-2xx status, or a body that
+  normalizes each `timeSeries` entry into a flat `{:time :temp :symbol :wind :gust
+  :precip-chance :precip-mm :cloud-cover}` map. `:gust` is shown only as a number — in
+  the header ("12 (22) m/s") and on every wind label in the chart in the same shape, each with its own
+  hour's gust — never as a third chart line: SMHI's gusts run ~1.7–2x the mean, so a
+  gust line would mostly be the wind line scaled up while squashing it into the bottom
+  half of the box. Archived `.edn` sidecars from before it was fetched have no `:gust`,
+  and render without the parenthesis. A non-2xx status, or a body that
   won't parse, throws `ex-info` with `{:url :status :body}` (the body truncated to a
   whitespace-collapsed 200-char snippet) rather than letting SMHI's HTML error pages
   reach the JSON reader as a bare `unexpected character: <` — see DEVICE-ISSUES.md, this
