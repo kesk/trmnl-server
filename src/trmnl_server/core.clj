@@ -209,6 +209,100 @@
   (dotimes [i (battery-bars percent)]
     (img/draw-rect canvas (+ x 4 (* i 6)) (+ y 4) 4 6 :fill? true)))
 
+(defn- moon-row-fills
+  "One disc's scanlines for draw-moon: per pixel row of a radius-r disc centred
+   on cx, the [left right] of the whole row and of its lit part (nil when that
+   row has none). Lit means the right side while waxing and the left while
+   waning, as seen from the northern hemisphere — which is where these displays
+   hang (see smhi/screen-zone). The terminator is an ellipse whose half-width is
+   cos(2π·phase) of the row's, which is what makes a quarter a straight edge."
+  [cx r phase]
+  (let [k (Math/cos (* 2 Math/PI phase))]
+    (for [j (range (- r) r)]
+      (let [dy    (+ j 0.5)
+            w     (Math/sqrt (- (* r r) (* dy dy)))
+            [a b] (if (< phase 0.5)
+                    [(+ cx (* w k)) (+ cx w)]
+                    [(- cx w) (- cx (* w k))])
+            [a b] [(Math/round (double a)) (Math/round (double b))]]
+        {:dy  j
+         :row [(Math/round (- cx w)) (Math/round (+ cx w))]
+         :lit (when (> b a) [a b])}))))
+
+;; The near side's maria, roughly where they sit as seen from the north, as
+;; ellipses [u v ru rv] in unit-disc coordinates (u rightward, v downward, the
+;; disc's radius being 1). Not a map: at 40px a mare is a dozen pixels, so these
+;; are placed by eye against a photo until the "man in the moon" read right.
+(def ^:private moon-maria
+  [[-0.58 0.02 0.28 0.48]  ; Oceanus Procellarum
+   [-0.30 -0.45 0.30 0.22] ; Imbrium
+   [0.14 -0.42 0.17 0.16]  ; Serenitatis
+   [0.32 -0.08 0.22 0.18]  ; Tranquillitatis
+   [0.70 -0.30 0.12 0.10]  ; Crisium
+   [0.58 0.18 0.12 0.17]   ; Fecunditatis
+   [0.38 0.30 0.09 0.08]   ; Nectaris
+   [-0.20 0.38 0.18 0.13]  ; Nubium
+   [-0.45 0.55 0.12 0.09]]) ; Humorum
+
+;; Craters as [u v radius-px]: drawn as a 1px black ring around a white floor, which
+;; is what lets Copernicus stand out of the dithered mare it sits in.
+;; Kept a few pixels apart — two rings that touch read as an "8", not as craters.
+(def ^:private moon-craters
+  [[-0.28 -0.12 2.0] ; Copernicus
+   [-0.12 0.72 2.0]  ; Tycho
+   [0.42 0.64 1.5]
+   [0.05 -0.80 1.5]])
+
+(defn- moon-ink?
+  "Whether the lit-side pixel x,y of a radius-r disc centred on cx,cy is black:
+   on a crater's rim, or inside a mare on the black half of a checkerboard
+   anchored to the panel's origin (the same 50% texture as checkerboard-paint,
+   so it can't beat against the cloud strip's)."
+  [cx cy r x y]
+  (let [px     (+ x 0.5)
+        py     (+ y 0.5)
+        crater (some (fn [[u v cr]]
+                       (let [d (Math/hypot (- px (+ cx (* u r))) (- py (+ cy (* v r))))]
+                         (cond (<= d (- cr 0.5)) :floor
+                           (<= d (+ cr 0.5)) :rim)))
+                 moon-craters)]
+    (case crater
+      :rim   true
+      :floor false
+      (and (odd? (+ x y))
+        (let [u (/ (- px cx) r)
+              v (/ (- py cy) r)]
+          (boolean (some (fn [[mu mv ru rv]]
+                           (<= (+ (Math/pow (/ (- u mu) ru) 2) (Math/pow (/ (- v mv) rv) 2)) 1.0))
+                     moon-maria)))))))
+
+(defn draw-moon
+  "Draws the moon at `phase` (smhi/moon-phase) as a radius-r disc centred on
+   cx,cy: the dark part solid black, the lit part white inside a 1px black rim
+   with its maria dithered in and a few craters ringed (moon-ink?). Built from
+   filled rects — a black disc of radius r, then the lit part of a disc of
+   radius r-1 over it a pixel at a time, so the rim falls out of the difference
+   — for the same reason draw-battery is: every edge lands on a whole pixel and
+   survives ->1-bit untouched. The texture is only ever on the lit part, so the
+   terminator cuts through maria and craters the way the real one does.
+
+   Black-for-dark rather than a dithered lit part (as the SMHI night icons'
+   moon is) because a dithered crescent was tried and all but vanished. The
+   maria are a 50% checkerboard because sparser dithers were tried too: at
+   this size 25% reads as scattered dots and a diagonal 33% as hatching."
+  [canvas cx cy r phase]
+  (doseq [{:keys [dy row]} (moon-row-fills cx r phase)
+          :let             [[l rr] row]]
+    (img/draw-rect canvas l (+ cy dy) (- rr l) 1 :fill? true))
+  (let [ri (dec r)]
+    (doseq [{:keys [dy lit]} (moon-row-fills cx ri phase)
+            :when            lit
+            :let             [[a b] lit
+                              y (+ cy dy)]
+            x                (range a b)
+            :when            (not (moon-ink? cx cy ri x y))]
+      (img/draw-rect canvas x y 1 1 :fill? true :color Color/WHITE))))
+
 ;; The screen draws in three fonts and nothing else, so derive each once. These
 ;; were being rebuilt at draw time in eight places -- five of them this same
 ;; regular 16 -- and every one of those calls runs Font/.deriveFont.
@@ -889,6 +983,11 @@
            font  body-font
            w     (img/text-width canvas label :font font)]
        (img/draw-text canvas label (- 760 w) 68 :font font))
+     ;; Top centre: the moon for the first forecast hour, on the same vertical
+     ;; centre as the wordmark and battery. Its bottom (53) stays above the wind
+     ;; line, which can run past the centre -- "25 (38) m/s, Kraftiga snöblandade
+     ;; skurar" ends at x=379.
+     (draw-moon canvas 400 33 20 (smhi/moon-phase (:time now)))
      (img/draw-line canvas 40 84 760 84)
 
      ;; "Moln (%)" names the dimension, not the datum. SMHI reports cloud cover in

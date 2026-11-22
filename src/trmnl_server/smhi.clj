@@ -239,6 +239,27 @@
       polar-night? true
       :else        (or (.isBefore t sunrise) (.isAfter t sunset)))))
 
+(def ^:private synodic-month
+  "Mean length of a lunation (new moon to new moon), in days."
+  29.530588853)
+
+(def ^:private reference-new-moon-jd
+  "Julian date of a known new moon, 2000-01-06 18:14 UTC — the epoch moon-phase
+   counts lunations from."
+  2451550.1)
+
+(defn moon-phase
+  "How far through the current lunation `iso-time` is, as a fraction in [0, 1):
+   0 new moon, 0.25 first quarter, 0.5 full, 0.75 last quarter. Counts mean
+   synodic months from a reference new moon — no perturbation terms, so it can
+   be up to ~14h off a real almanac's phase times. For a glyph and a name that
+   change over days, that is plenty; like sun-times, it's pure arithmetic with
+   no network call or dependency."
+  [iso-time]
+  (let [jd (+ (/ (Instant/.toEpochMilli (Instant/parse iso-time)) 86400000.0) 2440587.5)
+        p  (/ (- jd reference-new-moon-jd) synodic-month)]
+    (- p (Math/floor p))))
+
 (defn local-day-label [iso-time]
   (.format (screen-time iso-time) day-format))
 

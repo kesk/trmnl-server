@@ -218,6 +218,13 @@ version, and 3.6x the entire screen composition).
   the forecast `location` (`{:lat :lon}`), so callers thread that down (see
   `core/forecast-screen`'s location arg).
 
+  `moon-phase` (fraction of the lunation, 0 new → 0.5 full, counted in mean synodic
+  months from a reference new moon — up to ~14h off an almanac, which a glyph that
+  changes over days doesn't notice) sits beside it, for the same reason: pure
+  arithmetic, no network. It feeds the moon at the top centre of the header (`core/draw-moon`), drawn for the first forecast hour — so
+  `--demo`'s season screens, whose dates all happen to fall near a new moon, show a mostly
+  black disc; that's the calendar, not a bug.
+
 - **`trmnl-server.demo`** — synthetic per-season datasets (`seasons`, `season-points`,
   which takes an explicit `hours` count) in the same point shape `smhi/forecast`
   produces, so `--demo` can drive `forecast-screen` without hitting the network.
@@ -248,6 +255,13 @@ version, and 3.6x the entire screen composition).
   an empty one], arity-0 fetches `live-points` of
   `default-forecast-hours` [23] points for `default-forecast-location` [Gothenburg]),
   and is where domain-specific
+  header pieces live too (`draw-moon`, the top-centre moon: black for the dark part, white
+  inside a 1px rim for the lit part, built from one-pixel rects like `draw-battery`; a
+  dithered lit part was tried and its crescents all but vanished. The lit part carries the
+  near side's maria as a 50% checkerboard and a few craters as 1px rings — placed by eye,
+  as ellipses in unit-disc coordinates, not from a map — and only the lit part does, so
+  the terminator cuts through them. A phase name under the disc was tried and dropped as
+  clutter), and
   layout/chart logic lives (e.g. `combined-chart`, `nice-bounds` for
   rounding axis extents, and `chart-labels`, the domain half of the labelling: which
   values get labelled, how they read, and what they have to stay off — the geometry that
