@@ -225,6 +225,12 @@ version, and 3.6x the entire screen composition).
   `--demo`'s season screens, whose dates all happen to fall near a new moon, show a mostly
   black disc; that's the calendar, not a bug.
 
+  `daylight` is `sun-times` plus `:minutes` (how long the sun is up) and `:week-change`
+  (minutes gained or lost against the same day a **week** earlier). A week rather than a
+  day because a day's change rounds to ±0 for weeks around each solstice; a week's is
+  zero for a day or two at most. Polar day/night count as 1440/0 minutes so a week
+  crossing into one still has a change. It feeds `core/draw-daylight`, right of the moon.
+
 - **`trmnl-server.demo`** — synthetic per-season datasets (`seasons`, `season-points`,
   which takes an explicit `hours` count) in the same point shape `smhi/forecast`
   produces, so `--demo` can drive `forecast-screen` without hitting the network.
@@ -261,7 +267,11 @@ version, and 3.6x the entire screen composition).
   near side's maria as a 50% checkerboard and a few craters as 1px rings — placed by eye,
   as ellipses in unit-disc coordinates, not from a map — and only the lit part does, so
   the terminator cuts through them. A phase name under the disc was tried and dropped as
-  clutter), and
+  clutter; and `draw-daylight`, the sun block right of it at x=440 — sunrise/sunset behind
+  drawn glyphs, since PixelOperator has no arrows, and "7 h 33 min, -27 min/v." under them.
+  That line must end before "Uppdaterad" at x≈606, which is why it says "/v." and not
+  "/vecka": the long form ran into it at the equinoxes. Under polar day/night the row reads
+  "Midnattssol"/"Polarnatt" instead), and
   layout/chart logic lives (e.g. `combined-chart`, `nice-bounds` for
   rounding axis extents, and `chart-labels`, the domain half of the labelling: which
   values get labelled, how they read, and what they have to stay off — the geometry that

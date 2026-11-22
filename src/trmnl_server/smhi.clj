@@ -260,6 +260,34 @@
         p  (/ (- jd reference-new-moon-jd) synodic-month)]
     (- p (Math/floor p))))
 
+(defn- daylight-minutes
+  "How long the sun is up on the day `iso-time` falls on, in (fractional)
+   minutes: sunset minus sunrise, or the whole day / none of it under polar
+   day / night, so a week that crosses into one still has a change to report."
+  [location iso-time]
+  (let [{:keys [sunrise sunset polar-day?]} (sun-times location iso-time)]
+    (cond
+      polar-day? 1440.0
+      sunrise    (/ (- (Instant/.toEpochMilli sunset) (Instant/.toEpochMilli sunrise)) 60000.0)
+      :else      0.0)))
+
+(defn daylight
+  "sun-times for the day `iso-time` falls on, plus `:minutes` — how long the
+   sun is up, rounded — and `:week-change`, how many minutes longer that is
+   than on the same day a week earlier. A week rather than a day because a
+   day's change is under a minute for weeks either side of each solstice, and a
+   header reading ±0 for a month says nothing; a week's is never quite zero for
+   more than a day or two. The change is rounded from the difference, not taken
+   between two rounded lengths, so it can't be a minute off what it claims.
+   Lengths are instant differences, so a DST switch doesn't show up as an hour
+   of daylight gained or lost."
+  [location iso-time]
+  (let [now      (daylight-minutes location iso-time)
+        week-ago (daylight-minutes location (str (Instant/.minus (Instant/parse iso-time) (Duration/ofDays 7))))]
+    (assoc (sun-times location iso-time)
+      :minutes     (Math/round (double now))
+      :week-change (Math/round (double (- now week-ago))))))
+
 (defn local-day-label [iso-time]
   (.format (screen-time iso-time) day-format))
 

@@ -310,6 +310,53 @@
 (def ^:private bold-font (img/pixel-font :bold 16))
 (def ^:private headline-font (img/pixel-font :bold 32))
 
+(defn- draw-sun-glyph
+  "A 16x16 sunrise (up? true) or sunset glyph with its top-left at x,y: an
+   arrow over a half sun sitting on a horizon line. Drawn rather than typed
+   because PixelOperator has no arrows, and from whole-pixel rects for the same
+   reason draw-battery is. The arrowhead is a proper 2-4-6 triangle: a single
+   bar across a shaft was tried first and read as a T."
+  [canvas x y up?]
+  (img/draw-rect canvas x (+ y 15) 16 1 :fill? true)
+  (doseq [row  (range 9 15)
+          :let [dy (- 14.5 row)
+                w  (Math/sqrt (- 36.0 (* dy dy)))
+                l  (Math/round (- 8.0 w))
+                r  (Math/round (+ 8.0 w))]]
+    (img/draw-rect canvas (+ x l) (+ y row) (- r l) 1 :fill? true))
+  (let [head (fn [row w] (img/draw-rect canvas (+ x 8 (- (quot w 2))) (+ y row) w 1 :fill? true))]
+    (if up?
+      (do (head 0 2) (head 1 4) (head 2 6)
+        (img/draw-rect canvas (+ x 7) (+ y 3) 2 4 :fill? true))
+      (do (img/draw-rect canvas (+ x 7) y 2 4 :fill? true)
+        (head 4 6) (head 5 4) (head 6 2)))))
+
+(defn- signed-str [n]
+  (cond (pos? n) (str "+" n)
+    (neg? n) (str "-" (- n)) ; PixelOperator has no U+2212 minus
+    :else    "±0"))
+
+(defn draw-daylight
+  "The header's sun block, left edge at x: sunrise and sunset times on the
+   headline row, each behind its glyph, and under them how long the day is and
+   how much that has changed in a week (smhi/daylight) — \"7 h 33 min, -27 min/v.\".
+   Under polar day or night there is no rise or set to show, so the row says
+   which it is instead and the line under it is left out.
+
+   \"/v.\" rather than \"/vecka\" for width: the line has to end before
+   \"Uppdaterad …\" at x≈606, and around the equinoxes \"12 h 08 min (+35
+   min/vecka)\" ran into it."
+  [canvas x {:keys [sunrise sunset polar-day? polar-night? minutes week-change]}]
+  (if (or polar-day? polar-night?)
+    (img/draw-text canvas (if polar-day? "Midnattssol" "Polarnatt") x 44 :font bold-font)
+    (do
+      (doseq [[dx up? t] [[0 true sunrise] [80 false sunset]]]
+        (draw-sun-glyph canvas (+ x dx) 29 up?)
+        (img/draw-text canvas (smhi/local-time-str (str t)) (+ x dx 20) 44 :font bold-font))
+      (img/draw-text canvas (format "%d h %02d min, %s min/v." (quot minutes 60) (mod minutes 60)
+                              (signed-str week-change))
+        x 68 :font body-font))))
+
 (defn draw-legend-key [canvas x y label & {:keys [dash width paint] :or {width 2.0}}]
   (apply img/draw-polyline canvas [[x (+ y -6)] [(+ x 30) (+ y -6)]]
     (concat [:width width :dash dash] (when paint [:paint paint])))
@@ -988,6 +1035,8 @@
      ;; line, which can run past the centre -- "25 (38) m/s, Kraftiga snöblandade
      ;; skurar" ends at x=379.
      (draw-moon canvas 400 33 20 (smhi/moon-phase (:time now)))
+     ;; Right of the moon, in the gap before the battery and "Uppdaterad".
+     (draw-daylight canvas 440 (smhi/daylight location (:time now)))
      (img/draw-line canvas 40 84 760 84)
 
      ;; "Moln (%)" names the dimension, not the datum. SMHI reports cloud cover in
